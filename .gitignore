@@ -1,0 +1,24 @@
+# .NET
+agent/**/bin/
+agent/**/obj/
+agent/**/dist/
+agent/**/publish-test/
+agent/pm-code/AgentWorkspace/
+agent/.pm_workspace_index.json
+.pm_workspace_index.json
+.pm_context_summary.json
+.pm_todo_state.json
+
+# Node / VS Code extension
+extension/node_modules/
+extension/out/
+extension/*.vsix
+
+# Editor
+.vs/
+.idea/
+*.user
+
+# OS
+Thumbs.db
+.DS_Store

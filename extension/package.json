@@ -1,0 +1,65 @@
+{
+  "name": "pm-chat-participant",
+  "displayName": "PM Chat Participant (Local LLM)",
+  "description": "Chat participant frontend per PM Code Agent (tool calling delegato all'agent .NET locale)",
+  "version": "2.0.6",
+  "publisher": "pm-software-automation",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Chat"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": [
+      {
+        "title": "PM Chat Participant",
+        "properties": {
+          "pmChat.agentPath": {
+            "type": "string",
+            "default": "",
+            "description": "Percorso eseguibile di PM Code Agent (pm-code.exe), avviato in modalità --stdin-protocol. Obbligatorio per usare @pm."
+          }
+        }
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "pmChat.chat",
+        "name": "pm",
+        "fullName": "PM Chat",
+        "description": "Frontend verso PM Code Agent (agente .NET locale con tool calling).",
+        "isSticky": true
+      }
+    ],
+    "commands": [
+      {
+        "command": "pmChat.acceptEditProposal",
+        "title": "PM Chat: applica la modifica proposta"
+      },
+      {
+        "command": "pmChat.rejectEditProposal",
+        "title": "PM Chat: rifiuta la modifica proposta"
+      },
+      {
+        "command": "pmChat.restartAgent",
+        "title": "PM Chat: riavvia PM Code Agent"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  }
+}

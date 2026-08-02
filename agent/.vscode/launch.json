@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "PM Code Agent (console esterna)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/pm-code/bin/Debug/net8.0/pm-code.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/pm-code",
+      "console": "externalTerminal",
+      "stopAtEntry": false
+    },
+    {
+      "name": "PM Code Agent (terminale integrato)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/pm-code/bin/Debug/net8.0/pm-code.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/pm-code",
+      "console": "integratedTerminal",
+      "stopAtEntry": false
+    }
+  ]
+}
