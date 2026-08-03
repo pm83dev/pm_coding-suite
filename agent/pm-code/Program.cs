@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using LocalCodeAgent.Core;
 using LocalCodeAgent.Models;
 using Microsoft.Extensions.Configuration;
@@ -286,6 +287,51 @@ async Task<bool> RunAgentLoopAsync(
     const int maxConsecutiveReadOnly = 6;
     int consecutiveReadOnly = 0;
 
+    // Gate di build: il system prompt chiede di eseguire sol_analyze dopo modifiche .NET,
+    // ma è solo un'istruzione testuale in mezzo a un prompt lungo — il modello può
+    // semplicemente non rispettarla e dichiarare il task concluso con un file .cs che non
+    // compila. Qui si traccia deterministicamente lo stato (non affidato al prompt): ogni
+    // edit_file/write_file su un .cs marca la build come "non verificata"; sol_analyze/
+    // run_dotnet la marcano verificata (o di nuovo fallita, se trova errori). Se il modello
+    // tenta di chiudere il turno con testo libero mentre la build non è verificata, il loop
+    // sotto forza un sol_analyze automatico prima di lasciarlo rispondere.
+    bool hasUnverifiedCodeEdit = false;
+    var autoBuildChecks = 0;
+    const int maxAutoBuildChecks = 3;
+
+    void TrackBuildState(string toolName, string argsJson, string result)
+    {
+        if (toolName is "write_file" or "edit_file")
+        {
+            try
+            {
+                var el = JsonDocument.Parse(argsJson).RootElement;
+                var path = el.TryGetProperty("path", out var p) ? p.GetString() : null;
+                if (path != null && path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+                    hasUnverifiedCodeEdit = true;
+            }
+            catch { }
+        }
+        else if (toolName == "sol_analyze")
+        {
+            hasUnverifiedCodeEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
+        }
+        else if (toolName == "run_dotnet")
+        {
+            try
+            {
+                var el = JsonDocument.Parse(argsJson).RootElement;
+                var a = el.TryGetProperty("args", out var av) ? av.GetString() ?? "" : "";
+                if (Has(a, "build", "test", "run"))
+                    hasUnverifiedCodeEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
+            }
+            catch { }
+        }
+    }
+
+    bool Has(string s, params string[] kw) =>
+        kw.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase));
+
     string ExecuteToolGuarded(string name, string argsJson)
     {
         if (pollableTools.Contains(name))
@@ -423,6 +469,7 @@ async Task<bool> RunAgentLoopAsync(
                 else UI.ToolCall(tc.Function.Name, tc.Function.Arguments);
 
                 var result = ExecuteToolGuarded(tc.Function.Name, tc.Function.Arguments);
+                TrackBuildState(tc.Function.Name, tc.Function.Arguments, result);
 
                 if (onToolResult != null) onToolResult(tc.Function.Name, result);
                 else UI.ToolResult(result);
@@ -496,6 +543,7 @@ async Task<bool> RunAgentLoopAsync(
                     else UI.ToolCall(name, argsJson);
 
                     var result = ExecuteToolGuarded(name, argsJson);
+                    TrackBuildState(name, argsJson, result);
 
                     if (onToolResult != null) onToolResult(name, result);
                     else UI.ToolResult(result);
@@ -508,6 +556,39 @@ async Task<bool> RunAgentLoopAsync(
                     UI.Error("Loop rilevato: stesso tool richiamato troppe volte con argomenti identici — interruzione.");
                     return true;
                 }
+                continue;
+            }
+
+            // ── Gate di build ──────────────────────────────────────────────────
+            // Il modello sta per chiudere il turno con testo libero (niente tool call, anche
+            // dopo il tentativo di recupero) mentre ha modificato almeno un .cs senza mai
+            // verificarne la compilazione. Non ci fidiamo del prompt: eseguiamo sol_analyze
+            // noi stessi, prima che l'utente veda una risposta che dichiara il task concluso
+            // su codice che non compila. Cap a maxAutoBuildChecks per non girare all'infinito
+            // se il modello non riesce a correggere gli errori.
+            if (hasUnverifiedCodeEdit && autoBuildChecks < maxAutoBuildChecks)
+            {
+                autoBuildChecks++;
+                const string autoArgs = "{}";
+                UI.Dim("  [auto-check] modifiche a file .cs non verificate — eseguo sol_analyze...");
+
+                if (onToolCall != null) onToolCall("sol_analyze", autoArgs);
+                else UI.ToolCall("sol_analyze", autoArgs);
+
+                var buildResult = dispatcher.Execute("sol_analyze", autoArgs);
+                TrackBuildState("sol_analyze", autoArgs, buildResult);
+
+                if (onToolResult != null) onToolResult("sol_analyze", buildResult);
+                else UI.ToolResult(buildResult);
+
+                history.Add(ChatMessage.ToolResult($"auto-build-{step}", buildResult));
+                history.Add(new ChatMessage
+                {
+                    Role = "user",
+                    Content = hasUnverifiedCodeEdit
+                        ? "[AUTO-BUILD] Hai modificato file .cs senza verificarne la build. Il controllo automatico ha trovato errori (vedi risultato sopra): correggili con edit_file. Non dichiarare il task concluso finché la build non è pulita."
+                        : "[AUTO-BUILD] Hai modificato file .cs senza verificarne la build. Il controllo automatico è passato: la build è pulita. Ora rispondi all'utente con il riepilogo."
+                });
                 continue;
             }
 
