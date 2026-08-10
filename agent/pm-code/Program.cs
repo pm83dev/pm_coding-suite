@@ -114,7 +114,7 @@ if (!isStdinProtocol)
 {
     // ── Banner ───────────────────────────────────────────────────────────────
     try { Console.Clear(); } catch { }
-    UI.Header("LOCAL CODE AGENT - PM SOFTWARE", "Powered by llama.cpp + Qwen2.5");
+    UI.Header("LOCAL CODE AGENT - PM SOFTWARE", "Powered by PM LLM");
     Console.WriteLine();
 }
 
@@ -287,17 +287,28 @@ async Task<bool> RunAgentLoopAsync(
     const int maxConsecutiveReadOnly = 6;
     int consecutiveReadOnly = 0;
 
-    // Gate di build: il system prompt chiede di eseguire sol_analyze dopo modifiche .NET,
-    // ma è solo un'istruzione testuale in mezzo a un prompt lungo — il modello può
-    // semplicemente non rispettarla e dichiarare il task concluso con un file .cs che non
-    // compila. Qui si traccia deterministicamente lo stato (non affidato al prompt): ogni
-    // edit_file/write_file su un .cs marca la build come "non verificata"; sol_analyze/
-    // run_dotnet la marcano verificata (o di nuovo fallita, se trova errori). Se il modello
-    // tenta di chiudere il turno con testo libero mentre la build non è verificata, il loop
-    // sotto forza un sol_analyze automatico prima di lasciarlo rispondere.
-    bool hasUnverifiedCodeEdit = false;
+    // Gate di build: il system prompt chiede di verificare le modifiche prima di dichiararle
+    // riuscite, ma è solo un'istruzione testuale in mezzo a un prompt lungo — il modello può
+    // semplicemente non rispettarla e dichiarare il task concluso (o "la build è passata")
+    // senza aver mai chiamato un tool di verifica. Qui si traccia deterministicamente lo
+    // stato (non affidato al prompt), con due livelli:
+    //  - hasUnverifiedDotnetEdit (solo .cs): sappiamo ESATTAMENTE come verificarlo
+    //    (sol_analyze == dotnet build), quindi lo eseguiamo noi stessi in automatico.
+    //  - hasUnverifiedOtherEdit (qualunque altro file di codice: .py, .ts, .svelte, ecc.):
+    //    non conosciamo il comando di build/lint/test giusto per uno stack arbitrario, quindi
+    //    non possiamo auto-eseguirlo — ci limitiamo a IMPEDIRE la chiusura del turno finché il
+    //    modello non ha davvero chiamato run_command almeno una volta dopo la modifica.
+    bool hasUnverifiedDotnetEdit = false;
+    bool hasUnverifiedOtherEdit = false;
     var autoBuildChecks = 0;
     const int maxAutoBuildChecks = 3;
+
+    var codeExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".svelte", ".vue", ".go", ".java",
+        ".rb", ".php", ".c", ".cpp", ".h", ".hpp", ".rs", ".kt", ".swift",
+        ".html", ".scss", ".css", ".less"
+    };
 
     void TrackBuildState(string toolName, string argsJson, string result)
     {
@@ -307,14 +318,17 @@ async Task<bool> RunAgentLoopAsync(
             {
                 var el = JsonDocument.Parse(argsJson).RootElement;
                 var path = el.TryGetProperty("path", out var p) ? p.GetString() : null;
-                if (path != null && path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-                    hasUnverifiedCodeEdit = true;
+                if (path == null) return;
+                if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+                    hasUnverifiedDotnetEdit = true;
+                else if (codeExtensions.Contains(Path.GetExtension(path)))
+                    hasUnverifiedOtherEdit = true;
             }
             catch { }
         }
         else if (toolName == "sol_analyze")
         {
-            hasUnverifiedCodeEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
+            hasUnverifiedDotnetEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
         }
         else if (toolName == "run_dotnet")
         {
@@ -323,9 +337,17 @@ async Task<bool> RunAgentLoopAsync(
                 var el = JsonDocument.Parse(argsJson).RootElement;
                 var a = el.TryGetProperty("args", out var av) ? av.GetString() ?? "" : "";
                 if (Has(a, "build", "test", "run"))
-                    hasUnverifiedCodeEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
+                    hasUnverifiedDotnetEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
             }
             catch { }
+        }
+        else if (toolName == "run_command")
+        {
+            // Non possiamo sapere a priori quale sia il comando di build/lint/test corretto
+            // per uno stack non-.NET (npm run build / pytest / eslint / ...): ci basiamo sul
+            // fatto che il modello abbia REALMENTE chiamato un tool per verificare, invece di
+            // dichiarare a parole un esito mai controllato.
+            hasUnverifiedOtherEdit = false;
         }
     }
 
@@ -481,8 +503,9 @@ async Task<bool> RunAgentLoopAsync(
                 // che forza l'LLM a cambiare strategia nel prossimo giro.
                 bool isError = result.Contains("[ERROR]") ||
                                result.Contains("non trovato") ||
-                               result.Contains("fallito") ||
-                               result.Contains("ambigua");
+                               result.Contains("fallito", StringComparison.OrdinalIgnoreCase) ||
+                               result.Contains("ambigua") ||
+                               result.Contains("[ESITO: FALLITO", StringComparison.OrdinalIgnoreCase);
 
                 if (isError)
                 {
@@ -559,14 +582,14 @@ async Task<bool> RunAgentLoopAsync(
                 continue;
             }
 
-            // ── Gate di build ──────────────────────────────────────────────────
+            // ── Gate di build (.NET) ─────────────────────────────────────────────
             // Il modello sta per chiudere il turno con testo libero (niente tool call, anche
             // dopo il tentativo di recupero) mentre ha modificato almeno un .cs senza mai
             // verificarne la compilazione. Non ci fidiamo del prompt: eseguiamo sol_analyze
             // noi stessi, prima che l'utente veda una risposta che dichiara il task concluso
             // su codice che non compila. Cap a maxAutoBuildChecks per non girare all'infinito
             // se il modello non riesce a correggere gli errori.
-            if (hasUnverifiedCodeEdit && autoBuildChecks < maxAutoBuildChecks)
+            if (hasUnverifiedDotnetEdit && autoBuildChecks < maxAutoBuildChecks)
             {
                 autoBuildChecks++;
                 const string autoArgs = "{}";
@@ -585,9 +608,30 @@ async Task<bool> RunAgentLoopAsync(
                 history.Add(new ChatMessage
                 {
                     Role = "user",
-                    Content = hasUnverifiedCodeEdit
+                    Content = hasUnverifiedDotnetEdit
                         ? "[AUTO-BUILD] Hai modificato file .cs senza verificarne la build. Il controllo automatico ha trovato errori (vedi risultato sopra): correggili con edit_file. Non dichiarare il task concluso finché la build non è pulita."
                         : "[AUTO-BUILD] Hai modificato file .cs senza verificarne la build. Il controllo automatico è passato: la build è pulita. Ora rispondi all'utente con il riepilogo."
+                });
+                continue;
+            }
+
+            // ── Gate di verifica (stack non-.NET) ───────────────────────────────
+            // Per file .py/.ts/.svelte/... non conosciamo il comando di build/lint/test
+            // corretto: non possiamo auto-eseguirlo come sopra. Ci limitiamo a bloccare la
+            // chiusura del turno finché il modello non ha chiamato ESPLICITAMENTE run_command
+            // almeno una volta dopo la modifica — impedisce di dichiarare "build riuscita" o
+            // "task completato" senza aver mai davvero verificato nulla.
+            else if (hasUnverifiedOtherEdit && autoBuildChecks < maxAutoBuildChecks)
+            {
+                autoBuildChecks++;
+                UI.Dim("  [auto-check] modifiche a file di codice non verificate — richiedo verifica esplicita...");
+                history.Add(new ChatMessage
+                {
+                    Role = "user",
+                    Content = "[AUTO-CHECK] Hai modificato file di codice in questo turno ma non hai mai chiamato run_command " +
+                              "per verificarli (build/lint/test). NON dichiarare il task concluso, la build riuscita o le modifiche " +
+                              "corrette finché non hai eseguito ORA, con run_command, il comando di build/lint/test appropriato per " +
+                              "questo progetto e ne hai controllato l'esito REALE nel risultato del tool."
                 });
                 continue;
             }

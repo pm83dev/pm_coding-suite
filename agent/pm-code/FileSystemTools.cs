@@ -306,6 +306,15 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         // Vedi commento analogo in EditFile: normalizza sempre a relativo-al-workspace.
         var relPath = Path.GetRelativePath(workspace.Root, absPath).Replace('\\', '/');
 
+        if (File.Exists(absPath) && _codeExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+        {
+            var existingLines = File.ReadAllLines(absPath).Length;
+            if (existingLines > 15)
+                return $"ERRORE: write_file rifiutato — {path} esiste già ed è un file di codice di {existingLines} righe. " +
+                       "Riscriverlo per intero rischia di perdere o duplicare parti non toccate. Usa edit_file con " +
+                       "old_string/new_string mirati (max 8-10 righe) per la modifica specifica.";
+        }
+
         // La cartella va creata solo se la scrittura viene poi effettivamente accettata:
         // altrimenti un rifiuto lascerebbe una cartella vuota orfana nel workspace.
         bool Write()
@@ -410,7 +419,17 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         }
     }
 
-    private static readonly string[] _ignoredSegments = [".git", "bin", "obj", "node_modules", ".vs"];
+    private static readonly string[] _ignoredSegments =
+        [".git", "bin", "obj", "node_modules", ".vs", ".venv", "venv", "dist", "build",
+         ".svelte-kit", "__pycache__", ".pytest_cache", ".next", ".nuxt", "coverage"];
+
+    // write_file su un file di codice già esistente costringe il modello a rigenerarlo
+    // per intero a memoria: è la causa tipica di metodi duplicati/troncati quando il file
+    // supera poche righe. edit_file (diff mirato) non ha questo problema.
+    private static readonly string[] _codeExtensions =
+        [".cs", ".py", ".js", ".jsx", ".ts", ".tsx", ".svelte", ".vue", ".go", ".java",
+         ".rb", ".php", ".c", ".cpp", ".h", ".hpp", ".rs", ".kt", ".swift",
+         ".html", ".scss", ".css", ".less"];
     private static bool IsIgnored(string path) =>
         _ignoredSegments.Any(seg => path.Contains($"{Path.DirectorySeparatorChar}{seg}{Path.DirectorySeparatorChar}",
             StringComparison.OrdinalIgnoreCase));
@@ -436,9 +455,21 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         }
         catch (Exception ex) { return $"ERRORE regex non valida: {ex.Message}"; }
 
+        // Senza glob la ricerca scansiona l'intero workspace file per file: su repo grandi
+        // (es. fork di progetti web con backend+frontend) può significare decine di migliaia
+        // di file e bloccare il processo per minuti in lettura sincrona. Un tetto massimo
+        // evita lo "hang" percepito e spinge il modello a restringere con glob invece di
+        // continuare a girare a vuoto su ricerche troppo ampie.
+        const int maxCandidates = 5000;
         var candidates = string.IsNullOrEmpty(glob)
             ? Directory.GetFiles(workspace.Root, "*.*", SearchOption.AllDirectories).Where(f => !IsIgnored(f)).ToList()
             : GetGlobMatches(workspace.Root, glob);
+
+        if (string.IsNullOrEmpty(glob) && candidates.Count > maxCandidates)
+        {
+            return $"[ERROR] La ricerca senza 'glob' coprirebbe {candidates.Count} file (limite {maxCandidates}). " +
+                   "Restringi con il parametro 'glob' (es. \"**/*.svelte\", \"src/**/*.py\", \"**/*logo*\").";
+        }
 
         var fileMatches = new List<(string Path, List<int> Lines)>();
 

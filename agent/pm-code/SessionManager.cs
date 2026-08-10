@@ -139,7 +139,8 @@ public class SessionManager
             else if (msg.Role == "tool" && !string.IsNullOrWhiteSpace(content))
             {
                 var isError = content.Contains("[ERROR]") || content.Contains("ERRORE") ||
-                              content.Contains("non trovato") || content.Contains("fallito");
+                              content.Contains("non trovato") ||
+                              content.Contains("fallito", StringComparison.OrdinalIgnoreCase);
                 if (isError)
                     sb.AppendLine($"    ✗ errore: {content[..Math.Min(150, content.Length)]}");
             }
