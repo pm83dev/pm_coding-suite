@@ -484,6 +484,14 @@ async Task<bool> RunAgentLoopAsync(
             }
         }
 
+        // Uno stream che finisce senza token di contenuto né tool_calls (connessione persa
+        // a metà generazione, risposta vuota dal server) produce un ChatMessage con entrambi
+        // i campi null: serializzato, llama-server lo rifiuta con 400 "Assistant message must
+        // contain either 'content' or 'tool_calls'" — e lo rifiuta di nuovo ad ogni turno
+        // successivo perché il messaggio resta in history. Diamogli un contenuto minimo.
+        if (string.IsNullOrEmpty(message.Content) && message.ToolCalls is not { Count: > 0 })
+            message.Content = "(nessuna risposta dal modello)";
+
         history.Add(message);
 
         if (message.ToolCalls is { Count: > 0 })
