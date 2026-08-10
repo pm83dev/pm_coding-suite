@@ -7,6 +7,23 @@ namespace LocalCodeAgent.Tools;
 
 public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bool>? proposeWrite = null)
 {
+    // Invariante stile Claude Code: non si modifica alla cieca un file mai visto in questa
+    // conversazione. read_file/read_file_range lo aggiungono qui; edit_file lo richiede
+    // sempre, write_file lo richiede quando il file esiste già (per un file nuovo non c'è
+    // nulla da leggere prima). Si azzera insieme alla cache in ToolDispatcher.ClearCache()
+    // (/reset, /cd, nuova chat) — altrimenti un file letto in una conversazione precedente
+    // risulterebbe "già visto" anche dopo un reset di contesto.
+    private readonly HashSet<string> _readPaths = new(StringComparer.OrdinalIgnoreCase);
+
+    public void ClearReadCache() => _readPaths.Clear();
+
+    private string? RequireRead(string path, string absPath)
+    {
+        if (_readPaths.Contains(absPath)) return null;
+        return $"ERRORE: {path} non è stato letto in questa conversazione. " +
+               "Chiama read_file su questo path prima di modificarlo — non modificare codice che non hai visto.";
+    }
+
     // In modalità CLI/REPL (proposeWrite == null) scrive subito su disco, comportamento
     // invariato rispetto a prima. In modalità --stdin-protocol, Program.cs inietta un
     // delegate che emette edit_proposal (con path RELATIVO, come lo intende l'extension
@@ -189,6 +206,8 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
             return $"File non trovato: {path}";
         }
 
+        _readPaths.Add(absPath);
+
         var lines = File.ReadAllLines(absPath);
         var totalLines = lines.Length;
 
@@ -253,6 +272,8 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         if (!File.Exists(absPath))
             return $"File non trovato: {path}";
 
+        if (RequireRead(path, absPath) is { } notRead) return notRead;
+
         var content = File.ReadAllText(absPath);
 
         // Normalizza i terminatori di riga: read_file mostra le righe senza \r,
@@ -306,13 +327,18 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         // Vedi commento analogo in EditFile: normalizza sempre a relativo-al-workspace.
         var relPath = Path.GetRelativePath(workspace.Root, absPath).Replace('\\', '/');
 
-        if (File.Exists(absPath) && _codeExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+        if (File.Exists(absPath))
         {
-            var existingLines = File.ReadAllLines(absPath).Length;
-            if (existingLines > 15)
-                return $"ERRORE: write_file rifiutato — {path} esiste già ed è un file di codice di {existingLines} righe. " +
-                       "Riscriverlo per intero rischia di perdere o duplicare parti non toccate. Usa edit_file con " +
-                       "old_string/new_string mirati (max 8-10 righe) per la modifica specifica.";
+            if (RequireRead(path, absPath) is { } notRead) return notRead;
+
+            if (_codeExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+            {
+                var existingLines = File.ReadAllLines(absPath).Length;
+                if (existingLines > 15)
+                    return $"ERRORE: write_file rifiutato — {path} esiste già ed è un file di codice di {existingLines} righe. " +
+                           "Riscriverlo per intero rischia di perdere o duplicare parti non toccate. Usa edit_file con " +
+                           "old_string/new_string mirati (max 8-10 righe) per la modifica specifica.";
+            }
         }
 
         // La cartella va creata solo se la scrittura viene poi effettivamente accettata:
@@ -667,6 +693,8 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         var absPath = workspace.Resolve(path);
 
         if (!File.Exists(absPath)) return $"File non trovato: {path}";
+
+        _readPaths.Add(absPath);
 
         var lines = File.ReadAllLines(absPath);
         int start = Math.Max(0, startLine - 1);

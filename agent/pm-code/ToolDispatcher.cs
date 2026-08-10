@@ -108,7 +108,11 @@ public class ToolDispatcher
     private static bool Has(string s, params string[] kw) =>
         kw.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase));
 
-    public void ClearCache() => _fileCache.Clear();
+    public void ClearCache()
+    {
+        _fileCache.Clear();
+        _fs.ClearReadCache();
+    }
 
     public void ResetCwd() => _terminal.ResetCwd();
 
