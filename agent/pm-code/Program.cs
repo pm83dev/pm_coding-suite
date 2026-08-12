@@ -484,6 +484,13 @@ async Task<bool> RunAgentLoopAsync(
             }
         }
 
+        // Alcuni modelli (es. Kimi-Linear) scrivono le tool call nel proprio formato nativo
+        // "functions.nome:indice{...}" invece che nel campo tool_calls OpenAI-standard, quando
+        // llama-server non riconosce il loro chat_format e non le traduce. Va tentato PRIMA del
+        // guard sotto, altrimenti un messaggio con solo la tool call testuale (Content non vuoto
+        // ma privo di ToolCalls) passerebbe come risposta finale invece di essere eseguito.
+        message.TryExtractFallbackToolCalls();
+
         // Uno stream che finisce senza token di contenuto né tool_calls (connessione persa
         // a metà generazione, risposta vuota dal server) produce un ChatMessage con entrambi
         // i campi null: serializzato, llama-server lo rifiuta con 400 "Assistant message must
