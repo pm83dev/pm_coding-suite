@@ -82,6 +82,9 @@ export async function handleChatRequest(
 
   stream.progress('Elaborazione richiesta…');
 
+  // request.model.id è il modello scelto dall'utente nel picker nativo di VS Code
+  // (in alto nella vista Chat) — inoltrato per-turno all'agent .NET, che lo usa al
+  // posto del default di appsettings.json se coincide con un nome noto al server LLM.
   try {
     await agent.sendRequest(request.prompt, agentContext, (event: Exclude<AgentEvent, { type: 'done' }>) => {
       switch (event.type) {
@@ -103,7 +106,7 @@ export async function handleChatRequest(
           void handleEditProposal(event.path, event.content, stream);
           break;
       }
-    }, token);
+    }, token, request.model.id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     stream.markdown(`\n\n⚠️ **Errore comunicando con PM Code Agent:** ${msg}`);

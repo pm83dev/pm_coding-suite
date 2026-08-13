@@ -16,7 +16,10 @@ public class LlamaClient
         DefaultIgnoreCondition      = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
-    public string Model { get; }
+    // Settable (non solo da costruttore): in modalità --stdin-protocol l'extension può
+    // inoltrare per-turno il modello scelto dall'utente nel picker nativo di VS Code,
+    // sovrascrivendo il default di appsettings.json senza dover ricreare il client.
+    public string Model { get; set; }
 
     public LlamaClient(string baseUrl, string model)
     {

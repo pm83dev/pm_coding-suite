@@ -73,6 +73,7 @@ export class AgentProcess {
     context: AgentContextMessage[],
     onEvent: (event: Exclude<AgentEvent, { type: 'done' }>) => void,
     token: vscode.CancellationToken,
+    model?: string,
   ): Promise<void> {
     const proc = this.ensureStarted();
     const rl = this.rl!;
@@ -128,7 +129,7 @@ export class AgentProcess {
       rl.on('line', onLine);
       proc.once('exit', onExit);
 
-      const requestLine = JSON.stringify({ type: 'request', prompt, context });
+      const requestLine = JSON.stringify({ type: 'request', prompt, context, model });
       proc.stdin.write(requestLine + '\n');
     });
   }

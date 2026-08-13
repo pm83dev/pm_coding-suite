@@ -723,6 +723,13 @@ async Task RunStdinProtocolAsync()
 
             var prompt = root.TryGetProperty("prompt", out var p) ? p.GetString() ?? "" : "";
 
+            // Modello scelto dall'utente nel picker nativo di VS Code (request.model),
+            // inoltrato dall'extension per questo turno. Se assente o vuoto si ricade sul
+            // default di appsettings.json: senza reset esplicito, un modello richiesto in un
+            // turno precedente resterebbe attivo anche dopo che l'utente è tornato al default.
+            var requestedModel = root.TryGetProperty("model", out var m) ? m.GetString() : null;
+            llm.Model = string.IsNullOrWhiteSpace(requestedModel) ? model : requestedModel;
+
             var contextMessages = new List<ChatMessage>();
             if (root.TryGetProperty("context", out var ctxEl) && ctxEl.ValueKind == JsonValueKind.Array)
             {
