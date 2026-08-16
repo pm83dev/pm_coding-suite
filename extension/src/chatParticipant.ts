@@ -1,7 +1,15 @@
 import * as vscode from 'vscode';
 import { AgentContextMessage, AgentEvent, AgentProcess, getAgentProcess } from './agentProcess';
+import { loadCopilotModelEndpoints } from './copilotModels';
 import { EditProposalProvider } from './editProposalProvider';
 import { applyProposedEdits } from './edits';
+
+let globalStorageUri: vscode.Uri | undefined;
+
+/** Registrato in extension.ts: serve a risalire al profilo VS Code attivo (vedi copilotModels.ts). */
+export function setGlobalStorageUri(uri: vscode.Uri): void {
+  globalStorageUri = uri;
+}
 
 /** Rilegge la config e restituisce/spawna il processo agent condiviso per questa sessione. */
 function getCurrentAgentProcess(): AgentProcess | undefined {
@@ -61,7 +69,7 @@ export async function handleChatRequest(
   if (!agentPath) {
     stream.markdown(
       '⚠️ Nessun percorso configurato per PM Code Agent. Imposta `pmChat.agentPath` ' +
-        'nelle impostazioni di VS Code (percorso di `pm-code.exe`).',
+        'nelle impostazioni di VS Code (percorso dell\'eseguibile `pm-code`).',
     );
     stream.button({
       command: 'workbench.action.openSettings',
@@ -85,6 +93,17 @@ export async function handleChatRequest(
   // request.model.id è il modello scelto dall'utente nel picker nativo di VS Code
   // (in alto nella vista Chat) — inoltrato per-turno all'agent .NET, che lo usa al
   // posto del default di appsettings.json se coincide con un nome noto al server LLM.
+  //
+  // Modelli diversi possono essere serviti da server llama-server DIVERSI (setup
+  // multi-macchina/multi-GPU): il solo campo "model" non basta, serve anche l'URL
+  // giusto. Letto automaticamente da chatLanguageModels.json (la stessa config che
+  // Copilot Chat usa per il picker nativo — vedi copilotModels.ts), con eventuale
+  // override manuale da pmChat.modelEndpoints. Se il modello scelto non è in nessuna
+  // delle due mappe, l'agent ricade sull'endpoint di default di appsettings.json.
+  const autoEndpoints = globalStorageUri ? await loadCopilotModelEndpoints(globalStorageUri) : {};
+  const manualEndpoints = config.get<Record<string, string>>('modelEndpoints', {});
+  const endpoint = manualEndpoints[request.model.id] ?? autoEndpoints[request.model.id];
+
   try {
     await agent.sendRequest(request.prompt, agentContext, (event: Exclude<AgentEvent, { type: 'done' }>) => {
       switch (event.type) {
@@ -106,7 +125,7 @@ export async function handleChatRequest(
           void handleEditProposal(event.path, event.content, stream);
           break;
       }
-    }, token, request.model.id);
+    }, token, request.model.id, endpoint);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     stream.markdown(`\n\n⚠️ **Errore comunicando con PM Code Agent:** ${msg}`);

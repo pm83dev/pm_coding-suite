@@ -2,7 +2,7 @@
   "name": "pm-chat-participant",
   "displayName": "PM Chat Participant (Local LLM)",
   "description": "Chat participant frontend per PM Code Agent (tool calling delegato all'agent .NET locale)",
-  "version": "2.0.6",
+  "version": "2.0.8",
   "publisher": "pm-software-automation",
   "engines": {
     "vscode": "^1.125.0"
@@ -22,7 +22,15 @@
           "pmChat.agentPath": {
             "type": "string",
             "default": "",
-            "description": "Percorso eseguibile di PM Code Agent (pm-code.exe), avviato in modalità --stdin-protocol. Obbligatorio per usare @pm."
+            "description": "Percorso eseguibile di PM Code Agent (pm-code.exe su Windows, pm-code su Linux/macOS), avviato in modalità --stdin-protocol. Obbligatorio per usare @pm."
+          },
+          "pmChat.modelEndpoints": {
+            "type": "object",
+            "default": {},
+            "description": "Override opzionale id-modello → URL del server llama-server che lo serve. Di norma NON serve impostarla: l'estensione legge automaticamente chatLanguageModels.json (la stessa config usata da Copilot Chat per il picker nativo) per instradare ogni richiesta al server giusto. Usa questa mappa solo per aggiungere/sovrascrivere voci non presenti in quel file.",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       }

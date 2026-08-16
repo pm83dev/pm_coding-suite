@@ -1,5 +1,6 @@
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using LocalCodeAgent.Core;
 using LocalCodeAgent.Models;
@@ -8,6 +9,8 @@ namespace LocalCodeAgent.Tools;
 
 public class TerminalTools(WorkspaceContext workspace)
 {
+    // Su Windows usiamo PowerShell (già presente ovunque); su Linux/macOS bash.
+    private static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
     // Comandi esplicitamente bloccati per sicurezza
     private static readonly string[] _blocklist =
     [
@@ -63,10 +66,10 @@ public class TerminalTools(WorkspaceContext workspace)
     [
         new() { Function = new() {
             Name = "run_command",
-            Description = "Esegue comando PowerShell. La working directory persiste tra le chiamate; usa 'cd <path>' per cambiarla. Per processi che restano in esecuzione (server, watch, dev server) usa background=true: NON usare l'operatore '&' di PowerShell, che non avvia processi in background come in Bash.",
+            Description = $"Esegue un comando nella shell di sistema ({(IsWindows ? "PowerShell" : "bash")}). La working directory persiste tra le chiamate; usa 'cd <path>' per cambiarla. Per processi che restano in esecuzione (server, watch, dev server) usa background=true: NON usare l'operatore '&' della shell per eseguire in background, non ha l'effetto atteso.",
             Parameters = new { type = "object",
                 properties = new {
-                    command    = new { type = "string",  description = "Comando PowerShell da eseguire" },
+                    command    = new { type = "string",  description = $"Comando {(IsWindows ? "PowerShell" : "bash")} da eseguire" },
                     timeout_ms = new { type = "integer", description = "Timeout in ms (default 60000)" },
                     background = new { type = "boolean", description = "Se true, avvia il comando senza attendere la fine (es. dotnet run, npm start) e ritorna subito il PID" }
                 },
@@ -185,22 +188,9 @@ public class TerminalTools(WorkspaceContext workspace)
             return $"✓ cwd: {_cwd}";
         }
 
-        // PowerShell con CWD persistente e gestione Encoding.
-        // Il comando è racchiuso in & { ... } *>&1 | Out-String perché, quando stderr non è
-        // una console reale (processo .NET con redirect), PowerShell serializza gli ErrorRecord
-        // (es. da Stop-Process, Get-Process, errori non terminanti) come CLIXML invece di testo.
-        // Out-String forza il rendering testuale prima che il flusso esca dalla pipeline.
-        // Il try/catch è necessario perché un errore TERMINANTE (es. comando non trovato) blocca
-        // lo script prima che la pipe Out-String venga eseguita: l'host scrive allora il CLIXML
-        // direttamente sul vero stderr del processo, bypassando il redirect. Il catch intercetta
-        // l'eccezione e la forza comunque a testo.
-        const string scriptTemplate = "$ProgressPreference = 'SilentlyContinue'\r\nSet-Location '{0}'\r\ntry {{ & {{ {1} }} *>&1 | Out-String -Stream -Width 300 }} catch {{ $_ | Out-String -Stream }}\r\nWrite-Output \"\n{2}{3}\"";
-        var script = string.Format(scriptTemplate, _cwd.Replace("'", "''"), command, Sentinel, (Directory.Exists(_cwd) ? _cwd : "UNKNOWN"));
-        var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
-
-        var raw = RunProcess("powershell.exe",
-            $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
-            _cwd, timeoutMs);
+        var raw = IsWindows
+            ? RunCommandWindows(command, timeoutMs)
+            : RunCommandUnix(command, timeoutMs);
 
         // Estrai e aggiorna CWD dal sentinel
         var lines = raw.Split('\n').ToList();
@@ -234,31 +224,70 @@ public class TerminalTools(WorkspaceContext workspace)
         return cwdPrefix + (string.IsNullOrEmpty(finalOutput) ? "(nessun output)" : finalOutput);
     }
 
-    private string StartBackground(string command)
+    // PowerShell con CWD persistente e gestione Encoding.
+    // Il comando è racchiuso in & { ... } *>&1 | Out-String perché, quando stderr non è
+    // una console reale (processo .NET con redirect), PowerShell serializza gli ErrorRecord
+    // (es. da Stop-Process, Get-Process, errori non terminanti) come CLIXML invece di testo.
+    // Out-String forza il rendering testuale prima che il flusso esca dalla pipeline.
+    // Il try/catch è necessario perché un errore TERMINANTE (es. comando non trovato) blocca
+    // lo script prima che la pipe Out-String venga eseguita: l'host scrive allora il CLIXML
+    // direttamente sul vero stderr del processo, bypassando il redirect. Il catch intercetta
+    // l'eccezione e la forza comunque a testo.
+    private string RunCommandWindows(string command, int timeoutMs)
     {
-        var script = $"$ProgressPreference = 'SilentlyContinue'\r\nSet-Location '{_cwd.Replace("'", "''")}'\r\ntry {{ & {{ {command} }} *>&1 | Out-String -Stream -Width 300 }} catch {{ $_ | Out-String -Stream }}";
+        const string scriptTemplate = "$ProgressPreference = 'SilentlyContinue'\r\nSet-Location '{0}'\r\ntry {{ & {{ {1} }} *>&1 | Out-String -Stream -Width 300 }} catch {{ $_ | Out-String -Stream }}\r\nWrite-Output \"\n{2}{3}\"";
+        var script = string.Format(scriptTemplate, _cwd.Replace("'", "''"), command, Sentinel, (Directory.Exists(_cwd) ? _cwd : "UNKNOWN"));
         var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
 
-        var proc = new Process
+        return RunProcess("powershell.exe",
+            $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
+            _cwd, timeoutMs);
+    }
+
+    // bash -c riceve lo script come singolo elemento di argv (nessuna shell intermedia a
+    // rifare il parsing), quindi non serve escaping del comando come su Windows con
+    // -EncodedCommand. stderr è unito a stdout nello script stesso per preservare l'ordine
+    // cronologico dell'output, come *>&1 fa lato PowerShell.
+    private string RunCommandUnix(string command, int timeoutMs)
+    {
+        var cwdEscaped = _cwd.Replace("'", "'\\''");
+        var script = $"cd '{cwdEscaped}' || exit 1\n{{ {command}\n}} 2>&1\nprintf '\\n%s%s' '{Sentinel}' '{(Directory.Exists(_cwd) ? _cwd : "UNKNOWN")}'";
+
+        return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs);
+    }
+
+    private string StartBackground(string command)
+    {
+        var startInfo = new ProcessStartInfo
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
-                WorkingDirectory = _cwd,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                // Senza questo, il processo (e i suoi figli, es. npm/node) eredita l'handle
-                // stdin della console reale. Dev server come Vite (usato da "ng serve" in
-                // Angular 17+) attivano scorciatoie da tastiera interattive (r/u/h/q) chiamando
-                // SetConsoleMode sullo stdin condiviso, il che ruba l'input della console al
-                // processo host e blocca ConsoleInput.ReadInteractive senza errori visibili.
-                RedirectStandardInput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            },
-            EnableRaisingEvents = true
+            WorkingDirectory = _cwd,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            // Senza questo, il processo (e i suoi figli, es. npm/node) eredita l'handle
+            // stdin della console reale. Dev server come Vite (usato da "ng serve" in
+            // Angular 17+) attivano scorciatoie da tastiera interattive (r/u/h/q) chiamando
+            // SetConsoleMode sullo stdin condiviso, il che ruba l'input della console al
+            // processo host e blocca ConsoleInput.ReadInteractive senza errori visibili.
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
         };
+
+        if (IsWindows)
+        {
+            var script = $"$ProgressPreference = 'SilentlyContinue'\r\nSet-Location '{_cwd.Replace("'", "''")}'\r\ntry {{ & {{ {command} }} *>&1 | Out-String -Stream -Width 300 }} catch {{ $_ | Out-String -Stream }}";
+            var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+            startInfo.FileName = "powershell.exe";
+            startInfo.Arguments = $"-NoProfile -NonInteractive -EncodedCommand {encoded}";
+        }
+        else
+        {
+            startInfo.FileName = "/bin/bash";
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add(command);
+        }
+
+        var proc = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
 
         var job = new BackgroundJob { Process = proc, Command = command };
         proc.OutputDataReceived += (_, e) => { if (e.Data != null) lock (job.Output) { job.Output.AppendLine(SanitizeOutput(e.Data)); job.LastActivityUtc = DateTime.UtcNow; } };
@@ -417,20 +446,41 @@ public class TerminalTools(WorkspaceContext workspace)
 
     private static string RunProcess(string executable, string arguments, string workDir, int timeoutMs = 60_000)
     {
-        using var proc = new Process
+        var startInfo = new ProcessStartInfo
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                Arguments = arguments,
-                WorkingDirectory = workDir,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                RedirectStandardInput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
+            FileName = executable,
+            Arguments = arguments,
+            WorkingDirectory = workDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
         };
+        return RunProcess(startInfo, timeoutMs);
+    }
+
+    // Passa gli argomenti come argv (nessuna shell intermedia a rifare il parsing): evita
+    // problemi di escaping per script multilinea con virgolette annidate, es. bash -c "<script>".
+    private static string RunProcess(string executable, string[] argumentList, string workDir, int timeoutMs = 60_000)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            WorkingDirectory = workDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var a in argumentList) startInfo.ArgumentList.Add(a);
+        return RunProcess(startInfo, timeoutMs);
+    }
+
+    private static string RunProcess(ProcessStartInfo startInfo, int timeoutMs)
+    {
+        using var proc = new Process { StartInfo = startInfo };
 
         var output = new System.Text.StringBuilder();
         var errors = new System.Text.StringBuilder();

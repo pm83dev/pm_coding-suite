@@ -4,11 +4,14 @@ import {
 	handleChatRequest,
 	rejectEditProposal,
 	setEditProposalProvider,
+	setGlobalStorageUri,
 } from './chatParticipant';
 import { disposeAgentProcess } from './agentProcess';
 import { EditProposalProvider, PROPOSED_EDIT_SCHEME } from './editProposalProvider';
 
 export function activate(context: vscode.ExtensionContext) {
+	setGlobalStorageUri(context.globalStorageUri);
+
 	// ─── Chat Participant Registration ────────────────────────────────────────
 	const participant = vscode.chat.createChatParticipant(
 		'pmChat.chat',
@@ -25,7 +28,7 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('pmChat.acceptEditProposal', acceptEditProposal),
 		vscode.commands.registerCommand('pmChat.rejectEditProposal', rejectEditProposal),
 		vscode.commands.registerCommand('pmChat.restartAgent', () => {
-			// "Tasto di emergenza": uccide DAVVERO il processo pm-code.exe (non solo lo stato
+			// "Tasto di emergenza": uccide DAVVERO il processo pm-code (non solo lo stato
 			// della conversazione, come fa il reset soft su "New Chat") — utile se il processo
 			// si è pianta o è rimasto in uno stato anomalo. Riparte pulito al prossimo messaggio.
 			disposeAgentProcess();

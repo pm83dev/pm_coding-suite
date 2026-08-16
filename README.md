@@ -7,11 +7,11 @@ Estensione VS Code (`extension/`) + agente di sviluppo autonomo .NET (`agent/`) 
 ## Architettura
 
 ```
-VS Code  ──@pm──►  extension/ (TS)  ──NDJSON stdin/stdout──►  agent/ pm-code.exe (.NET)  ──HTTP──►  llama-server
+VS Code  ──@pm──►  extension/ (TS)  ──NDJSON stdin/stdout──►  agent/ pm-code (.NET)  ──HTTP──►  llama-server
                    puro frontend                              tool calling, ReAct loop           (LLM locale)
 ```
 
-- **Processo persistente per sessione**: l'estensione spawna `pm-code.exe --stdin-protocol` al primo messaggio `@pm` e lo riusa per tutti i messaggi successivi (non un processo per messaggio). Un solo processo per combinazione `agentPath` + cartella workspace aperta.
+- **Processo persistente per sessione**: l'estensione spawna `pm-code --stdin-protocol` al primo messaggio `@pm` e lo riusa per tutti i messaggi successivi (non un processo per messaggio). Un solo processo per combinazione `agentPath` + cartella workspace aperta.
 - **Protocollo**: una riga JSON per messaggio.
   - stdin (extension → agent): `{"type":"request","prompt":"...","context":[{"role":"user"|"assistant","content":"..."}]}`
   - stdout (agent → extension), streaming: `{"type":"token","text":"..."}`, `{"type":"tool_call","tool":"...","args":{...}}`, `{"type":"tool_result","tool":"...","result":"..."}`, `{"type":"edit_proposal","path":"...","content":"..."}`, `{"type":"done"}`
@@ -28,7 +28,7 @@ pm_coding-suite/
 │   └── src/
 │       ├── extension.ts            — activate/deactivate, registrazione comandi
 │       ├── chatParticipant.ts      — handler @pm, diff, applica/rifiuta
-│       ├── agentProcess.ts         — spawn/gestione processo pm-code.exe, protocollo NDJSON
+│       ├── agentProcess.ts         — spawn/gestione processo pm-code, protocollo NDJSON
 │       ├── editProposalProvider.ts — TextDocumentContentProvider per il diff
 │       ├── edits.ts                — applica un ProposedEdit come WorkspaceEdit
 │       ├── api.ts, config.ts       — legacy autocomplete (FIM), non collegati ad @pm
@@ -49,7 +49,7 @@ pm_coding-suite/
 
 - **.NET 8 SDK** (per buildare/pubblicare `agent/`)
 - **Node.js + npm** (per buildare `extension/`)
-- **llama-server.exe** in esecuzione con flag `--jinja` (NON `--chat-template`), raggiungibile all'URL configurato in `appsettings.json` (`LlmSettings:BaseUrl`)
+- **llama-server** (`llama-server.exe` su Windows) in esecuzione con flag `--jinja` (NON `--chat-template`), raggiungibile all'URL configurato in `appsettings.json` (`LlmSettings:BaseUrl`)
 - **VS Code** ≥ 1.125.0
 
 ## Build & pubblicazione
@@ -58,20 +58,30 @@ pm_coding-suite/
 
 Da `agent/pm-code/`:
 
-```powershell
+```bash
 dotnet build                        # build di sviluppo, veloce
 dotnet build -c Release             # build release
 
-# Pubblicazione eseguibile standalone self-contained (singolo file .exe):
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish-test
+# Pubblicazione eseguibile standalone self-contained (singolo file):
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish-test    # Windows
+dotnet publish -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o ./publish-test  # Linux
 ```
 
-L'output (`publish-test\pm-code.exe` + `appsettings.json` copiato accanto) è quello da puntare in `pmChat.agentPath`.
+In alternativa, `agent/publish.ps1` (Windows) / `agent/publish.sh` (Linux/macOS) fanno la stessa cosa via i publish profile `win-standalone` / `linux-standalone` di `pm-code.csproj`.
 
-**⚠️ Il file `.exe` viene bloccato mentre il processo è in esecuzione.** Se `dotnet publish` fallisce con `UnauthorizedAccessException` / "Access to the path ... is denied", un `pm-code.exe` è ancora vivo (probabilmente la sessione VS Code che stai usando). Verifica ed eventualmente terminalo prima di ripubblicare:
+L'output (`publish-test/pm-code.exe` su Windows, `publish-test/pm-code` su Linux/macOS, + `appsettings.json` copiato accanto) è quello da puntare in `pmChat.agentPath`. **Su Linux/macOS il binario deve avere il bit eseguibile** (`chmod +x publish-test/pm-code`); l'estensione tenta di impostarlo automaticamente al primo avvio se manca, ma è più affidabile farlo subito dopo la pubblicazione.
+
+**⚠️ L'eseguibile viene bloccato mentre il processo è in esecuzione.** Se `dotnet publish` fallisce con `UnauthorizedAccessException` / "Access to the path ... is denied" (Windows) o "Text file busy" (Linux), un `pm-code` è ancora vivo (probabilmente la sessione VS Code che stai usando). Verifica ed eventualmente terminalo prima di ripubblicare:
 ```powershell
+# Windows
 Get-Process pm-code -ErrorAction SilentlyContinue
 Stop-Process -Name pm-code -Force
+```
+
+```bash
+# Linux/macOS
+pgrep -a pm-code
+pkill -f pm-code
 ```
 (Attenzione: se è la sessione che stai usando tu stesso in quel momento, la interrompi — verifica prima di uccidere un processo che potrebbe essere in uso.)
 
@@ -97,7 +107,7 @@ Per iterare più velocemente in sviluppo, in alternativa al `.vsix`: `F5` da VS 
 
 ## Configurazione
 
-Unico setting VS Code richiesto: **`pmChat.agentPath`** — percorso assoluto di `pm-code.exe` (`Ctrl+,` → cerca `pmChat.agentPath`). Senza, `@pm` risponde con un avviso e un link alle impostazioni.
+Unico setting VS Code richiesto: **`pmChat.agentPath`** — percorso assoluto dell'eseguibile `pm-code` (`pm-code.exe` su Windows) (`Ctrl+,` → cerca `pmChat.agentPath`). Senza, `@pm` risponde con un avviso e un link alle impostazioni.
 
 `agent/pm-code/appsettings.json`:
 ```json
@@ -113,7 +123,7 @@ Unico setting VS Code richiesto: **`pmChat.agentPath`** — percorso assoluto di
 ## Comandi disponibili in VS Code
 
 - `@pm <messaggio>` — chat principale
-- **"+ New Chat"** (pulsante nel pannello Chat, non un comando digitato) — inizia una conversazione pulita: resetta history, piano (todo), cache dei file letti e cwd del terminale lato agent. **Non** uccide il processo `pm-code.exe`, che resta vivo.
+- **"+ New Chat"** (pulsante nel pannello Chat, non un comando digitato) — inizia una conversazione pulita: resetta history, piano (todo), cache dei file letti e cwd del terminale lato agent. **Non** uccide il processo `pm-code`, che resta vivo.
 - **Command Palette → "PM Chat: riavvia PM Code Agent"** — uccide davvero il processo e ne fa ripartire uno pulito al prossimo messaggio. Usalo se il processo si blocca in uno stato anomalo (non solo per pulire la conversazione — per quello basta "New Chat").
 - **Stop** (durante una risposta in corso) — termina il processo dell'agent (hard stop): non esiste un modo "morbido" di interrompere un turno già in corso, quindi si perde la history accumulata in quel turno specifico. Il prossimo messaggio fa ripartire un processo pulito.
 - Non esistono comandi `/exit` o `/new` digitabili in chat — se scritti vengono inviati come testo letterale al prompt.
@@ -123,7 +133,7 @@ Unico setting VS Code richiesto: **`pmChat.agentPath`** — percorso assoluto di
 - **Memoria tra i turni**: nella stessa conversazione (stessa chat, `context` non vuoto), l'agent mantiene l'intera history nel processo tra un messaggio e l'altro — inclusi i tool call passati. Questo gli dà "memoria" di azioni fatte in turni precedenti (es. un file di workaround creato prima). Su chat nuova, la history si resetta.
 - **Todo list (`manage_todo`)**: per task multi-step il modello può creare/aggiornare un piano esplicito (checklist ✅/🔄/⬜), mostrato in chat. Persiste per la conversazione, si azzera su nuova chat.
 - **Anti-loop**: blocca chiamate identiche ripetute (>3 volte stesso tool+argomenti) e, separatamente, forza una decisione dopo 6 tool call di sola lettura consecutivi senza un'azione concreta (per evitare che il modello "rimugini" all'infinito senza mai agire).
-- **Job in background**: comandi lanciati con `run_command background=true` (es. `dotnet run`, `ng serve`) restano tracciati dall'agent (`list_background_jobs`, `stop_background_job`, `get_background_output`). Se il processo `pm-code.exe` viene riavviato (vedi comando restart sopra), questa lista si azzera in memoria ma i processi reali restano vivi, "orfani" — vanno fermati manualmente (`Get-Process` / `Stop-Process`, o per porta con `Get-NetTCPConnection -LocalPort <porta>`).
+- **Job in background**: comandi lanciati con `run_command background=true` (es. `dotnet run`, `ng serve`) restano tracciati dall'agent (`list_background_jobs`, `stop_background_job`, `get_background_output`). Se il processo `pm-code` viene riavviato (vedi comando restart sopra), questa lista si azzera in memoria ma i processi reali restano vivi, "orfani" — vanno fermati manualmente (`Get-Process`/`Stop-Process`, o per porta con `Get-NetTCPConnection -LocalPort <porta>` su Windows; `pgrep`/`pkill`, o per porta con `lsof -i :<porta>` su Linux/macOS).
 - **Diff per file nuovi**: se l'agent propone di creare un file che non esiste ancora, non c'è un "prima" da confrontare — l'estensione mostra un bottone "Visualizza anteprima" invece del diff.
 
 ## Conflitti tra estensioni
@@ -132,8 +142,14 @@ Unico setting VS Code richiesto: **`pmChat.agentPath`** — percorso assoluto di
 
 ## Debug rapido del protocollo (senza VS Code)
 
-Utile per isolare se un problema è nell'agent o nell'estensione — invia una richiesta NDJSON direttamente all'exe pubblicato:
+Utile per isolare se un problema è nell'agent o nell'estensione — invia una richiesta NDJSON direttamente all'eseguibile pubblicato:
 ```powershell
+# Windows
 echo '{"type":"request","prompt":"ciao","context":[]}' | .\publish-test\pm-code.exe --stdin-protocol
+```
+
+```bash
+# Linux/macOS
+echo '{"type":"request","prompt":"ciao","context":[]}' | ./publish-test/pm-code --stdin-protocol
 ```
 Lo stdout deve contenere **solo** righe JSON valide (`token`/`tool_call`/`tool_result`/`edit_proposal`/`done`); qualunque altra riga lì è un bug di logging finito sul canale sbagliato.

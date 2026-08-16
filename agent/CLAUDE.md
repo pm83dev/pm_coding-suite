@@ -10,14 +10,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 All commands are run from `pm-code/`:
 
-```powershell
+```bash
 dotnet build                        # Debug build
 dotnet build -c Release             # Release build
 dotnet run                          # Run the agent REPL
-dotnet publish -c Release -r win-x64 --self-contained true  # Publish standalone exe
+dotnet publish -c Release -r win-x64 --self-contained true    # Publish standalone exe (Windows)
+dotnet publish -c Release -r linux-x64 --self-contained true  # Publish standalone binary (Linux)
 ```
 
-**Prerequisites**: llama-server.exe must be running on port 9000 (or the URL configured in `appsettings.json`). The server requires `--jinja` flag — do NOT use `--chat-template`.
+Or use `agent/publish.ps1` (Windows) / `agent/publish.sh` (Linux/macOS), which wrap the `win-standalone` / `linux-standalone` publish profiles defined in `pm-code.csproj`.
+
+**Prerequisites**: llama-server (llama-server.exe on Windows, llama-server on Linux/macOS) must be running on port 9000 (or the URL configured in `appsettings.json`). The server requires `--jinja` flag — do NOT use `--chat-template`.
+
+`run_command` in `TerminalTools.cs` shells out to PowerShell on Windows and bash on Linux/macOS (detected at runtime via `RuntimeInformation.IsOSPlatform`) — the agent itself is fully cross-platform.
 
 No automated test framework exists. Validation is done through live agent interaction.
 
@@ -57,7 +62,7 @@ Tree snapshots are capped at **2 levels deep and 30 files**; `.git`, `bin`, `obj
 | Tool file | Tools provided |
 |---|---|
 | `FileSystemTools.cs` | `read_file`, `edit_file`, `write_file`, `glob_files`, `list_directory`, `search_in_files`, `search_symbol`, `create_directory`, `move_file`, `delete_file` |
-| `TerminalTools.cs` | `run_command` (PowerShell, 60s timeout), `run_dotnet`, `analyze_solution` |
+| `TerminalTools.cs` | `run_command` (PowerShell on Windows / bash on Linux/macOS, 60s timeout), `run_dotnet`, `analyze_solution` |
 | `AgentTools.cs` | `get_workspace_tree`, `get_directory_details`, `set_workspace` |
 | `GitTools.cs` | `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit`, `git_checkout` |
 

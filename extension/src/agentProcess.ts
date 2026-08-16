@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
+import * as fs from 'fs';
 import * as readline from 'readline';
 
 /**
@@ -35,6 +36,21 @@ export class AgentProcess {
 
   private ensureStarted(): cp.ChildProcessWithoutNullStreams {
     if (this.proc && !this.proc.killed) return this.proc;
+
+    // Su Linux/macOS un binario appena copiato/pubblicato spesso non ha il bit eseguibile
+    // (dotnet publish non lo imposta): senza questo lo spawn fallisce con EACCES invece
+    // di avviare l'agent.
+    if (process.platform !== 'win32') {
+      try {
+        fs.accessSync(this.agentPath, fs.constants.X_OK);
+      } catch {
+        try {
+          fs.chmodSync(this.agentPath, 0o755);
+        } catch (err) {
+          console.error(`[PM Agent] Impossibile rendere eseguibile ${this.agentPath}:`, err);
+        }
+      }
+    }
 
     // --workspace: senza questo il processo figlio erediterebbe la cwd
     // dell'Extension Host (es. la cartella di installazione di VS Code) invece
@@ -74,6 +90,7 @@ export class AgentProcess {
     onEvent: (event: Exclude<AgentEvent, { type: 'done' }>) => void,
     token: vscode.CancellationToken,
     model?: string,
+    endpoint?: string,
   ): Promise<void> {
     const proc = this.ensureStarted();
     const rl = this.rl!;
@@ -129,7 +146,7 @@ export class AgentProcess {
       rl.on('line', onLine);
       proc.once('exit', onExit);
 
-      const requestLine = JSON.stringify({ type: 'request', prompt, context, model });
+      const requestLine = JSON.stringify({ type: 'request', prompt, context, model, endpoint });
       proc.stdin.write(requestLine + '\n');
     });
   }

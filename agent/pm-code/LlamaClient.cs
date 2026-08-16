@@ -37,6 +37,15 @@ public class LlamaClient
         };
     }
 
+    // Modelli diversi possono essere serviti da server llama-server diversi (setup
+    // multi-macchina): l'extension inoltra per-turno l'URL assoluto giusto in base al
+    // modello scelto nel picker. NON tocca mai _http.BaseAddress: HttpClient lo blocca
+    // (InvalidOperationException) non appena è già partita una richiesta — mutarlo dopo
+    // il primo turno crasherebbe il processo con un'eccezione non gestita. Passare l'URL
+    // assoluto per-richiesta (vedi ChatAsync/StreamChatAsync) bypassa BaseAddress invece
+    // di modificarlo, quindi resta sicuro chiamarlo ad ogni turno.
+    public string? EndpointOverride { get; set; }
+
     public async Task<bool> HealthCheckAsync()
     {
         try { return (await _http.GetAsync("/v1/models")).IsSuccessStatusCode; }
@@ -49,7 +58,7 @@ public class LlamaClient
     {
         request.Model  = Model;
         request.Stream = false;
-        var resp = await _http.PostAsJsonAsync("/v1/chat/completions", request, _json);
+        var resp = await _http.PostAsJsonAsync(EndpointOverride ?? "/v1/chat/completions", request, _json);
         resp.EnsureSuccessStatusCode();
         return JsonSerializer.Deserialize<ChatResponse>(
             await resp.Content.ReadAsStringAsync(), _json);
@@ -68,7 +77,7 @@ public class LlamaClient
         request.Model  = Model;
         request.Stream = true;
 
-        using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions");
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, EndpointOverride ?? "/v1/chat/completions");
         httpReq.Content = JsonContent.Create(request, options: _json);
         httpReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 

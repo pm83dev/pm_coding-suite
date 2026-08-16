@@ -162,8 +162,9 @@ string BuildSystemPrompt()
           chiama SEMPRE run_command con background=true. Senza background=true il tool va in timeout dopo 60s e il comando viene ucciso.
           Mai usare l'operatore '&' di PowerShell per eseguire in background: non ha questo effetto.
           Dopo l'avvio, usa get_background_output con il PID restituito per leggere i log e verificare che il processo sia partito correttamente.
-        - run_command esegue su Windows PowerShell 5.1: NON supporta gli operatori '&&' e '||'. Usa ';' per separare comandi sequenziali,
-          oppure due chiamate separate a run_command se il secondo comando deve eseguire solo se il primo ha successo.
+        - {(OperatingSystem.IsWindows()
+            ? "run_command esegue su Windows PowerShell 5.1: NON supporta gli operatori '&&' e '||'. Usa ';' per separare comandi sequenziali, oppure due chiamate separate a run_command se il secondo comando deve eseguire solo se il primo ha successo."
+            : "run_command esegue su bash: puoi usare '&&' e '||' per concatenare comandi condizionalmente.")}
         - Dopo [ESITO: SUCCESSO]: rispondi all'utente, niente altri step.
         - Non ripetere mai lo stesso tool call con gli stessi argomenti.
         - Modifiche minimali; no pattern/astrazioni non richiesti.
@@ -729,6 +730,17 @@ async Task RunStdinProtocolAsync()
             // turno precedente resterebbe attivo anche dopo che l'utente è tornato al default.
             var requestedModel = root.TryGetProperty("model", out var m) ? m.GetString() : null;
             llm.Model = string.IsNullOrWhiteSpace(requestedModel) ? model : requestedModel;
+
+            // Endpoint del server llama-server che serve il modello scelto (se diverso dal
+            // default): l'extension lo risolve da chatLanguageModels.json in base al modello.
+            // Senza questo, un modello servito da una macchina diversa da quella di default
+            // riceverebbe comunque le richieste sul server sbagliato. EndpointOverride (non
+            // BaseAddress) perché HttpClient vieta di modificare BaseAddress dopo la prima
+            // richiesta già inviata.
+            var requestedEndpoint = root.TryGetProperty("endpoint", out var e) ? e.GetString() : null;
+            llm.EndpointOverride = string.IsNullOrWhiteSpace(requestedEndpoint) ? null : requestedEndpoint;
+
+            Console.Error.WriteLine($"[stdin-protocol] Turno → modello '{llm.Model}', endpoint '{llm.EndpointOverride ?? serverUrl}'");
 
             var contextMessages = new List<ChatMessage>();
             if (root.TryGetProperty("context", out var ctxEl) && ctxEl.ValueKind == JsonValueKind.Array)
