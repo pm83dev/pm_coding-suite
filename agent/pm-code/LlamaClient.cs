@@ -6,8 +6,26 @@ using LocalCodeAgent.Models;
 
 namespace LocalCodeAgent.Core;
 
+/// <summary>
+/// Sollevata quando gli argomenti di una tool call in streaming superano
+/// <see cref="LlamaClient.MaxToolCallArgsLength"/> prima che la generazione finisca — segnale che
+/// il modello sta scrivendo un intero file/blocco di codice in una sola tool call invece di usare
+/// blocchi piccoli, destinato comunque a fallire con un errore 500 di JSON troncato lato server.
+/// </summary>
+public sealed class ToolCallTooLargeException(string toolName, int length) : Exception(
+    $"Tool call '{toolName}' interrotta: argomenti oltre {length} caratteri prima del completamento " +
+    "(probabile write_file/edit_file con un intero file/blocco di codice in una sola chiamata).")
+{
+    public string ToolName { get; } = toolName;
+}
+
 public class LlamaClient
 {
+    // Soglia di sicurezza per interrompere in anticipo una tool call che sta accumulando
+    // troppi caratteri (vedi ToolCallTooLargeException) — leggermente sopra il limite di 2000
+    // caratteri imposto da FileSystemTools per assorbire l'overhead di escaping JSON.
+    private const int MaxToolCallArgsLength = 3000;
+
     private readonly HttpClient _http;
 
     private static readonly JsonSerializerOptions _json = new()
@@ -134,6 +152,14 @@ public class LlamaClient
                     if (tc.Id   != null) builder.Id   = tc.Id;
                     if (tc.Function?.Name      != null) builder.Name = tc.Function.Name;
                     if (tc.Function?.Arguments != null) builder.Args.Append(tc.Function.Arguments);
+
+                    // Un file di codice generato per intero dentro write_file/edit_file supera
+                    // sempre il budget di token della risposta a metà stringa JSON: llama-server
+                    // risponde 500 solo DOPO aver generato fino al limite (minuti sprecati). Qui
+                    // interrompiamo la connessione non appena gli argomenti accumulati superano
+                    // la soglia di sicurezza, invece di aspettare il fallimento a fine generazione.
+                    if (builder.Args.Length > MaxToolCallArgsLength)
+                        throw new ToolCallTooLargeException(builder.Name, builder.Args.Length);
                 }
             }
         }

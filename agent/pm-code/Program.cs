@@ -457,6 +457,22 @@ async Task<bool> RunAgentLoopAsync(
                 if (onToken == null && streamedContent) Console.WriteLine();
                 break; // risposta ricevuta con successo
             }
+            catch (ToolCallTooLargeException ex)
+            {
+                // Interruzione preventiva lato client (vedi LlamaClient.StreamChatAsync): niente
+                // attesa di minuti per un fallimento 500 garantito — la stessa correzione della
+                // tool call troppo grande, ma quasi istantanea.
+                UI.Error($"Tool call '{ex.ToolName}' interrotta: troppo grande, avrebbe fallito comunque.");
+                UI.Dim("  → Il modello ha tentato di scrivere un intero file/blocco di codice in una sola tool call.");
+                history.Add(ChatMessage.User(
+                    $"ERRORE: la tool call '{ex.ToolName}' è stata interrotta perché il contenuto generato superava " +
+                    "la soglia di sicurezza prima ancora di essere completo — avrebbe comunque fallito con un errore " +
+                    "500 di JSON troncato lato server. Riprendi il task usando SOLO edit_file con new_string di MAX " +
+                    "8-10 righe (max 2000 caratteri), una funzione/metodo o un piccolo blocco alla volta. " +
+                    "Se devi creare un file da zero: prima write_file con SOLO lo scheletro minimo (max 2000 caratteri), " +
+                    "poi edit_file ripetutamente per aggiungere il resto un pezzo alla volta."));
+                return false;
+            }
             catch (HttpRequestException ex)
             {
                 var isJsonError = ex.Message.Contains("parse tool call") ||

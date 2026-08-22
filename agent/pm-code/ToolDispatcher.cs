@@ -76,6 +76,7 @@ public class ToolDispatcher
         // Core — sempre inclusi (operazioni file + ricerca + workspace + build + shell)
         defs.AddRange(_fs.Definitions.Where(t => t.Function.Name is
             "read_file" or "edit_file" or "write_file" or
+            "read_file" or
             "search_in_files" or "sym_search" or "glob_files" or
             "read_file_range"));
         defs.AddRange(_todo.Definitions);
