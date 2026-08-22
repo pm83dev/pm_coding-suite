@@ -154,8 +154,11 @@ string BuildSystemPrompt()
         - Non leggere file .sln/.slnx.
         - Usa SEMPRE edit_file per modificare file esistenti (mai write_file sull'intero file).
         - edit_file: old_string deve contenere MAX 8-10 righe — non copiare interi metodi o classi.
-        - write_file: SOLO per file di testo semplice (config, markdown, plain text). MAI per file con codice C# che contiene virgolette, $"...", [Attributi("...")], ecc.
-        - Per creare un file C# con codice: 1) write_file con struttura base (namespace + classe vuota), 2) edit_file per aggiungere metodi uno alla volta.
+        - edit_file: new_string NON può superare 2000 caratteri (limite rigido, la chiamata viene rifiutata oltre) — aggiungi UNA funzione/metodo o un piccolo blocco alla volta, mai più blocchi insieme.
+        - LIMITE RIGIDO write_file: il campo "content" NON può MAI superare 60 righe / 2000 caratteri, qualunque sia il linguaggio. Se il file da creare è più lungo (es. un componente con più di 2-3 metodi):
+          1) chiama write_file SOLO con lo scheletro minimo (import essenziali, dichiarazione classe/componente vuota, max 2000 caratteri);
+          2) poi chiama edit_file ripetutamente, UNA aggiunta alla volta (un metodo o un blocco piccolo per chiamata), per costruire il resto del file.
+          Non tentare mai di scrivere un intero file grande con un solo write_file: oltre il limite la generazione viene troncata e la tool call fallisce (JSON non valido, errore 500).
         - Se old_string non è univoco aggiungi contesto circostante.
         - Dopo modifiche .NET: esegui sol_analyze (non run_dotnet build).
         - Comandi che restano in esecuzione e non terminano da soli (dotnet run, npm start, ng serve, server di sviluppo, watch):
@@ -187,6 +190,20 @@ string BuildSystemPrompt()
         - REVISIONE/ANALISI DI CODICE (task tipo "controlla questo file", "trova bug", "rivedi la logica"): non affermare MAI che un problema esiste basandoti su pattern generici o su cosa ricordi da una lettura di turni precedenti. Per OGNI problema che segnali: (1) chiama read_file/read_file_range in QUESTO turno sulla riga esatta prima di scriverne, (2) cita nella risposta il testo letterale della riga come appare nel risultato del tool (con il numero di riga che il tool restituisce, mai un numero stimato a memoria), (3) se vicino al codice c'è un commento che ne spiega il motivo, non segnalarlo come bug a meno che tu non abbia uno scenario concreto (input/stato → output sbagliato o crash) che lo contraddice — "sembra rischioso" non è un problema, è una sensazione. Se non riesci a soddisfare questi tre punti per un presunto problema, non riportarlo.
         - GIT COMMIT: chiama git_add/git_commit SOLO se l'utente lo ha chiesto esplicitamente in questo turno (es. "fai il commit", "committa"). Non committare mai come passo automatico alla fine di un task di modifica codice, anche se il task è concluso con successo — l'utente potrebbe voler rivedere le modifiche prima. Stessa cautela per git_checkout con create_new=true (crea un branch): solo su richiesta esplicita.
         - PRIMA DI DICHIARARE QUALCOSA "MANCANTE" O "NON IMPLEMENTATO" (una funzione, un tool, una classe): non basarti sul contenuto di UN SOLO file o di UN SOLO documento — cerca nell'intero progetto con search_in_files o glob_files (es. per nome della funzione/tool) prima di concludere che non esiste. Un file .md che descrive un'architettura può essere un riferimento/blueprint generico scritto in un altro momento, non la specifica sincronizzata dell'implementazione reale: se hai un dubbio su cosa rappresenti un documento, dillo esplicitamente invece di trattarlo come fonte di verità. Se hai un'ipotesi non verificata ("potrebbe essere altrove"), verificala TU con un tool prima di scriverla come conclusione — non lasciarla come domanda aperta all'utente quando hai già gli strumenti per rispondere da solo.
+
+        STANDARD DI QUALITÀ DEL CODICE (sei un senior software engineer, non un bozzettista):
+        - Scrivi codice production-grade al primo colpo, non abbozzi da rifinire dopo.
+        - COERENZA COMMENTO-CODICE: ogni commento che descrive un comportamento ("gestisce X", "permette Y", "assicura Z") deve corrispondere esattamente al codice sottostante. Rileggi la riga dopo ogni commento: se c'è discrepanza, correggi il codice o il commento — non lasciarli in contraddizione.
+        - SIMULAZIONE TEMPORALE: non limitarti a soddisfare i requisiti uno per uno in isolamento. Immagina il sistema in esecuzione per ore/giorni, con più cicli di retry, riconnessione o iterazioni. Chiediti "cosa succede la seconda volta che questo percorso viene eseguito?" — una sottoscrizione va ripulita prima di essere ricreata, un buffer va svuotato prima di riusarlo, un token va invalidato prima del refresh.
+        - NESSUN TODO SILENZIOSO: se una parte del requisito non è implementata o è solo abbozzata, segnalalo con un commento esplicito e ripetilo nella sezione "Limiti noti" finale — non lasciarlo annegato in un commento che sembra completare la spiegazione.
+        - VERIFICA MENTALE DI COMPILAZIONE: controlla che ogni using/import necessario sia presente e che ogni metodo async abbia un await effettivo al suo interno (altrimenti dichiaralo sync o giustifica perché resta async).
+        - DICHIARA LA VERSIONE: dichiara esplicitamente quale versione del framework/libreria stai assumendo e quali feature di quella versione stai usando. Se non sei sicuro che una sintassi sia disponibile in quella versione, dillo invece di usarla con sicurezza.
+        - NON MESCOLARE PARADIGMI: se dichiari un pattern moderno (Signals, standalone components, minimal API, record types), verifica che OGNI parte del codice sia coerente con quel paradigma — nessun residuo del pattern precedente (es. CommonModule + *ngFor in un componente Signals-based è un residuo, non una scelta).
+        - IL TUO TRAINING HA UN CUTOFF: la tua conoscenza delle versioni più recenti potrebbe essere incompleta. Su ecosistemi che evolvono rapidamente, segnala se una sintassi che usi potrebbe essere cambiata in versioni più recenti di quelle che conosci bene.
+        - LA SPECIFICA DELL'UTENTE VINCE SEMPRE: se l'utente specifica una versione o un pattern (es. "Angular 18 con Signals, niente NgRx"), quella è la fonte di verità — non tornare a pattern precedenti anche se più familiari nel tuo training.
+        - SEGNALA LE API INCERTE: se usi un metodo/flag/API di cui non sei sicuro al 100%, marcalo con "// verificare: sintassi non confermata per questa versione" invece di presentarlo come certo.
+        - ASSUNZIONI SU CONTRATTI INCOMPLETI: se un'interfaccia o un contratto fornito non espone qualcosa di cui avresti bisogno (es. unsubscribe, dispose, cleanup), dichiaralo esplicitamente invece di scrivere codice che finge di risolverlo.
+        - Quando concludi un task di scrittura/modifica codice non banale, chiudi il riepilogo finale con una riga "Limiti noti:" (2-4 righe su cosa non hai risolto, cosa hai assunto senza conferma, o dove la tua conoscenza potrebbe essere datata — scrivi "nessun limite noto rilevato" se non ce ne sono). Non serve per risposte brevi/domande dirette senza modifiche.
         """;
 }
 
@@ -260,7 +277,7 @@ List<(string Name, string ArgsJson)> TryRescueTextToolCalls(string text)
 // riflessione interna, rollover history) sia in modalità REPL (default: null → stampa su
 // Console/UI come sempre) sia in modalità --stdin-protocol (emettono eventi NDJSON).
 async Task<bool> RunAgentLoopAsync(
-    int maxTokens = 4096,
+    int maxTokens = 8192,
     Action<string>? onToken = null,
     Action<string, string>? onToolCall = null,
     Action<string, string>? onToolResult = null)
@@ -448,15 +465,15 @@ async Task<bool> RunAgentLoopAsync(
 
                 if (isJsonError)
                 {
-                    UI.Error("Errore LLM 500: JSON non valido nel tool call (virgolette nel codice).");
+                    UI.Error("Errore LLM 500: JSON non valido nel tool call (virgolette/backtick nel codice).");
                     UI.Dim("  → Il modello ha tentato write_file/edit_file con contenuto non escapabile.");
                     // Inietta un hint di recupero come prossimo turno utente
                     history.Add(ChatMessage.User(
                         "ERRORE 500: il tentativo precedente ha generato JSON non valido perché " +
-                        "il contenuto del file contiene virgolette o $\" non escapabili. " +
+                        "il contenuto del file contiene virgolette, apici o template literal (backtick, ${...}, $\") non escapabili. " +
                         "Riprendi il task usando SOLO edit_file con old_string di MAX 5-8 righe. " +
-                        "Non usare write_file per file con codice C#. " +
-                        "Se devi creare un file da zero: prima write_file con la struttura base (classe vuota), " +
+                        "Non usare write_file per file di codice (C#, TypeScript/JavaScript, ecc.) con virgolette o backtick. " +
+                        "Se devi creare un file da zero: prima write_file con la struttura base (classe/componente vuoto), " +
                         "poi edit_file per aggiungere il corpo dei metodi."));
                     return false;
                 }
@@ -782,7 +799,7 @@ async Task RunStdinProtocolAsync()
             }
 
             await RunAgentLoopAsync(
-                maxTokens: 4096,
+                maxTokens: 8192,
                 onToken: text => EmitEvent(new { type = "token", text }),
                 onToolCall: (tool, argsJson) =>
                 {
