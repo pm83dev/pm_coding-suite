@@ -2,7 +2,7 @@
   "name": "pm-chat-participant",
   "displayName": "PM Chat Participant (Local LLM)",
   "description": "Chat participant frontend per PM Code Agent (tool calling delegato all'agent .NET locale)",
-  "version": "2.0.8",
+  "version": "2.0.16",
   "publisher": "pm-software-automation",
   "engines": {
     "vscode": "^1.125.0"

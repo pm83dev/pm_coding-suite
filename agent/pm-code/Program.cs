@@ -142,6 +142,18 @@ string BuildSystemPrompt()
         Sei un agente di sviluppo software autonomo. Workspace: {workspace.Root}
         {agentsContext}
         REGOLE:
+        - LIMITE RIGIDO ASSOLUTO, NESSUNA ECCEZIONE (leggi questo prima di ogni write_file/edit_file):
+          "content" (write_file) e "new_string" (edit_file) non possono MAI superare 4000 caratteri / 100 righe —
+          la chiamata viene rifiutata a livello di codice oltre quel limite, non è un consiglio di stile.
+          Questo vale ANCHE se pensi che il file/blocco "abbia senso solo se scritto tutto insieme", ANCHE se il
+          task ti sembra semplice, ANCHE dopo che un tentativo precedente è stato rifiutato per questo motivo.
+          Per un file NUOVO più lungo di 100 righe (es. un componente con più di 2-3 metodi), l'UNICA sequenza corretta è:
+          1) write_file con SOLO lo scheletro minimo (import essenziali, dichiarazione classe/componente vuota);
+          2) poi edit_file ripetuto, UNA funzione/metodo o un piccolo blocco per chiamata, finché il file è completo.
+          Non esiste un modo per scrivere un intero file grande in una sola chiamata: oltre il limite la generazione
+          viene troncata a metà e la tool call fallisce comunque (JSON non valido, errore 500) — tentarlo spreca
+          solo tempo e step. Per modificare un file ESISTENTE usa SEMPRE edit_file (mai write_file sull'intero file);
+          old_string deve contenere MAX 8-10 righe, mai un metodo o una classe intera.
         - CRITICO: se devi leggere un altro file, eseguire un comando o chiamare un altro tool per continuare il task,
           chiamalo SUBITO nella stessa risposta — non scrivere testo che annuncia il prossimo passo ("Ora leggo X",
           "Procedo con Y", "Inizio controllando Z") senza poi chiamare davvero il tool. Una risposta di solo testo
@@ -152,13 +164,6 @@ string BuildSystemPrompt()
         - Se read_file restituisce [WARNING]: usa edit_file o leggi con start_line/end_line.
         - Per file >150 righe: usa search_in_files o glob_files per trovare la sezione, poi read_file con range.
         - Non leggere file .sln/.slnx.
-        - Usa SEMPRE edit_file per modificare file esistenti (mai write_file sull'intero file).
-        - edit_file: old_string deve contenere MAX 8-10 righe — non copiare interi metodi o classi.
-        - edit_file: new_string NON può superare 2000 caratteri (limite rigido, la chiamata viene rifiutata oltre) — aggiungi UNA funzione/metodo o un piccolo blocco alla volta, mai più blocchi insieme.
-        - LIMITE RIGIDO write_file: il campo "content" NON può MAI superare 60 righe / 2000 caratteri, qualunque sia il linguaggio. Se il file da creare è più lungo (es. un componente con più di 2-3 metodi):
-          1) chiama write_file SOLO con lo scheletro minimo (import essenziali, dichiarazione classe/componente vuota, max 2000 caratteri);
-          2) poi chiama edit_file ripetutamente, UNA aggiunta alla volta (un metodo o un blocco piccolo per chiamata), per costruire il resto del file.
-          Non tentare mai di scrivere un intero file grande con un solo write_file: oltre il limite la generazione viene troncata e la tool call fallisce (JSON non valido, errore 500).
         - Se old_string non è univoco aggiungi contesto circostante.
         - Dopo modifiche .NET: esegui sol_analyze (non run_dotnet build).
         - Comandi che restano in esecuzione e non terminano da soli (dotnet run, npm start, ng serve, server di sviluppo, watch):
@@ -280,7 +285,8 @@ async Task<bool> RunAgentLoopAsync(
     int maxTokens = 8192,
     Action<string>? onToken = null,
     Action<string, string>? onToolCall = null,
-    Action<string, string>? onToolResult = null)
+    Action<string, string>? onToolResult = null,
+    Action<string>? onStatus = null)
 {
     // Guard anti-loop: blocca chiamate identiche (stesso tool + stessi argomenti)
     // ripetute troppe volte — i modelli locali a volte ignorano il soft-block testuale
@@ -323,6 +329,66 @@ async Task<bool> RunAgentLoopAsync(
     bool hasUnverifiedOtherEdit = false;
     var autoBuildChecks = 0;
     const int maxAutoBuildChecks = 3;
+
+    // Guard per errori "recuperabili" (tool call troppo grande, JSON non valido per
+    // virgolette/backtick non escapati): il messaggio correttivo viene iniettato in history
+    // e va rimandato SUBITO al modello, senza aspettare che l'utente riscriva qualcosa —
+    // altrimenti il turno si chiude con solo il testo parziale generato prima dell'errore
+    // (es. "Ora riscrivo il componente...") e l'utente lo scambia per la risposta finale.
+    // Cap per non girare all'infinito se il modello continua a sbagliare nello stesso modo.
+    var recoverableErrorRetries = 0;
+    const int maxRecoverableErrorRetries = 3;
+
+    // Guard anti-annuncio: il system prompt vieta di scrivere "Ora faccio X" senza poi
+    // chiamare davvero il tool nella stessa risposta (vedi regola CRITICO più sopra), ma un
+    // modello quantizzato non la rispetta sempre — osservato in pratica: dopo molti step di
+    // sola lettura, la risposta finale è un annuncio testuale ("Ho tutto il necessario.
+    // Procedo con le modifiche:") SENZA alcuna tool call. Per l'utente è indistinguibile da
+    // una risposta finale legittima: il turno si chiude lì e serve scrivere di nuovo per farlo
+    // proseguire. Rilevalo euristicamente e forza un altro giro da soli, invece di aspettare
+    // l'utente. Cap basso perché è un'euristica testuale (falsi positivi possibili su una
+    // risposta finale legittima che finisce per caso con ':') — oltre il cap ci si arrende e
+    // si lascia la risposta così com'è.
+    var announcementRetries = 0;
+    const int maxAnnouncementRetries = 2;
+
+    bool LooksLikeUnfinishedAnnouncement(string text)
+    {
+        var t = text.TrimEnd();
+        if (t.Length == 0) return false;
+        if (t.Contains('?')) return false; // probabile domanda genuina all'utente, non un annuncio
+        if (t.Contains("Limiti noti", StringComparison.OrdinalIgnoreCase)) return false; // riepilogo finale vero
+
+        // Segnale più forte, indipendente dalla lunghezza del messaggio: la risposta finisce
+        // con ':' — non c'è modo che sia una risposta finale completa, per costruzione qualcosa
+        // doveva seguire (codice, un elenco, un tool). Un turno lungo (molti step di analisi
+        // prima dell'annuncio finale) supera facilmente qualunque soglia di lunghezza fissa,
+        // quindi questo controllo NON va limitato ai messaggi brevi.
+        if (t.EndsWith(':')) return true;
+
+        // Le frasi ("procedo con", "ora scrivo", ecc.) invece si cercano solo nella CODA del
+        // messaggio — non nell'intero testo, che su un turno lungo può contenere centinaia di
+        // righe di analisi legittima dove per puro caso compare una di queste parole: è l'ultima
+        // frase a decidere se il turno si è davvero chiuso con un'azione o con un annuncio.
+        var tail = t.Length > 300 ? t[^300..] : t;
+        return Regex.IsMatch(tail,
+            @"\b(procedo (con|a)|vado avanti( con)?|continuo con|nel prossimo (step|passo))\b" +
+            @"|\b(ora|adesso)\b[^.!?]{0,40}\b(riscrivo|scrivo|modifico|creo|leggo|eseguo|controllo|verifico|aggiorno|implemento|correggo|analizzo|genero)\b",
+            RegexOptions.IgnoreCase);
+    }
+
+    // I messaggi di errore/rinuncia finivano SOLO nei log dell'agente (UI.Error scrive
+    // su stderr — vedi commento sulla classe UI) e mai in chat: in modalità --stdin-protocol
+    // (onToken != null) il processo terminava il turno "in silenzio", senza alcun evento
+    // token per l'utente — la chat sembrava fermarsi nel nulla dopo le ultime tool call,
+    // indistinguibile da un crash. Usa questo per rendere visibile in chat qualunque uscita
+    // anticipata dal loop (retry esauriti, limite di step raggiunto).
+    void EmitFinalNotice(string text)
+    {
+        history.Add(new ChatMessage { Role = "assistant", Content = text });
+        if (onToken != null) onToken(text);
+        else { Console.WriteLine(); Console.Write(text); Console.WriteLine(); }
+    }
 
     var codeExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -437,6 +503,12 @@ async Task<bool> RunAgentLoopAsync(
                 if (onToken == null) Console.WriteLine();
                 UI.StepIndicator(step);
 
+                // Ping immediato appena si inizia a generare: senza questo, dopo un
+                // Applica/Rifiuta la chat resta silenziosa finché non arriva il primo token
+                // o l'intera tool call successiva è completa (può volerci molto — vedi
+                // heartbeat sotto), indistinguibile da un blocco per chi guarda la chat.
+                onStatus?.Invoke("Elaborazione in corso…");
+
                 (message, usage) = await llm.StreamChatAsync(request, token =>
                 {
                     if (!streamedContent)
@@ -452,7 +524,7 @@ async Task<bool> RunAgentLoopAsync(
                     }
                     if (onToken != null) onToken(token);
                     else Console.Write(token);
-                });
+                }, onHeartbeat: onStatus);
 
                 if (onToken == null && streamedContent) Console.WriteLine();
                 break; // risposta ricevuta con successo
@@ -468,9 +540,22 @@ async Task<bool> RunAgentLoopAsync(
                     $"ERRORE: la tool call '{ex.ToolName}' è stata interrotta perché il contenuto generato superava " +
                     "la soglia di sicurezza prima ancora di essere completo — avrebbe comunque fallito con un errore " +
                     "500 di JSON troncato lato server. Riprendi il task usando SOLO edit_file con new_string di MAX " +
-                    "8-10 righe (max 2000 caratteri), una funzione/metodo o un piccolo blocco alla volta. " +
-                    "Se devi creare un file da zero: prima write_file con SOLO lo scheletro minimo (max 2000 caratteri), " +
+                    "8-10 righe (max 4000 caratteri), una funzione/metodo o un piccolo blocco alla volta. " +
+                    "Se devi creare un file da zero: prima write_file con SOLO lo scheletro minimo (max 4000 caratteri), " +
                     "poi edit_file ripetutamente per aggiungere il resto un pezzo alla volta."));
+
+                if (recoverableErrorRetries < maxRecoverableErrorRetries)
+                {
+                    recoverableErrorRetries++;
+                    UI.Dim($"  [auto-retry {recoverableErrorRetries}/{maxRecoverableErrorRetries}] rimando subito al modello con l'istruzione correttiva...");
+                    continue;
+                }
+                UI.Error("Troppi tentativi falliti per lo stesso motivo — mi fermo, riprova scrivendo un nuovo messaggio.");
+                EmitFinalNotice(
+                    $"⚠️ Ho provato {maxRecoverableErrorRetries + 1} volte a scrivere '{ex.ToolName}' ma il contenuto generato " +
+                    "supera sempre la soglia di sicurezza per una singola tool call (probabile tentativo di scrivere un intero " +
+                    "file/componente in un colpo solo). Mi fermo qui — riprova chiedendomi esplicitamente di procedere " +
+                    "\"un pezzo alla volta\" (scheletro minimo, poi singoli metodi/blocchi con edit_file).");
                 return false;
             }
             catch (HttpRequestException ex)
@@ -491,6 +576,18 @@ async Task<bool> RunAgentLoopAsync(
                         "Non usare write_file per file di codice (C#, TypeScript/JavaScript, ecc.) con virgolette o backtick. " +
                         "Se devi creare un file da zero: prima write_file con la struttura base (classe/componente vuoto), " +
                         "poi edit_file per aggiungere il corpo dei metodi."));
+
+                    if (recoverableErrorRetries < maxRecoverableErrorRetries)
+                    {
+                        recoverableErrorRetries++;
+                        UI.Dim($"  [auto-retry {recoverableErrorRetries}/{maxRecoverableErrorRetries}] rimando subito al modello con l'istruzione correttiva...");
+                        continue;
+                    }
+                    UI.Error("Troppi tentativi falliti per lo stesso motivo — mi fermo, riprova scrivendo un nuovo messaggio.");
+                    EmitFinalNotice(
+                        $"⚠️ Ho provato {maxRecoverableErrorRetries + 1} volte ma il server continua a rifiutare il JSON generato " +
+                        "(virgolette/backtick non escapati nel contenuto del file). Mi fermo qui — riprova chiedendomi " +
+                        "esplicitamente di usare edit_file con blocchi piccoli (max 5-8 righe) invece di riscrivere l'intero file.");
                     return false;
                 }
 
@@ -551,9 +648,20 @@ async Task<bool> RunAgentLoopAsync(
                 history.Add(ChatMessage.ToolResult(tc.Id, result));
 
                 // --- LOGICA DI RIFLESSIONE POTENZIATA ---
-                // Se il risultato contiene parole chiave di errore, iniettiamo un comando di sistema 
+                // Se il risultato contiene parole chiave di errore, iniettiamo un comando di sistema
                 // che forza l'LLM a cambiare strategia nel prossimo giro.
-                bool isError = result.Contains("[ERROR]") ||
+                //
+                // BUG CRITICO CORRETTO: questo controllo non intercettava "ERRORE:" — il prefisso
+                // usato da QUASI TUTTE le validazioni di FileSystemTools (write_file/edit_file rifiutati
+                // per dimensione, file non letto, argomenti mancanti, ecc. — vedi FileSystemTools.cs).
+                // Un write_file rifiutato per limite di 2000 caratteri finiva quindi nel ramo ELSE sotto,
+                // che dice al modello "l'operazione è stata eseguita con successo" — un FALSO POSITIVO che
+                // spiega perché il modello, dopo un fallimento reale, dichiarava il task concluso con un
+                // annuncio testuale invece di correggere la tool call.
+                bool isError = result.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase) ||
+                               result.StartsWith("⚠️", StringComparison.Ordinal) ||
+                               result.StartsWith("[LOOP-BLOCK]", StringComparison.Ordinal) ||
+                               result.Contains("[ERROR]") ||
                                result.Contains("non trovato") ||
                                result.Contains("fallito", StringComparison.OrdinalIgnoreCase) ||
                                result.Contains("ambigua") ||
@@ -634,6 +742,36 @@ async Task<bool> RunAgentLoopAsync(
                 continue;
             }
 
+            // ── Guard anti-annuncio ──────────────────────────────────────────────
+            if (LooksLikeUnfinishedAnnouncement(message.Content))
+            {
+                if (announcementRetries < maxAnnouncementRetries)
+                {
+                    announcementRetries++;
+                    UI.Dim($"  [auto-continue {announcementRetries}/{maxAnnouncementRetries}] risposta rilevata come annuncio senza tool call — forzo l'esecuzione...");
+                    history.Add(new ChatMessage
+                    {
+                        Role = "user",
+                        Content = "[INTERNAL_REFLECTION]: Hai scritto un annuncio del prossimo passo (es. \"Procedo con...\") " +
+                                  "senza chiamare il tool corrispondente in questa stessa risposta. Il task NON è concluso. " +
+                                  "Chiama SUBITO ORA il tool necessario per eseguire quanto hai appena annunciato — niente altro testo di annuncio."
+                    });
+                    continue;
+                }
+
+                // Il modello ha ripetuto lo stesso annuncio senza mai eseguirlo neppure dopo
+                // maxAnnouncementRetries correzioni esplicite. Il testo del modello è già stato
+                // mostrato in streaming (onToken, sopra) mentre veniva generato — qui aggiungiamo
+                // SOLO l'avviso, senza ripeterlo, altrimenti finirebbe due volte in history
+                // (message è già stato accodato) e due volte in chat.
+                UI.Error("Il modello continua ad annunciare senza eseguire — mi fermo.");
+                EmitFinalNotice(
+                    $"⚠️ Ho corretto {maxAnnouncementRetries} volte un annuncio senza esecuzione (\"procedo con...\" " +
+                    "senza chiamare il tool), ma il modello ha ripetuto lo stesso testo. Mi fermo qui — riprova scrivendo " +
+                    "di nuovo, magari indicando esplicitamente il primo file/tool da usare.");
+                return true;
+            }
+
             // ── Gate di build (.NET) ─────────────────────────────────────────────
             // Il modello sta per chiudere il turno con testo libero (niente tool call, anche
             // dopo il tentativo di recupero) mentre ha modificato almeno un .cs senza mai
@@ -707,12 +845,12 @@ async Task<bool> RunAgentLoopAsync(
         // il chat template di Qwen3 lo rifiuta ("system/user/assistant must alternate"),
         // bloccando la chat finché non si fa /reset. Chiudiamo il turno con un messaggio
         // assistant così la history torna in uno stato valido e il task può riprendere.
-        history.Add(new ChatMessage
-        {
-            Role = "assistant",
-            Content = "Ho raggiunto il limite di step per questo turno; il task non è ancora concluso. " +
-                      "Scrivi \"continua\" per proseguire da dove ho lasciato."
-        });
+        // EmitFinalNotice lo mostra anche in chat nel turno CORRENTE — prima veniva solo
+        // accodato alla history e comparsa solo al turno successivo, lasciando la chat
+        // silenziosa esattamente come nel caso dei retry esauriti sopra.
+        EmitFinalNotice(
+            "Ho raggiunto il limite di step per questo turno; il task non è ancora concluso. " +
+            "Scrivi \"continua\" per proseguire da dove ho lasciato.");
     }
 
     return true;
@@ -824,7 +962,8 @@ async Task RunStdinProtocolAsync()
                     catch { args = argsJson; }
                     EmitEvent(new { type = "tool_call", tool, args });
                 },
-                onToolResult: (tool, result) => EmitEvent(new { type = "tool_result", tool, result }));
+                onToolResult: (tool, result) => EmitEvent(new { type = "tool_result", tool, result }),
+                onStatus: text => EmitEvent(new { type = "status", text }));
 
             EmitEvent(new { type = "done" });
         }

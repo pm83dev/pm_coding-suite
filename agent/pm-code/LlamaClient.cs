@@ -22,9 +22,9 @@ public sealed class ToolCallTooLargeException(string toolName, int length) : Exc
 public class LlamaClient
 {
     // Soglia di sicurezza per interrompere in anticipo una tool call che sta accumulando
-    // troppi caratteri (vedi ToolCallTooLargeException) — leggermente sopra il limite di 2000
+    // troppi caratteri (vedi ToolCallTooLargeException) — leggermente sopra il limite di 4000
     // caratteri imposto da FileSystemTools per assorbire l'overhead di escaping JSON.
-    private const int MaxToolCallArgsLength = 3000;
+    private const int MaxToolCallArgsLength = 6000;
 
     private readonly HttpClient _http;
 
@@ -88,9 +88,23 @@ public class LlamaClient
     /// Invia la richiesta in streaming. I token di testo vengono passati a <paramref name="onToken"/>
     /// man mano che arrivano. Restituisce il messaggio completo accumulato e i token usati.
     /// </summary>
+    // Ogni quanti secondi (min) inviare un ping di stato mentre si accumula una tool call —
+    // durante quella fase nessun token di testo arriva (vedi commento su onHeartbeat sotto),
+    // quindi senza questo la chat resta silenziosa per l'intera durata della generazione.
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Invia la richiesta in streaming. I token di testo vengono passati a <paramref name="onToken"/>
+    /// man mano che arrivano. <paramref name="onHeartbeat"/> (opzionale) viene invocato periodicamente
+    /// MENTRE si accumula una tool call — quella fase non produce alcun token di testo, quindi senza
+    /// un segnale esplicito il chiamante (chat) resta senza feedback per tutta la generazione (osservato:
+    /// 20-90+ secondi di silenzio totale dopo aver accettato/rifiutato una proposta, indistinguibile da
+    /// un blocco). Restituisce il messaggio completo accumulato e i token usati.
+    /// </summary>
     public async Task<(ChatMessage Message, Usage? Usage)> StreamChatAsync(
         ChatRequest request,
-        Action<string> onToken)
+        Action<string> onToken,
+        Action<string>? onHeartbeat = null)
     {
         request.Model  = Model;
         request.Stream = true;
@@ -113,6 +127,7 @@ public class LlamaClient
         var contentSb = new StringBuilder();
         var toolBuilders = new Dictionary<int, ToolCallBuilder>();
         Usage? usage = null;
+        var lastHeartbeat = DateTime.UtcNow;
 
         while (!reader.EndOfStream)
         {
@@ -160,6 +175,13 @@ public class LlamaClient
                     // la soglia di sicurezza, invece di aspettare il fallimento a fine generazione.
                     if (builder.Args.Length > MaxToolCallArgsLength)
                         throw new ToolCallTooLargeException(builder.Name, builder.Args.Length);
+
+                    if (onHeartbeat != null && DateTime.UtcNow - lastHeartbeat >= HeartbeatInterval)
+                    {
+                        lastHeartbeat = DateTime.UtcNow;
+                        var name = string.IsNullOrEmpty(builder.Name) ? "tool" : builder.Name;
+                        onHeartbeat($"Generazione '{name}' in corso… ({builder.Args.Length} caratteri)");
+                    }
                 }
             }
         }

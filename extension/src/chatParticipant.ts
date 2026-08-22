@@ -115,14 +115,30 @@ export async function handleChatRequest(
           break;
         case 'tool_result':
           // manage_todo restituisce già il piano formattato in markdown (checklist
-          // ✅/🔄/⬜): è l'unico tool_result che ha senso mostrare all'utente in chat,
-          // gli altri sono dettagli interni del ragionamento dell'agent.
+          // ✅/🔄/⬜): è l'unico tool_result "di successo" che ha senso mostrare per
+          // intero, gli altri sono dettagli interni del ragionamento dell'agent.
           if (event.tool === 'manage_todo') {
+            stream.markdown(`\n${event.result}\n`);
+            break;
+          }
+          // Un fallimento (validazione rifiutata, stringa ambigua, loop rilevato, ecc.)
+          // andava perso qui senza che l'utente lo vedesse mai: il tool_call mostrava
+          // "Tool: write_file…" e basta, mentre il motivo del fallimento restava solo nei
+          // log dell'agent — indistinguibile da un turno bloccato. Ogni fallimento va
+          // sempre mostrato, qualunque sia il tool.
+          if (/^(ERRORE|⚠️|\[LOOP-BLOCK\])/.test(event.result)) {
             stream.markdown(`\n${event.result}\n`);
           }
           break;
         case 'edit_proposal':
           void handleEditProposal(event.path, event.content, stream);
+          break;
+        case 'status':
+          // Ping periodico dall'agent (subito dopo un Applica/Rifiuta, e ogni ~3s mentre
+          // genera una tool call lunga): senza questo la chat resta silenziosa per l'intera
+          // generazione — nessun token visibile finché la tool call non è completa — ed è
+          // indistinguibile da un blocco per chi guarda. Vedi LlamaClient.cs (onHeartbeat).
+          stream.progress(event.text);
           break;
       }
     }, token, request.model.id, endpoint);

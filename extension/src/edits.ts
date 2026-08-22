@@ -20,8 +20,17 @@ function toUri(edit: ProposedEdit, root: vscode.Uri): vscode.Uri {
 }
 
 /**
- * Applica le modifiche proposte con un unico vscode.WorkspaceEdit
- * (quindi un solo undo, e supporto multi-file nativo).
+ * Conferma le modifiche proposte: NON scrive più i byte qui. Il processo agent (.NET)
+ * scrive sempre il file reale su disco subito dopo aver ricevuto l'edit_decision positiva
+ * (write_file e edit_file, sia in modalità CLI che --stdin-protocol — vedi ApplyOrPropose
+ * in FileSystemTools.cs). Se anche l'estensione applicasse la modifica qui con
+ * vscode.workspace.applyEdit, lascerebbe il buffer dell'editor "sporco" (modificato, non
+ * salvato) un istante prima che l'agent .NET riscriva lo stesso file dall'esterno: VS Code
+ * lo interpreta come un conflitto (file cambiato su disco + modifiche locali non salvate)
+ * e mostra il prompt di overwrite/merge — osservato soprattutto alla creazione di file
+ * nuovi. Nessuna doppia scrittura → nessun conflitto: un editor già aperto sullo stesso
+ * file viene semplicemente ricaricato in automatico da VS Code (nessun prompt, il buffer
+ * non era "sporco").
  */
 export async function applyProposedEdits(edits: ProposedEdit[]): Promise<boolean> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -29,32 +38,8 @@ export async function applyProposedEdits(edits: ProposedEdit[]): Promise<boolean
     vscode.window.showWarningMessage('PM LLM: nessun workspace aperto, impossibile applicare le modifiche.');
     return false;
   }
-
-  const wsEdit = new vscode.WorkspaceEdit();
-
-  for (const edit of edits) {
-    const uri = toUri(edit, root);
-
-    if (edit.range) {
-      const r = edit.range;
-      wsEdit.replace(
-        uri,
-        new vscode.Range(r.startLine, r.startChar, r.endLine, r.endChar),
-        edit.content,
-      );
-      continue;
-    }
-
-    // Sostituzione intero file: se esiste rimpiazza tutto, altrimenti crealo
-    try {
-      const doc = await vscode.workspace.openTextDocument(uri);
-      const fullRange = new vscode.Range(0, 0, doc.lineCount, 0);
-      wsEdit.replace(uri, fullRange, edit.content);
-    } catch {
-      wsEdit.createFile(uri, { ignoreIfExists: true });
-      wsEdit.insert(uri, new vscode.Position(0, 0), edit.content);
-    }
-  }
-
-  return vscode.workspace.applyEdit(wsEdit);
+  // Validazione path (stesso calcolo di toUri) per restituire false su un edit malformato,
+  // comportamento invariato rispetto a prima per i chiamanti (acceptEditProposal).
+  for (const edit of edits) toUri(edit, root);
+  return true;
 }

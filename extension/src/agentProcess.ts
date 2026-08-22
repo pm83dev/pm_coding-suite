@@ -18,6 +18,7 @@ export type AgentEvent =
   | { type: 'tool_call'; tool: string; args: unknown }
   | { type: 'tool_result'; tool: string; result: string }
   | { type: 'edit_proposal'; path: string; content: string }
+  | { type: 'status'; text: string }
   | { type: 'done' };
 
 /**
