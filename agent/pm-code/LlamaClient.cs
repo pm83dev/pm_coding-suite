@@ -22,9 +22,11 @@ public sealed class ToolCallTooLargeException(string toolName, int length) : Exc
 public class LlamaClient
 {
     // Soglia di sicurezza per interrompere in anticipo una tool call che sta accumulando
-    // troppi caratteri (vedi ToolCallTooLargeException) — leggermente sopra il limite di 4000
-    // caratteri imposto da FileSystemTools per assorbire l'overhead di escaping JSON.
-    private const int MaxToolCallArgsLength = 6000;
+    // troppi caratteri (vedi ToolCallTooLargeException) — leggermente sopra il limite di 16000
+    // caratteri imposto da FileSystemTools per assorbire l'overhead di escaping JSON. Con
+    // Qwen3.6-35B / Qwen3-Coder-Next in locale a 102-128K di contesto e max_tokens = 16384
+    // per turno, c'è ampio margine sotto il ceiling reale del server.
+    private const int MaxToolCallArgsLength = 20000;
 
     private readonly HttpClient _http;
 

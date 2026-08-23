@@ -143,11 +143,11 @@ string BuildSystemPrompt()
         {agentsContext}
         REGOLE:
         - LIMITE RIGIDO ASSOLUTO, NESSUNA ECCEZIONE (leggi questo prima di ogni write_file/edit_file):
-          "content" (write_file) e "new_string" (edit_file) non possono MAI superare 4000 caratteri / 100 righe —
+          "content" (write_file) e "new_string" (edit_file) non possono MAI superare 16000 caratteri / 400 righe —
           la chiamata viene rifiutata a livello di codice oltre quel limite, non è un consiglio di stile.
           Questo vale ANCHE se pensi che il file/blocco "abbia senso solo se scritto tutto insieme", ANCHE se il
           task ti sembra semplice, ANCHE dopo che un tentativo precedente è stato rifiutato per questo motivo.
-          Per un file NUOVO più lungo di 100 righe (es. un componente con più di 2-3 metodi), l'UNICA sequenza corretta è:
+          Per un file NUOVO più lungo di 400 righe (es. un componente con più di 2-3 metodi), l'UNICA sequenza corretta è:
           1) write_file con SOLO lo scheletro minimo (import essenziali, dichiarazione classe/componente vuota);
           2) poi edit_file ripetuto, UNA funzione/metodo o un piccolo blocco per chiamata, finché il file è completo.
           Non esiste un modo per scrivere un intero file grande in una sola chiamata: oltre il limite la generazione
@@ -282,7 +282,7 @@ List<(string Name, string ArgsJson)> TryRescueTextToolCalls(string text)
 // riflessione interna, rollover history) sia in modalità REPL (default: null → stampa su
 // Console/UI come sempre) sia in modalità --stdin-protocol (emettono eventi NDJSON).
 async Task<bool> RunAgentLoopAsync(
-    int maxTokens = 8192,
+    int maxTokens = 16384,
     Action<string>? onToken = null,
     Action<string, string>? onToolCall = null,
     Action<string, string>? onToolResult = null,
@@ -298,6 +298,16 @@ async Task<bool> RunAgentLoopAsync(
     // Tool di polling: rileggere lo stesso PID con gli stessi argomenti è il modo corretto
     // di attendere che un processo in background finisca di avviarsi, non un loop anomalo.
     var pollableTools = new HashSet<string> { "get_background_output", "list_background_jobs" };
+
+    // Tool di verifica (build/test/lint): rilanciare lo STESSO comando dopo ogni fix è la
+    // normale sequenza "modifica -> riverifica", non un loop — il guard anti-loop però non
+    // lo sa, perché conta solo tool+argomenti identici, e questi comandi hanno sempre gli
+    // stessi argomenti (es. "dotnet build") indipendentemente dal fatto che il codice sia
+    // cambiato. Se nel frattempo c'è stato almeno un edit_file/write_file riuscito, il
+    // conteggio per QUESTI tool riparte da zero invece di sommarsi a tentativi precedenti
+    // che si riferivano a uno stato del codice diverso.
+    var verificationTools = new HashSet<string> { "run_command", "run_dotnet", "sol_analyze" };
+    bool successfulEditSinceLastVerify = false;
 
     // Guard anti-rimuginio: il blocco sopra ferma solo le chiamate IDENTICHE, ma un modello
     // può girare a vuoto per decine di step limitandosi a ispezionare (read_file, glob_files,
@@ -401,6 +411,13 @@ async Task<bool> RunAgentLoopAsync(
     {
         if (toolName is "write_file" or "edit_file")
         {
+            // Un edit rifiutato (limite di dimensione, old_string non univoco, ecc. — vedi
+            // isError più sotto) non ha toccato il file: non deve far ripartire il conteggio
+            // anti-loop dei tool di verifica, altrimenti un modello che continua a proporre
+            // edit rifiutati "resetterebbe" il guard senza aver mai cambiato nulla sul disco.
+            if (result.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase))
+                return;
+
             try
             {
                 var el = JsonDocument.Parse(argsJson).RootElement;
@@ -410,6 +427,7 @@ async Task<bool> RunAgentLoopAsync(
                     hasUnverifiedDotnetEdit = true;
                 else if (codeExtensions.Contains(Path.GetExtension(path)))
                     hasUnverifiedOtherEdit = true;
+                successfulEditSinceLastVerify = true;
             }
             catch { }
         }
@@ -447,6 +465,13 @@ async Task<bool> RunAgentLoopAsync(
             return dispatcher.Execute(name, argsJson);
 
         var key = $"{name}|{argsJson}";
+
+        if (verificationTools.Contains(name) && successfulEditSinceLastVerify)
+        {
+            repeatCounts[key] = 0;
+            successfulEditSinceLastVerify = false;
+        }
+
         repeatCounts.TryGetValue(key, out var count);
         repeatCounts[key] = ++count;
         if (count > maxRepeats)
@@ -540,8 +565,8 @@ async Task<bool> RunAgentLoopAsync(
                     $"ERRORE: la tool call '{ex.ToolName}' è stata interrotta perché il contenuto generato superava " +
                     "la soglia di sicurezza prima ancora di essere completo — avrebbe comunque fallito con un errore " +
                     "500 di JSON troncato lato server. Riprendi il task usando SOLO edit_file con new_string di MAX " +
-                    "8-10 righe (max 4000 caratteri), una funzione/metodo o un piccolo blocco alla volta. " +
-                    "Se devi creare un file da zero: prima write_file con SOLO lo scheletro minimo (max 4000 caratteri), " +
+                    "16000 caratteri, una funzione/metodo o un piccolo blocco alla volta. " +
+                    "Se devi creare un file da zero: prima write_file con SOLO lo scheletro minimo (max 16000 caratteri), " +
                     "poi edit_file ripetutamente per aggiungere il resto un pezzo alla volta."));
 
                 if (recoverableErrorRetries < maxRecoverableErrorRetries)
@@ -672,10 +697,17 @@ async Task<bool> RunAgentLoopAsync(
                     // Ruolo "user" (non "system"): alcuni chat template (es. Qwen3) impongono che
                     // il ruolo "system" compaia SOLO come primissimo messaggio e sollevano un'eccezione
                     // Jinja ("System message must be at the beginning") se compare altrove.
+                    // Il [LOOP-BLOCK] segnala che il modello ha GIÀ ripetuto lo stesso comando
+                    // troppe volte: il generico "analizza e riprova diversamente" non basta, perché
+                    // è esattamente quello che ha ignorato per arrivare fin qui. Serve un'istruzione
+                    // che vieti esplicitamente di ripetere e suggerisca l'alternativa corretta.
+                    var reflection = result.StartsWith("[LOOP-BLOCK]", StringComparison.Ordinal)
+                        ? "[INTERNAL_REFLECTION]: Hai richiamato lo stesso comando con gli stessi argomenti troppe volte di fila senza che il risultato cambiasse. NON ripetere lo stesso comando. Se stai verificando una modifica .NET usa sol_analyze (mai run_command/dotnet build). Se il comando è corretto ma l'errore persiste, il problema non è nel comando: rileggi l'output con attenzione, controlla se le tue modifiche precedenti sono state davvero applicate (es. rileggi il file), e correggi la causa reale — oppure fermati e spiega all'utente cosa hai provato e dove sei bloccato."
+                        : "[INTERNAL_REFLECTION]: L'operazione precedente ha fallito o è stata ambigua. Analizza il motivo (percorso errato? stringa non univoca? file mancante?) e proponi una soluzione correttiva diversa nel prossimo passo.";
                     history.Add(new ChatMessage
                     {
                         Role = "user",
-                        Content = "[INTERNAL_REFLECTION]: L'operazione precedente ha fallito o è stata ambigua. Analizza il motivo (percorso errato? stringa non univoca? file mancante?) e proponi una soluzione correttiva diversa nel prossimo passo."
+                        Content = reflection
                     });
                 }
                 else if (consecutiveReadOnly >= maxConsecutiveReadOnly)
@@ -953,7 +985,7 @@ async Task RunStdinProtocolAsync()
             }
 
             await RunAgentLoopAsync(
-                maxTokens: 8192,
+                maxTokens: 16384,
                 onToken: text => EmitEvent(new { type = "token", text }),
                 onToolCall: (tool, argsJson) =>
                 {
