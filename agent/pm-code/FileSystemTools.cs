@@ -17,6 +17,10 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
 
     public void ClearReadCache() => _readPaths.Clear();
 
+    // Prefisso "  97 | " che read_file antepone a ogni riga: usato in EditFile per
+    // recuperare quando il modello lo copia per errore dentro old_string/new_string.
+    private static readonly Regex LineGutterRx = new(@"^[ \t]*\d+[ \t]*\|[ \t]?", RegexOptions.Multiline | RegexOptions.Compiled);
+
     private string? RequireRead(string path, string absPath)
     {
         if (_readPaths.Contains(absPath)) return null;
@@ -54,7 +58,9 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
     [
         new() { Function = new() {
             Name = "read_file",
-            Description = "Legge file con numeri di riga. Usa start_line/end_line per sezioni.",
+            Description = "Legge file con numeri di riga (formato \"  97 | codice\"). Usa start_line/end_line per sezioni. " +
+                          "Il numero e il carattere '|' sono SOLO per riferimento visivo: non fanno parte del file e non vanno " +
+                          "copiati in old_string/new_string di edit_file.",
             Parameters = new { type = "object",
                 properties = new {
                     path       = new { type = "string" },
@@ -65,7 +71,8 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         }},
         new() { Function = new() {
             Name = "edit_file",
-            Description = "Sostituisce old_string con new_string. old_string deve essere univoco.",
+            Description = "Sostituisce old_string con new_string. old_string deve essere univoco e contenere ESATTAMENTE " +
+                          "il testo del file, senza il prefisso \"numero | \" mostrato da read_file.",
             Parameters = new { type = "object",
                 properties = new {
                     path       = new { type = "string" },
@@ -310,9 +317,30 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         newString = NormalizeLineEndings(newString);
 
         int count = CountOccurrences(content, oldString);
+
+        // Fallimento tipico: il modello copia old_string/new_string dall'output NUMERATO di
+        // read_file (es. "  97 | ...") includendo il numero di riga e il "|" nel testo cercato,
+        // che ovviamente non esiste sul disco. Se il match diretto fallisce, ritenta ripulendo
+        // ogni riga da questo prefisso prima di arrenderti.
+        if (count == 0)
+        {
+            var strippedOld = LineGutterRx.Replace(oldString, "");
+            if (strippedOld != oldString)
+            {
+                var strippedCount = CountOccurrences(content, strippedOld);
+                if (strippedCount > 0)
+                {
+                    oldString = strippedOld;
+                    newString = LineGutterRx.Replace(newString, "");
+                    count = strippedCount;
+                }
+            }
+        }
+
         if (count == 0)
             return $"ERRORE: la stringa cercata non è stata trovata in {path}.\n" +
-                   $"Verifica l'indentazione e i caratteri esatti con read_file.";
+                   $"Verifica l'indentazione e i caratteri esatti con read_file. old_string deve contenere SOLO il testo " +
+                   $"reale del file: non includere il numero di riga né il carattere '|' che read_file mostra a inizio riga.";
 
         if (count > 1)
             return $"ERRORE: la stringa cercata appare {count} volte in {path} — " +

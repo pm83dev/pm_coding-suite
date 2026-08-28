@@ -11,6 +11,27 @@ public class TerminalTools(WorkspaceContext workspace)
 {
     // Su Windows usiamo PowerShell (già presente ovunque); su Linux/macOS bash.
     private static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+    // Windows PowerShell 5.1 (powershell.exe) non supporta gli operatori '&&'/'||'
+    // (introdotti in PowerShell 7): un LLM li usa comunemente (sintassi bash-like) e
+    // il comando fallisce con un errore di parsing. Se PowerShell 7+ (pwsh.exe) è
+    // installato lo preferiamo per compatibilità, altrimenti ripieghiamo su powershell.exe.
+    private static readonly string ShellExe = ResolveWindowsShellExe();
+
+    private static string ResolveWindowsShellExe()
+    {
+        var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+        foreach (var dir in pathEnv.Split(Path.PathSeparator))
+        {
+            try
+            {
+                if (File.Exists(Path.Combine(dir, "pwsh.exe")))
+                    return "pwsh.exe";
+            }
+            catch { /* ignora voci PATH non valide */ }
+        }
+        return "powershell.exe";
+    }
     // Comandi esplicitamente bloccati per sicurezza
     private static readonly string[] _blocklist =
     [
@@ -166,7 +187,8 @@ public class TerminalTools(WorkspaceContext workspace)
         var isCd = (trimmed.StartsWith("cd ", StringComparison.OrdinalIgnoreCase) ||
                     trimmed.Equals("cd", StringComparison.OrdinalIgnoreCase) ||
                     trimmed.StartsWith("Set-Location ", StringComparison.OrdinalIgnoreCase))
-                    && !trimmed.Contains('\n') && !trimmed.Contains(';');
+                    && !trimmed.Contains('\n') && !trimmed.Contains(';')
+                    && !trimmed.Contains("&&") && !trimmed.Contains("||") && !trimmed.Contains('|');
 
         if (isCd)
         {
@@ -239,7 +261,7 @@ public class TerminalTools(WorkspaceContext workspace)
         var script = string.Format(scriptTemplate, _cwd.Replace("'", "''"), command, Sentinel, (Directory.Exists(_cwd) ? _cwd : "UNKNOWN"));
         var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
 
-        return RunProcess("powershell.exe",
+        return RunProcess(ShellExe,
             $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
             _cwd, timeoutMs);
     }
@@ -277,7 +299,7 @@ public class TerminalTools(WorkspaceContext workspace)
         {
             var script = $"$ProgressPreference = 'SilentlyContinue'\r\nSet-Location '{_cwd.Replace("'", "''")}'\r\ntry {{ & {{ {command} }} *>&1 | Out-String -Stream -Width 300 }} catch {{ $_ | Out-String -Stream }}";
             var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
-            startInfo.FileName = "powershell.exe";
+            startInfo.FileName = ShellExe;
             startInfo.Arguments = $"-NoProfile -NonInteractive -EncodedCommand {encoded}";
         }
         else
