@@ -290,9 +290,9 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         // contiene un blocco enorme (più metodi/funzioni incollati in un colpo solo), il
         // tool call può superare il budget di token della risposta e llama-server risponde
         // 500 prima ancora che questo dispatcher lo veda. Forza un metodo/blocco alla volta.
-        if (newString.Length > 16000)
+        if (newString.Length > 32000)
             return $"ERRORE: edit_file rifiutato — new_string per {path} è di {newString.Length} caratteri, " +
-                   "oltre il limite di 16000. Blocchi di codice così grandi in una sola tool call rischiano di " +
+                   "oltre il limite di 32000. Blocchi di codice così grandi in una sola tool call rischiano di " +
                    "troncare a metà e causare un errore 500 sul server LLM. Dividi l'aggiunta in più chiamate " +
                    "edit_file separate, una funzione/metodo o un piccolo blocco alla volta.";
 
@@ -391,7 +391,7 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
             }
         }
         else if (_codeExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)
-               && content.Length > 16000)
+               && content.Length > 32000)
         {
             // Il server LLM genera gli argomenti del tool call come stringa JSON con un tetto
             // di token per risposta: un file di codice grande scritto in un solo write_file
@@ -399,7 +399,7 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
             // closing quote" prima ancora che questo dispatcher veda la chiamata. Bloccarlo qui
             // per i file NUOVI (non ancora troppo tardi) forza lo scheletro+edit incrementale.
             return $"ERRORE: write_file rifiutato — il contenuto proposto per {path} è di {content.Length} caratteri, " +
-                   "oltre il limite di 16000. File di questa dimensione generati in un solo write_file troncano a metà " +
+                   "oltre il limite di 32000. File di questa dimensione generati in un solo write_file troncano a metà " +
                    "e causano un errore 500 sul server LLM. Chiama write_file SOLO con lo scheletro minimo del file " +
                    "(import essenziali, dichiarazione classe/componente vuota), poi usa edit_file ripetutamente per " +
                    "aggiungere il resto un blocco alla volta.";

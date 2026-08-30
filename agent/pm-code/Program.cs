@@ -143,11 +143,11 @@ string BuildSystemPrompt()
         {agentsContext}
         REGOLE:
         - LIMITE RIGIDO ASSOLUTO, NESSUNA ECCEZIONE (leggi questo prima di ogni write_file/edit_file):
-          "content" (write_file) e "new_string" (edit_file) non possono MAI superare 16000 caratteri / 400 righe —
+          "content" (write_file) e "new_string" (edit_file) non possono MAI superare 32000 caratteri / 800 righe —
           la chiamata viene rifiutata a livello di codice oltre quel limite, non è un consiglio di stile.
           Questo vale ANCHE se pensi che il file/blocco "abbia senso solo se scritto tutto insieme", ANCHE se il
           task ti sembra semplice, ANCHE dopo che un tentativo precedente è stato rifiutato per questo motivo.
-          Per un file NUOVO più lungo di 400 righe (es. un componente con più di 2-3 metodi), l'UNICA sequenza corretta è:
+          Per un file NUOVO più lungo di 800 righe (es. un componente con più di 2-3 metodi), l'UNICA sequenza corretta è:
           1) write_file con SOLO lo scheletro minimo (import essenziali, dichiarazione classe/componente vuota);
           2) poi edit_file ripetuto, UNA funzione/metodo o un piccolo blocco per chiamata, finché il file è completo.
           Non esiste un modo per scrivere un intero file grande in una sola chiamata: oltre il limite la generazione
@@ -283,7 +283,7 @@ List<(string Name, string ArgsJson)> TryRescueTextToolCalls(string text)
 // riflessione interna, rollover history) sia in modalità REPL (default: null → stampa su
 // Console/UI come sempre) sia in modalità --stdin-protocol (emettono eventi NDJSON).
 async Task<bool> RunAgentLoopAsync(
-    int maxTokens = 16384,
+    int maxTokens = 32768,
     Action<string>? onToken = null,
     Action<string, string>? onToolCall = null,
     Action<string, string>? onToolResult = null,
@@ -566,8 +566,8 @@ async Task<bool> RunAgentLoopAsync(
                     $"ERRORE: la tool call '{ex.ToolName}' è stata interrotta perché il contenuto generato superava " +
                     "la soglia di sicurezza prima ancora di essere completo — avrebbe comunque fallito con un errore " +
                     "500 di JSON troncato lato server. Riprendi il task usando SOLO edit_file con new_string di MAX " +
-                    "16000 caratteri, una funzione/metodo o un piccolo blocco alla volta. " +
-                    "Se devi creare un file da zero: prima write_file con SOLO lo scheletro minimo (max 16000 caratteri), " +
+                    "32000 caratteri, una funzione/metodo o un piccolo blocco alla volta. " +
+                    "Se devi creare un file da zero: prima write_file con SOLO lo scheletro minimo (max 32000 caratteri), " +
                     "poi edit_file ripetutamente per aggiungere il resto un pezzo alla volta."));
 
                 if (recoverableErrorRetries < maxRecoverableErrorRetries)
@@ -986,7 +986,7 @@ async Task RunStdinProtocolAsync()
             }
 
             await RunAgentLoopAsync(
-                maxTokens: 16384,
+                maxTokens: 32768,
                 onToken: text => EmitEvent(new { type = "token", text }),
                 onToolCall: (tool, argsJson) =>
                 {
