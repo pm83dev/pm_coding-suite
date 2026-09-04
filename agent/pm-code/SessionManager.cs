@@ -15,6 +15,17 @@ public class SessionManager
     private const float Threshold = 0.70f;
     private Guid _currentId = Guid.NewGuid();
 
+    // char/4 era una stima generica per prosa naturale: questo agente scambia soprattutto
+    // JSON di tool call e codice, dove il rapporto caratteri/token reale è diverso (spesso
+    // più token per carattere) e char/4 arriva a sottostimare parecchio il consumo reale —
+    // ritardando il rollover ben oltre il punto in cui il modello ha già iniziato a perdere
+    // coerenza sul contesto lungo. Ricalibriamo il rapporto ad ogni risposta con il conteggio
+    // REALE restituito dal server (usage.prompt_tokens) rapportato ai caratteri della history
+    // effettivamente inviata in quella richiesta, così la stima converge al comportamento
+    // reale di questo modello/contenuto invece di restare fissa su un'assunzione generica.
+    // Fallback a 4.0 finché non arriva la prima misura reale (nessuna richiesta ancora fatta).
+    private double _charsPerToken = 4.0;
+
     public SessionManager(LlamaClient llm, int maxTokens, Func<string> buildSystemPrompt)
     {
         _llm = llm;
@@ -153,13 +164,31 @@ public class SessionManager
         return sb.ToString();
     }
 
-    private static int EstimateTokens(List<ChatMessage> messages) =>
+    private int EstimateTokens(List<ChatMessage> messages) =>
+        (int)(TotalChars(messages) / _charsPerToken);
+
+    private static int TotalChars(List<ChatMessage> messages) =>
         messages.Sum(m =>
         {
             var contentLen = m.Content?.Length ?? 0;
             var toolLen    = m.ToolCalls?.Sum(t => t.Function.Arguments.Length + t.Function.Name.Length) ?? 0;
-            return (contentLen + toolLen) / 4;
+            return contentLen + toolLen;
         });
+
+    /// <summary>
+    /// Da chiamare subito dopo ogni risposta del server, con la history esattamente come
+    /// inviata in quella richiesta (prima di appendere la risposta) e i prompt_tokens reali
+    /// restituiti nell'usage. Ricalibra il rapporto caratteri/token usato dalla stima —
+    /// se il server non restituisce usage (alcuni backend lo omettono in streaming) o la
+    /// history inviata è vuota, la chiamata è un no-op e resta valida l'ultima calibrazione.
+    /// </summary>
+    public void RecordRealUsage(int promptTokens, List<ChatMessage> sentHistory)
+    {
+        if (promptTokens <= 0) return;
+        var chars = TotalChars(sentHistory);
+        if (chars <= 0) return;
+        _charsPerToken = (double)chars / promptTokens;
+    }
 
     // Su stderr, mai su stdout: in modalità --stdin-protocol stdout è riservato
     // esclusivamente alle righe NDJSON di Program.cs (EmitEvent) — vedi lo stesso

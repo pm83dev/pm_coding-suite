@@ -656,6 +656,12 @@ async Task<bool> RunAgentLoopAsync(
         if (string.IsNullOrEmpty(message.Content) && message.ToolCalls is not { Count: > 0 })
             message.Content = "(nessuna risposta dal modello)";
 
+        // Ricalibra la stima token del SessionManager con il conteggio REALE del server,
+        // usando la history esattamente come inviata in questa richiesta (request.Messages
+        // sopra è la stessa lista, non ancora modificata: history.Add(message) è la riga
+        // subito dopo). Deve stare qui, prima di qualunque Add su history in questo step.
+        sessionManager.RecordRealUsage(usage?.PromptTokens ?? 0, history);
+
         history.Add(message);
 
         if (message.ToolCalls is { Count: > 0 })
