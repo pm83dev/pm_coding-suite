@@ -104,10 +104,18 @@ export async function handleChatRequest(
   const manualEndpoints = config.get<Record<string, string>>('modelEndpoints', {});
   const endpoint = manualEndpoints[request.model.id] ?? autoEndpoints[request.model.id];
 
-  // Auto-approvazione: se l'utente ha attivato la modalità auto-approve nelle
-  // impostazioni VS Code (pmChat.autoApprove), le modifiche ai file vengono
-  // applicate senza richiesta di conferma. Default: false (conferma richiesta).
-  const autoApprove = config.get<boolean>('autoApprove', false);
+  // Auto-approvazione: le modifiche ai file vengono applicate senza richiesta di
+  // conferma se l'utente ha scelto "Bypass Approvals"/"Autopilot" nel selettore dei
+  // permessi della chat (request.permissionLevel, API proposta chatParticipantPrivate:
+  // letta in modo difensivo, può essere undefined se VS Code non la espone a questa
+  // estensione) oppure se ha attivato pmChat.autoApprove nelle impostazioni (fallback).
+  // Default: false (conferma richiesta).
+  const permissionLevel = (request as { permissionLevel?: string }).permissionLevel;
+  const autoApprove =
+    permissionLevel === 'autoApprove' ||
+    permissionLevel === 'autopilot' ||
+    config.get<boolean>('autoApprove', false);
+  console.log(`[PM Agent] permissionLevel=${permissionLevel ?? 'undefined'} autoApprove=${autoApprove}`);
 
   try {
     await agent.sendRequest(request.prompt, agentContext, (event: Exclude<AgentEvent, { type: 'done' }>) => {
