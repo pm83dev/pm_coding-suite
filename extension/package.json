@@ -2,7 +2,7 @@
   "name": "pm-chat-participant",
   "displayName": "PM Chat Participant (Local LLM)",
   "description": "Chat participant frontend per PM Code Agent (tool calling delegato all'agent .NET locale)",
-  "version": "2.0.16",
+  "version": "2.0.17",
   "publisher": "pm-software-automation",
   "engines": {
     "vscode": "^1.125.0"
@@ -31,6 +31,11 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "pmChat.autoApprove": {
+            "type": "boolean",
+            "default": false,
+            "description": "Se attivo, write_file/edit_file vengono applicati senza richiesta di conferma. Se disattivo (default), ogni modifica richiede l'approvazione dell'utente tramite il diff nativo VS Code."
           }
         }
       }

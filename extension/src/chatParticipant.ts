@@ -104,6 +104,11 @@ export async function handleChatRequest(
   const manualEndpoints = config.get<Record<string, string>>('modelEndpoints', {});
   const endpoint = manualEndpoints[request.model.id] ?? autoEndpoints[request.model.id];
 
+  // Auto-approvazione: se l'utente ha attivato la modalità auto-approve nelle
+  // impostazioni VS Code (pmChat.autoApprove), le modifiche ai file vengono
+  // applicate senza richiesta di conferma. Default: false (conferma richiesta).
+  const autoApprove = config.get<boolean>('autoApprove', false);
+
   try {
     await agent.sendRequest(request.prompt, agentContext, (event: Exclude<AgentEvent, { type: 'done' }>) => {
       switch (event.type) {
@@ -141,7 +146,7 @@ export async function handleChatRequest(
           stream.progress(event.text);
           break;
       }
-    }, token, request.model.id, endpoint);
+    }, token, request.model.id, endpoint, autoApprove);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     stream.markdown(`\n\n⚠️ **Errore comunicando con PM Code Agent:** ${msg}`);

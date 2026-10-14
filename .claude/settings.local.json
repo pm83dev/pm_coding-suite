@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(tasklist //FI \"IMAGENAME eq pm-code.exe\")",
+      "Bash(npm run *)",
+      "Bash(npx vsce *)",
+      "Bash(dotnet publish *)"
+    ]
+  }
+}

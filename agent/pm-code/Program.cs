@@ -66,6 +66,55 @@ var maxContextTokens = int.TryParse(config["AgentSettings:MaxContextTokens"], ou
 var workspace = new WorkspaceContext(fullWorkspacePath);
 var llm = new LlamaClient(serverUrl, model);
 
+// Auto-approvazione: quando attiva, write_file/edit_file non richiedono conferma
+// (bypassano il flusso edit_proposal/edit_decision). In modalità REPL l'utente può
+// attivarla/disattivarla a runtime tramite i comandi /auto-approve e /no-auto-approve.
+// In modalità --stdin-protocol l'extension può inviare un flag autoApprove per turno
+// (es. toggle in chat o setting persistente). Default: false (conferma richiesta).
+// Persistenza: lo stato viene salvato in .pm-agent.json nella root del workspace,
+// così il toggle REPL sopravvive al riavvio del processo. In stdin-protocol il flag
+// inviato dall'extension ha sempre la precedenza (è la fonte di verità per quel turno).
+var autoApproveStateFile = Path.Combine(fullWorkspacePath, ".pm-agent.json");
+
+bool LoadAutoApproveState()
+{
+    try
+    {
+        if (File.Exists(autoApproveStateFile))
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(autoApproveStateFile));
+            if (doc.RootElement.TryGetProperty("autoApprove", out var v) && v.ValueKind == JsonValueKind.True)
+                return true;
+        }
+    }
+    catch { /* file corrotto o non leggibile: default false */ }
+    return false;
+}
+
+void SaveAutoApproveState(bool value)
+{
+    try
+    {
+        string existing = "{}";
+        if (File.Exists(autoApproveStateFile))
+            existing = File.ReadAllText(autoApproveStateFile);
+        using var doc = JsonDocument.Parse(existing);
+        var root = doc.RootElement;
+        var props = new Dictionary<string, string>();
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in root.EnumerateObject())
+                props[prop.Name] = prop.Value.GetRawText();
+        }
+        props["autoApprove"] = value ? "true" : "false";
+        var json = "{" + string.Join(",", props.Select(p => $"\"{p.Key}\":{p.Value}")) + "}";
+        File.WriteAllText(autoApproveStateFile, json);
+    }
+    catch { /* non bloccare il flusso su errori di persistenza */ }
+}
+
+var autoApprove = LoadAutoApproveState();
+
 // In modalità --stdin-protocol, write_file/edit_file non scrivono mai su disco
 // direttamente: emettono edit_proposal e bloccano in attesa dell'edit_decision
 // che arriva come riga successiva su stdin (protocollo sincrono per turno — vedi
@@ -76,6 +125,15 @@ if (isStdinProtocol)
 {
     proposeWrite = (path, content) =>
     {
+        if (autoApprove)
+        {
+            // Auto-approvazione attiva: applica subito senza emettere edit_proposal
+            // né attendere edit_decision. L'utente ha esplicitamente scelto questa
+            // modalità (tramite /auto-approve in REPL o flag autoApprove in stdin-protocol),
+            // quindi il consenso è già dato.
+            return true;
+        }
+
         EmitEvent(new { type = "edit_proposal", path, content });
 
         // Difesa in profondità: se il lato extension ha un bug e non invia MAI
@@ -934,6 +992,19 @@ async Task RunStdinProtocolAsync()
 
             var prompt = root.TryGetProperty("prompt", out var p) ? p.GetString() ?? "" : "";
 
+            // L'extension può inviare un flag autoApprove per turno (es. toggle in chat
+            // o setting persistente). Se presente, aggiorna lo stato corrente; se assente
+            // lo stato resta invariato (default false). In stdin-protocol i comandi /
+            // non sono disponibili, quindi questo è l'unico modo per attivarla.
+            if (root.TryGetProperty("autoApprove", out var aa))
+            {
+                if (aa.ValueKind == JsonValueKind.True) autoApprove = true;
+                else if (aa.ValueKind == JsonValueKind.False) autoApprove = false;
+                // Nessuna persistenza su .pm-agent.json qui: la fonte di verità è il
+                // setting VS Code pmChat.autoApprove, inviato a ogni turno. Salvarlo
+                // creerebbe/riscriverebbe un file nel workspace dell'utente a ogni richiesta.
+            }
+
             // Modello scelto dall'utente nel picker nativo di VS Code (request.model),
             // inoltrato dall'extension per questo turno. Se assente o vuoto si ricade sul
             // default di appsettings.json: senza reset esplicito, un modello richiesto in un
@@ -1037,6 +1108,18 @@ async Task<bool> HandleSpecialCommandAsync(string input)
             UI.Ok("Conversazione resettata.");
             return true;
 
+        case "/auto-approve":
+            autoApprove = true;
+            SaveAutoApproveState(true);
+            UI.Ok("Auto-approvazione attivata: write_file/edit_file verranno applicati senza richiesta di conferma.");
+            return true;
+
+        case "/no-auto-approve":
+            autoApprove = false;
+            SaveAutoApproveState(false);
+            UI.Ok("Auto-approvazione disattivata: write_file/edit_file richiederanno conferma.");
+            return true;
+
         case "/workspace":
             UI.Dim($"Workspace: {workspace.Root}");
             UI.Dim(workspace.GetTreeSnapshot());
@@ -1101,6 +1184,8 @@ async Task<bool> HandleSpecialCommandAsync(string input)
             UI.Dim("Comandi:");
             UI.Dim("  /init        — Analizza il progetto e genera AGENTS.md");
             UI.Dim("  /reset       — Nuova conversazione (ricarica AGENTS.md)");
+            UI.Dim("  /auto-approve — Attiva auto-approvazione write_file/edit_file (persistita)");
+            UI.Dim("  /no-auto-approve — Disattiva auto-approvazione (persistita)");
             UI.Dim("  /workspace   — Mostra struttura workspace");
             UI.Dim("  /tools       — Elenca tutti i tool disponibili");
             UI.Dim("  /cd <path>   — Cambia workspace");

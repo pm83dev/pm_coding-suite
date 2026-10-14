@@ -92,6 +92,7 @@ export class AgentProcess {
     token: vscode.CancellationToken,
     model?: string,
     endpoint?: string,
+    autoApprove?: boolean,
   ): Promise<void> {
     const proc = this.ensureStarted();
     const rl = this.rl!;
@@ -147,7 +148,7 @@ export class AgentProcess {
       rl.on('line', onLine);
       proc.once('exit', onExit);
 
-      const requestLine = JSON.stringify({ type: 'request', prompt, context, model, endpoint });
+      const requestLine = JSON.stringify({ type: 'request', prompt, context, model, endpoint, autoApprove });
       proc.stdin.write(requestLine + '\n');
     });
   }
