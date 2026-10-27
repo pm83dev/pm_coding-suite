@@ -15,6 +15,11 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
     // risulterebbe "già visto" anche dopo un reset di contesto.
     private readonly HashSet<string> _readPaths = new(StringComparer.OrdinalIgnoreCase);
 
+    // File eliminati con delete_file in questa sessione: un write_file sullo stesso path è la
+    // sequenza "cancella e riscrivi da zero" usata per aggirare il rifiuto di write_file sui file
+    // di codice esistenti, e va rifiutata allo stesso modo.
+    private readonly HashSet<string> _deletedPaths = new(StringComparer.OrdinalIgnoreCase);
+
     public void ClearReadCache() => _readPaths.Clear();
 
     // Prefisso "  97 | " che read_file antepone a ogni riga: usato in EditFile per
@@ -146,7 +151,9 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         }},
         new() { Function = new() {
             Name = "delete_file",
-            Description = "Elimina un file.",
+            Description = "Elimina un file (lo sposta nel cestino recuperabile dell'agente). È l'UNICO modo consentito per " +
+                           "cancellare file: run_command non può cancellare. Usalo solo per file davvero da rimuovere, " +
+                           "mai per poter riscrivere da zero un file che write_file ha rifiutato.",
             Parameters = new { type = "object",
                 properties = new {
                     path = new { type = "string" }
@@ -387,8 +394,18 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
                 if (existingLines > 15)
                     return $"ERRORE: write_file rifiutato — {path} esiste già ed è un file di codice di {existingLines} righe. " +
                            "Riscriverlo per intero rischia di perdere o duplicare parti non toccate. Usa edit_file con " +
-                           "old_string/new_string mirati (max 8-10 righe) per la modifica specifica.";
+                           "old_string/new_string mirati (max 8-10 righe) per la modifica specifica. " +
+                           "VIETATO aggirare questo rifiuto cancellando o svuotando il file (delete_file, run_command) per poi " +
+                           "riscriverlo: se il file va semplificato molto, procedi con edit_file un metodo alla volta " +
+                           "(rimuovi/sostituisci un blocco, verifica la build, passa al successivo).";
             }
+        }
+        else if (_deletedPaths.Contains(absPath)
+               && _codeExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+        {
+            return $"ERRORE: write_file rifiutato — {path} è stato eliminato in questa sessione: ricrearlo da zero equivale " +
+                   "a riscrivere per intero un file esistente. Ripristinalo con run_command \"git restore <file>\" " +
+                   "(oppure copiandolo dal cestino .pm-agent/trash) e modificalo con edit_file un blocco alla volta.";
         }
         else if (_codeExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)
                && content.Length > 32000)
@@ -700,8 +717,17 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         if (!File.Exists(absPath))
             return $"File non trovato: {path}";
 
-        File.Delete(absPath);
-        return $"✓ File eliminato: {path}";
+        // Nessuna cancellazione definitiva: il file viene spostato nel cestino dell'agente
+        // (.pm-agent/trash/<timestamp>/<path relativo>), recuperabile anche se non era mai
+        // stato committato. Osservato: un modello locale ha cancellato file di codice per
+        // aggirare il rifiuto di write_file, perdendo modifiche non ancora in git.
+        var rel = Path.GetRelativePath(workspace.Root, absPath);
+        var trashPath = Path.Combine(AgentStateDir.Ensure(workspace.Root), "trash",
+            DateTime.Now.ToString("yyyyMMdd-HHmmss"), rel);
+        Directory.CreateDirectory(Path.GetDirectoryName(trashPath)!);
+        File.Move(absPath, trashPath);
+        _deletedPaths.Add(absPath);
+        return $"✓ File eliminato: {path} (spostato nel cestino dell'agente: {trashPath} — recuperabile)";
     }
 
     // ── search_symbol ──────────────────────────────────────────────────────────
@@ -769,7 +795,9 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         var selected = lines
             .Skip(start)
             .Take(end - start)
-            .Select((l, i) => $"{start + i,4} | {l}");
+            // start è un indice 0-based: il numero di riga mostrato deve essere 1-based come in
+            // read_file, altrimenti ogni riga appariva con il numero della precedente.
+            .Select((l, i) => $"{start + i + 1,4} | {l}");
 
         var header = $"[{path} — righe {startLine}-{endLine} di {lines.Length}]\n";
 

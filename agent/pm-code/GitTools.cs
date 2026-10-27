@@ -159,7 +159,7 @@ public class GitTools(WorkspaceContext workspace)
         if (stderr.Length > 0) result.AppendLine($"[STDERR] {stderr}");
 
         var text = result.ToString().Trim();
-        if (text.Length > 4000) text = "...(inizio troncato)\n" + text[^4000..];
+        text = AgentStateDir.Overflow(workspace.Root, "git", text, 4000);
 
         return string.IsNullOrEmpty(text) ? "(nessun output)" : text;
     }

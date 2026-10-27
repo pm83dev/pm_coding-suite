@@ -32,11 +32,36 @@ public class TerminalTools(WorkspaceContext workspace)
         }
         return "powershell.exe";
     }
-    // Comandi esplicitamente bloccati per sicurezza
-    private static readonly string[] _blocklist =
+    // Comandi esplicitamente bloccati per sicurezza. Regex a parola intera, non sottostringhe:
+    // con Contains("format") venivano bloccati anche comandi innocui con "LogInformation",
+    // "Format-Table", "-Format", ecc. (il modello riprovava varianti dello stesso comando
+    // senza capire perché fosse rifiutato).
+    private static readonly System.Text.RegularExpressions.Regex[] _blocklist =
     [
-        "rm -rf", "del /f", "format", "shutdown", "rd /s", "rmdir /s"
+        .. new[]
+        {
+            @"\brm\s+-(rf|fr)\b",
+            @"\bdel\s+/f\b",
+            @"(^|[;&|]|\s)format(\.com)?\s+[a-z]:",
+            @"\bformat-volume\b",
+            @"\bshutdown(\.exe)?\b",
+            @"\b(rd|rmdir)\s+/s\b",
+        }.Select(p => new System.Text.RegularExpressions.Regex(p,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled))
     ];
+
+    // Cancellazioni da shell: vietate del tutto, passano solo da delete_file (cestino
+    // recuperabile). Osservato: il modello ha usato Remove-Item per cancellare un file di
+    // codice e aggirare il rifiuto di write_file, e poi per eliminare 5 servizi senza conferma.
+    private static readonly System.Text.RegularExpressions.Regex FileDeleteRegex = new(
+        @"(^|[;&|{(\s])(Remove-Item|ri|rm|rmdir|rd|del|erase|Clear-Content|clc|unlink|shred)(\s|$)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Scrittura da shell sopra file di codice/config: aggira edit_file (e la conferma in chat).
+    // Scrivere su .txt/.log (es. salvare un diff o un output) resta permesso.
+    private static readonly System.Text.RegularExpressions.Regex CodeOverwriteRegex = new(
+        @"(Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|\bcp\b|\bmv\b|>>?)[^;|\n]*\.(cs|csproj|sln|ts|tsx|js|jsx|mjs|py|java|go|rs|cpp|c|h|hpp|html|css|scss|less|vue|svelte|razor|json|xml|ya?ml)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
     // Working directory persistente tra chiamate, come Claude Code Bash tool
     private string _cwd = workspace.Root;
@@ -168,8 +193,18 @@ public class TerminalTools(WorkspaceContext workspace)
         var command = args.GetProperty("command").GetString()!;
         var timeoutMs = args.TryGetProperty("timeout_ms", out var t) ? t.GetInt32() : 60_000;
 
-        if (_blocklist.Any(b => command.Contains(b, StringComparison.OrdinalIgnoreCase)))
+        if (_blocklist.Any(b => b.IsMatch(command)))
             return $"ERRORE: comando bloccato per sicurezza: {command}";
+
+        // Ripristinare un file dal cestino dell'agente è l'opposto di una cancellazione: permesso.
+        var restoringFromTrash = System.Text.RegularExpressions.Regex.IsMatch(command, @"\.pm-agent[\\/]+trash",
+                                     System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                                 && !FileDeleteRegex.IsMatch(command);
+        if (!restoringFromTrash && (FileDeleteRegex.IsMatch(command) || CodeOverwriteRegex.IsMatch(command)))
+            return "ERRORE: run_command non può cancellare file né scrivere/sovrascrivere file di codice " +
+                   "(Remove-Item, del, rm, Clear-Content, Set-Content/Out-File/'>' su file di codice). " +
+                   "Per cancellare usa delete_file (sposta nel cestino recuperabile); per modificare codice usa edit_file. " +
+                   "Non aggirare il rifiuto di un altro tool: se write_file è stato rifiutato, procedi con edit_file a blocchi.";
 
         var background = args.TryGetProperty("background", out var bg) && bg.ValueKind == JsonValueKind.True;
         if (background)
@@ -242,7 +277,7 @@ public class TerminalTools(WorkspaceContext workspace)
             ? $"[cwd: {_cwd}]\n"
             : "";
 
-        var finalOutput = SanitizeOutput(raw.Trim());
+        var finalOutput = AgentStateDir.Overflow(workspace.Root, "cmd", SanitizeOutput(raw.Trim()), 3000);
         return cwdPrefix + (string.IsNullOrEmpty(finalOutput) ? "(nessun output)" : finalOutput);
     }
 
@@ -261,9 +296,11 @@ public class TerminalTools(WorkspaceContext workspace)
         var script = string.Format(scriptTemplate, _cwd.Replace("'", "''"), command, Sentinel, (Directory.Exists(_cwd) ? _cwd : "UNKNOWN"));
         var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
 
+        // Nessun troncamento qui: lo applica RunCommand (con salvataggio su file), dopo aver
+        // estratto il sentinel della cwd in coda all'output.
         return RunProcess(ShellExe,
             $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
-            _cwd, timeoutMs);
+            _cwd, timeoutMs, maxChars: int.MaxValue);
     }
 
     // bash -c riceve lo script come singolo elemento di argv (nessuna shell intermedia a
@@ -275,7 +312,7 @@ public class TerminalTools(WorkspaceContext workspace)
         var cwdEscaped = _cwd.Replace("'", "'\\''");
         var script = $"cd '{cwdEscaped}' || exit 1\n{{ {command}\n}} 2>&1\nprintf '\\n%s%s' '{Sentinel}' '{(Directory.Exists(_cwd) ? _cwd : "UNKNOWN")}'";
 
-        return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs);
+        return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs, maxChars: int.MaxValue);
     }
 
     private string StartBackground(string command)
@@ -466,7 +503,7 @@ public class TerminalTools(WorkspaceContext workspace)
         return result;
     }
 
-    private static string RunProcess(string executable, string arguments, string workDir, int timeoutMs = 60_000)
+    private static string RunProcess(string executable, string arguments, string workDir, int timeoutMs = 60_000, int maxChars = 3000)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -479,12 +516,12 @@ public class TerminalTools(WorkspaceContext workspace)
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        return RunProcess(startInfo, timeoutMs);
+        return RunProcess(startInfo, timeoutMs, maxChars);
     }
 
     // Passa gli argomenti come argv (nessuna shell intermedia a rifare il parsing): evita
     // problemi di escaping per script multilinea con virgolette annidate, es. bash -c "<script>".
-    private static string RunProcess(string executable, string[] argumentList, string workDir, int timeoutMs = 60_000)
+    private static string RunProcess(string executable, string[] argumentList, string workDir, int timeoutMs = 60_000, int maxChars = 3000)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -497,10 +534,10 @@ public class TerminalTools(WorkspaceContext workspace)
             CreateNoWindow = true
         };
         foreach (var a in argumentList) startInfo.ArgumentList.Add(a);
-        return RunProcess(startInfo, timeoutMs);
+        return RunProcess(startInfo, timeoutMs, maxChars);
     }
 
-    private static string RunProcess(ProcessStartInfo startInfo, int timeoutMs)
+    private static string RunProcess(ProcessStartInfo startInfo, int timeoutMs, int maxChars)
     {
         using var proc = new Process { StartInfo = startInfo };
 
@@ -531,8 +568,8 @@ public class TerminalTools(WorkspaceContext workspace)
         var text = SanitizeOutput(result.ToString().Trim());
         text += proc.ExitCode == 0 ? "\n[ESITO: SUCCESSO]" : $"\n[ESITO: FALLITO exit code {proc.ExitCode}]";
 
-        if (text.Length > 3000)
-            text = "...(inizio troncato)\n" + text[^3000..];
+        if (text.Length > maxChars)
+            text = "...(inizio troncato)\n" + text[^maxChars..];
 
         return string.IsNullOrEmpty(text) ? "(nessun output)" : text;
     }

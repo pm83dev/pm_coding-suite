@@ -29,7 +29,8 @@ public class ToolDispatcher
         _agent = new AgentTools(workspace);
         _git = new GitTools(workspace);
         _web = new WebTools(braveApiKey);
-        _todo = new TodoTools();
+        _todo = new TodoTools(workspace);
+        _todo.Reload();
     }
 
     public List<ToolDefinition> AllDefinitions =>
@@ -81,6 +82,16 @@ public class ToolDispatcher
             "read_file_range"));
         defs.AddRange(_todo.Definitions);
 
+        // Git in sola lettura — sempre inclusi: con un prompt tipo "prosegui" (nessuna parola
+        // chiave git) il modello non li aveva e ripiegava su run_command "git diff | Select-Object
+        // -Skip/-First", leggendo diff enormi a finestre troncate per decine di step.
+        defs.AddRange(_git.Definitions.Where(t => t.Function.Name is "git_status" or "git_diff" or "git_log"));
+
+        // delete_file sempre disponibile: run_command non può più cancellare, e senza questo
+        // tool (prima solo su parole chiave come "elimina") il modello non avrebbe nessuna via
+        // legittima — delete_file sposta nel cestino recuperabile .pm-agent/trash.
+        defs.AddRange(_fs.Definitions.Where(t => t.Function.Name == "delete_file"));
+
         // Terminal — su task che richiedono dotnet specifico
         if (Has(lc, "test", "package", "nuget", "add ", "pubbl", "run_dotnet"))
             defs.Add(_terminal.Definitions.First(t => t.Function.Name == "run_dotnet"));
@@ -117,10 +128,15 @@ public class ToolDispatcher
 
     public void ResetCwd() => _terminal.ResetCwd();
 
-    // Il piano è legato alla conversazione, non al workspace: va azzerato insieme alla
-    // history su /reset (CLI) o su nuova chat/cambio workspace (stdin-protocol) — altrimenti
-    // un vecchio piano di un task concluso resterebbe visibile nel prossimo task scollegato.
-    public void ResetTodo() => _todo.Reset();
+    // Il piano è salvato su disco per workspace (.pm-agent/plan.json): su /reset, nuova chat o
+    // cambio workspace viene RICARICATO, non azzerato, così "prosegui" in una chat nuova riparte
+    // dal primo passo non completato. Un piano concluso o abbandonato si cancella con
+    // manage_todo action="clear" (e il system prompt lo mostra solo se ha passi non completati).
+    public void ResetTodo() => _todo.Reload();
+
+    public string? PlanSummary() => _todo.PromptSummary();
+
+    public bool HasPendingPlan => _todo.HasPendingItems;
 
     public string Execute(string toolName, string argumentsJson)
     {

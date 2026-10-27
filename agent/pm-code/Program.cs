@@ -30,6 +30,22 @@ void EmitEvent(object evt)
     Console.Out.Flush();
 }
 
+// Traccia diagnostica della modalità --stdin-protocol: la chat di VS Code mostra le tool
+// call solo come progress transitorio, quindi senza questa traccia un turno che consuma
+// tutti gli step è indistinguibile da un blocco. Va su stderr (console dell'Extension Host)
+// e in pm-code-trace.log accanto all'eseguibile.
+var traceFile = Path.Combine(AppContext.BaseDirectory, "pm-code-trace.log");
+void Trace(string line)
+{
+    Console.Error.WriteLine($"[trace] {line}");
+    try { File.AppendAllText(traceFile, line + Environment.NewLine); } catch { }
+}
+static string OneLine(string s, int max)
+{
+    var flat = s.Replace("\r", "").Replace('\n', ' ');
+    return flat.Length <= max ? flat : flat[..max] + $"…(+{flat.Length - max})";
+}
+
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: false)
@@ -81,12 +97,13 @@ var repeatPenalty    = GetFloatSetting("LlmSettings:RepeatPenalty");
 var repeatLastN      = GetIntSetting("LlmSettings:RepeatLastN");
 var maxRepeats             = GetIntSetting("AgentSettings:MaxRepeats") ?? 3;
 var maxConsecutiveReadOnly = GetIntSetting("AgentSettings:MaxConsecutiveReadOnly") ?? 6;
+var maxLinesPerFile        = GetIntSetting("AgentSettings:MaxLinesPerFile") ?? 400;
 
 UI.Dim($"Sampling: temperature={temperature} frequency_penalty={frequencyPenalty} " +
        $"presence_penalty={presencePenalty?.ToString() ?? "-"} top_p={topP?.ToString() ?? "-"} " +
        $"top_k={topK?.ToString() ?? "-"} min_p={minP?.ToString() ?? "-"} " +
        $"repeat_penalty={repeatPenalty?.ToString() ?? "-"} repeat_last_n={repeatLastN?.ToString() ?? "-"} | " +
-       $"anti-loop: MaxRepeats={maxRepeats} MaxConsecutiveReadOnly={maxConsecutiveReadOnly}");
+       $"anti-loop: MaxRepeats={maxRepeats} MaxConsecutiveReadOnly={maxConsecutiveReadOnly} MaxLinesPerFile={maxLinesPerFile}");
 
 var workspace = new WorkspaceContext(fullWorkspacePath);
 var llm = new LlamaClient(serverUrl, model);
@@ -221,9 +238,42 @@ string BuildSystemPrompt()
         ? $"\nCONTESTO DEL PROGETTO (da AGENTS.md):\n{File.ReadAllText(agentsMd)}\n"
         : "\nNessun AGENTS.md trovato. Usa /init per generarlo.\n";
 
+    // Piano non concluso salvato da una sessione precedente (.pm-agent/plan.json): senza
+    // questo, una nuova chat con "prosegui" ricostruiva il lavoro leggendo diff e file per
+    // decine di step prima di fare qualunque modifica.
+    var plan = dispatcher.PlanSummary();
+    var planContext = plan == null ? "" : $"""
+
+        PIANO IN CORSO (salvato da una sessione precedente, gestito con manage_todo):
+        {plan}
+        Se la richiesta dell'utente riguarda questo piano (es. "prosegui", "continua", "vai avanti"):
+        riparti DIRETTAMENTE dal passo [IN CORSO] o dal primo [da fare]. NON rianalizzare i passi
+        completati, non rileggere diff o file interi per "ricostruire il quadro": le note dei passi
+        sono la tua memoria. Leggi solo il codice che serve al passo corrente.
+        Se invece la richiesta è un task diverso, crea un nuovo piano con manage_todo action="create".
+
+        """;
+
     return $"""
         Sei un agente di sviluppo software autonomo. Workspace: {workspace.Root}
-        {agentsContext}
+        {agentsContext}{planContext}
+        METODO DI LAVORO — PICCOLI PASSI (vale per ogni task che richiede più di 2 azioni):
+        1. Crea il piano con manage_todo action="create": passi PICCOLI, ognuno = UNA modifica concreta e
+           verificabile (es. "estrai metodo X", "aggiungi controllo null in Y + build"), mai passi tipo
+           "analizza tutto il codice" o "rivedi il progetto".
+        2. Per il passo corrente: manage_todo update → in_progress.
+        3. Leggi SOLO il codice che serve a QUEL passo: search_in_files/sym_search per trovare il punto,
+           poi read_file_range sulle righe interessate. Al massimo 3-4 letture, poi devi agire.
+           Non leggere file interi o diff interi "per avere il quadro completo": non serve e consuma il contesto.
+        4. Esegui la modifica con edit_file (blocchi piccoli).
+        5. Verifica subito: sol_analyze per .NET, oppure il comando di build/test del progetto.
+           Se fallisce, correggi e riverifica (stesso passo). Non passare oltre con la build rotta.
+        6. manage_todo update → completed con una note breve (file:riga cambiati, esito verifica).
+        7. Passa SUBITO al passo successivo, senza rispondere all'utente tra un passo e l'altro.
+        Rispondi all'utente solo quando tutti i passi sono completati, oppure quando ti serve una sua decisione
+        (in quel caso fai una domanda precisa). Un'informazione mancante non bloccante non è un motivo per
+        fermarsi: fai l'ipotesi più ragionevole, scrivila nella note e prosegui.
+
         REGOLE:
         - LIMITE RIGIDO ASSOLUTO, NESSUNA ECCEZIONE (leggi questo prima di ogni write_file/edit_file):
           "content" (write_file) e "new_string" (edit_file) non possono MAI superare 32000 caratteri / 800 righe —
@@ -256,7 +306,12 @@ string BuildSystemPrompt()
         - {(OperatingSystem.IsWindows()
             ? "run_command esegue su Windows PowerShell 5.1: NON supporta gli operatori '&&' e '||'. Usa ';' per separare comandi sequenziali, oppure due chiamate separate a run_command se il secondo comando deve eseguire solo se il primo ha successo."
             : "run_command esegue su bash: puoi usare '&&' e '||' per concatenare comandi condizionalmente.")}
-        - Dopo [ESITO: SUCCESSO]: rispondi all'utente, niente altri step.
+        - [ESITO: SUCCESSO] indica solo che il comando è terminato con codice 0, non che il risultato sia quello
+          atteso: leggi l'output (es. "401", "ERR", "not found" stampati da uno script sono errori). Se il task ha
+          altri passi, prosegui con il successivo; rispondi all'utente solo a lavoro concluso.
+        - Output lunghi: se un tool risponde [OUTPUT LUNGO ... salvato in "<file>"], leggi solo le righe che ti
+          servono da quel file con read_file_range. Mai rieseguire il comando con Select-Object/head/tail per vederne pezzi.
+        - Per vedere le modifiche usa git_diff con path (un file alla volta), non run_command con git diff.
         - Non ripetere mai lo stesso tool call con gli stessi argomenti.
         - Modifiche minimali; no pattern/astrazioni non richiesti.
         - Rispondi sempre in italiano. Riepilogo breve (2-4 righe) a task completato: cosa è cambiato, non come funziona il codice (il codice stesso lo spiega). Niente preamboli tipo "Certo, procedo subito" o riassunti finali di ciò che hai già mostrato passo passo — l'utente vede già ogni tool call. Una domanda semplice merita una risposta diretta, non sezioni e liste puntate.
@@ -271,7 +326,7 @@ string BuildSystemPrompt()
         - STRATEGIA PER FILE GRANDI: Se un file ha più di 150 righe, NON usare 'read_file' per leggerlo interamente. Invece, usa 'search_in_files' o 'sym_search' per individuare la sezione specifica e poi usa 'read_file_range' per leggere solo le righe necessarie. Questo è fondamentale per non superare il limite di contesto del modello.
         - CORREZIONE ERRORI: Se un tool restituisce un [ERROR] o indica che una stringa è ambigua, non ripetere lo stesso comando. Analizza la risposta, identifica l'errore (es. percorso errato, file mancante) e cambia strategia immediatamente (es. cerca il nome del file nel workspace prima di provare a leggerlo).
         - AUTONOMIA: Se un task richiede più passaggi (es. trovare una funzione -> leggere il suo contenuto -> modificarlo), esegui i tool uno dopo l'altro finché non raggiungi l'obiettivo finale. Non fermarti dopo un singolo tool se il lavoro non è concluso.
-        - PIANO: per task con 3+ step distinti (refactoring multi-file, migrazioni, debugging con più ipotesi da verificare), chiama manage_todo con action="create" PRIMA di iniziare per mostrare il piano all'utente, poi aggiornalo (action="update") portando ogni item a in_progress/completed man mano che procedi. Non usarlo per task banali (1-2 azioni).
+        - PIANO: segui il METODO DI LAVORO sopra. Usa gli id restituiti da manage_todo negli update (non inventarne). Non usarlo per task banali (1-2 azioni).
         - MEMORIA DELLA CONVERSAZIONE: la cronologia di questa conversazione include le tue azioni precedenti (file letti, modifiche fatte, comandi eseguiti). Prima di proporre un workaround o creare un nuovo file per aggirare un problema, controlla se in un turno precedente hai già creato un file simile (es. un file di dichiarazione .d.ts, un file di configurazione) — potrebbe essere proprio quello la causa del problema attuale, non una nuova ipotesi da testare da zero.
         - AZIONE DECISIVA: dopo aver ispezionato alcuni file/risultati e formulato un'ipotesi sulla causa, NON continuare a raccogliere altre informazioni "per sicurezza" — esegui subito l'azione correttiva (edit_file/write_file/run_command). Se dopo l'azione il problema persiste, allora ispeziona di nuovo con un'ipotesi diversa. Alternare ispezione e azione, non accumulare solo ispezioni.
         - FILE LOCKATI: se run_command fallisce su un'operazione di cancellazione/scrittura per errore di permessi (file in uso), non ritentare lo stesso comando identico. Controlla prima list_background_jobs: se c'è un processo in background avviato da te (es. dev server), fermalo con stop_background_job e riprova UNA volta. Se il problema persiste comunque, fermati e chiedi all'utente di chiudere manualmente eventuali processi/editor che potrebbero tenere i file aperti (dev server, watcher) prima di continuare.
@@ -360,6 +415,16 @@ List<(string Name, string ArgsJson)> TryRescueTextToolCalls(string text)
     return found;
 }
 
+// Comandi che run_command esegue come vera AZIONE (build, test, esecuzione, rete, modifica
+// di file/processi/git). Tutto il resto è considerato lettura dal guard anti-rimuginio.
+var actionCommandRegex = new Regex(
+    @"\b(dotnet\s+(build|test|run|ef|publish|add|restore|new|format)|npm|npx|yarn|pnpm|ng\s|pytest|python|py\s|node\s|tsc|" +
+    @"cargo|go\s+(build|test|run)|mvn|gradle|make|msbuild|" +
+    @"git\s+(add|commit|checkout|switch|restore|stash|reset|merge|rebase|apply|rm|mv)|" +
+    @"Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget|" +
+    @"Stop-Process|Start-Process|kill|taskkill|Remove-Item|Move-Item|Rename-Item|New-Item|Set-Content|Add-Content|mkdir|rm\s|mv\s|cp\s)\b",
+    RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
 // ── Agent loop ────────────────────────────────────────────────────────────────
 // Restituisce true se il LLM ha risposto (anche senza tool call), false su errore HTTP.
 // I tre delegate opzionali permettono di riusare lo STESSO loop (retry LLM, anti-loop,
@@ -410,6 +475,85 @@ async Task<bool> RunAgentLoopAsync(
     };
     // Soglia: AgentSettings:MaxConsecutiveReadOnly (default 6).
     int consecutiveReadOnly = 0;
+
+    // Escalation del guard anti-rimuginio. L'ordine testuale "agisci o fermati" da solo non
+    // basta (osservato: il modello lo ignora e continua a leggere fino a maxSteps). Se dopo
+    // l'ordine arriva un'altra lettura, si entra in modalità "solo azione": le letture vengono
+    // rifiutate senza essere eseguite e i tool di sola lettura spariscono dalla richiesta, finché
+    // il modello non fa un'azione concreta. Dopo maxReadBlocks rifiuti il turno si ferma.
+    bool readOnlyNudgeGiven = false;
+    bool restrictReadOnly = false;
+    int readBlocks = 0;
+    const int maxReadBlocks = 3;
+    const string readBlockedPrefix = "⚠️ LETTURA BLOCCATA";
+    const string verifyMissingPrefix = "⚠️ VERIFICA MANCANTE";
+    string? stopReason = null;
+
+    // manage_todo non è né lettura né azione: aggiornare il piano non deve azzerare il conteggio
+    // delle letture (altrimenti alternare read_file e manage_todo aggirerebbe il guard).
+    bool planTouchedThisTurn = false;
+    int planContinueRetries = 0;
+    const int maxPlanContinueRetries = 2;
+
+    // Righe lette per file in questo turno (read_file/read_file_range con range). Le letture
+    // a blocchi di 200-300 righe sono tutte diverse tra loro, quindi sfuggono al guard sulle
+    // chiamate identiche: osservato un file di 1676 righe letto quasi per intero a pezzi prima
+    // di fare qualunque modifica. Il conteggio di un file riparte dopo un edit su quel file.
+    var linesReadPerFile = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    string? FullPathOf(string argsJson)
+    {
+        try
+        {
+            var el = JsonDocument.Parse(argsJson).RootElement;
+            var p = el.TryGetProperty("path", out var pv) ? pv.GetString() : null;
+            return string.IsNullOrEmpty(p) ? null : Path.GetFullPath(Path.Combine(workspace.Root, p));
+        }
+        catch { return null; }
+    }
+
+    // Restituisce il messaggio di rifiuto se la lettura supera il budget del file, altrimenti null.
+    string? CheckLineBudget(string name, string argsJson)
+    {
+        if (name is not ("read_file" or "read_file_range")) return null;
+        try
+        {
+            var el = JsonDocument.Parse(argsJson).RootElement;
+            if (!el.TryGetProperty("start_line", out var s) || !el.TryGetProperty("end_line", out var e)
+                || s.ValueKind != JsonValueKind.Number || e.ValueKind != JsonValueKind.Number)
+                return null; // senza range il tool stesso limita i file grandi a un'anteprima
+            var requested = Math.Max(0, e.GetInt32() - s.GetInt32() + 1);
+            var full = FullPathOf(argsJson);
+            if (full == null) return null;
+
+            linesReadPerFile.TryGetValue(full, out var already);
+            if (already > 0 && already + requested > maxLinesPerFile)
+                return $"{readBlockedPrefix}: in questo turno hai già letto {already} righe di {Path.GetFileName(full)} " +
+                       $"(limite {maxLinesPerFile} per file). Non leggere il file a pezzi per intero: usa search_in_files o " +
+                       "sym_search per trovare il punto preciso che serve al passo corrente e leggi solo quelle poche righe, " +
+                       "oppure procedi con la modifica in base a quello che hai già letto.";
+            linesReadPerFile[full] = already + requested;
+        }
+        catch { }
+        return null;
+    }
+
+    bool IsReadOnlyCall(string name, string argsJson)
+    {
+        if (readOnlyTools.Contains(name)) return true;
+        if (name != "run_command") return false;
+        try
+        {
+            var el = JsonDocument.Parse(argsJson).RootElement;
+            if (el.TryGetProperty("background", out var bg) && bg.ValueKind == JsonValueKind.True) return false;
+            var cmd = el.TryGetProperty("command", out var c) ? c.GetString() ?? "" : "";
+            // Un run_command conta come AZIONE solo se builda/testa/esegue/modifica qualcosa;
+            // "git diff | Select-Object", "Get-Content", "Select-String", "Copy-Item di un diff"
+            // sono letture travestite e prima azzeravano il conteggio delle letture consecutive.
+            return !actionCommandRegex.IsMatch(cmd);
+        }
+        catch { return false; }
+    }
 
     // Gate di build: il system prompt chiede di verificare le modifiche prima di dichiararle
     // riuscite, ma è solo un'istruzione testuale in mezzo a un prompt lungo — il modello può
@@ -482,6 +626,7 @@ async Task<bool> RunAgentLoopAsync(
     // anticipata dal loop (retry esauriti, limite di step raggiunto).
     void EmitFinalNotice(string text)
     {
+        if (isStdinProtocol) Trace($"  !! {OneLine(text, 200)}");
         history.Add(new ChatMessage { Role = "assistant", Content = text });
         if (onToken != null) onToken(text);
         else { Console.WriteLine(); Console.Write(text); Console.WriteLine(); }
@@ -518,6 +663,7 @@ async Task<bool> RunAgentLoopAsync(
                 // Il disco è cambiato: qualunque rilettura/verifica successiva si riferisce a
                 // uno stato diverso, quindi i conteggi anti-loop precedenti non valgono più.
                 repeatCounts.Clear();
+                if (FullPathOf(argsJson) is { } editedFull) linesReadPerFile.Remove(editedFull);
             }
             catch { }
         }
@@ -541,8 +687,10 @@ async Task<bool> RunAgentLoopAsync(
             // Non possiamo sapere a priori quale sia il comando di build/lint/test corretto
             // per uno stack non-.NET (npm run build / pytest / eslint / ...): ci basiamo sul
             // fatto che il modello abbia REALMENTE chiamato un tool per verificare, invece di
-            // dichiarare a parole un esito mai controllato.
-            hasUnverifiedOtherEdit = false;
+            // dichiarare a parole un esito mai controllato. Conta solo un comando che esegue
+            // davvero qualcosa (build/test/run): un "Get-Content" o un comando rifiutato no.
+            if (!result.StartsWith("ERRORE", StringComparison.Ordinal) && !IsReadOnlyCall(toolName, argsJson))
+                hasUnverifiedOtherEdit = false;
         }
     }
 
@@ -571,15 +719,71 @@ async Task<bool> RunAgentLoopAsync(
                    "e risultato identico. Interrotto per evitare un loop infinito.";
         }
 
-        consecutiveReadOnly = readOnlyTools.Contains(name) ? consecutiveReadOnly + 1 : 0;
+        if (name == "manage_todo")
+        {
+            planTouchedThisTurn = true;
+            // Un passo non può risultare "completato" su codice mai compilato/testato:
+            // osservato un passo "riscrivi ImportService.cs" segnato completed dopo 14 edit
+            // senza nessuna build, con il file che non compilava.
+            // Anche "clear" con passi aperti: osservato il modello che, rifiutato il completed,
+            // cancellava il piano per aggirare il controllo.
+            if ((hasUnverifiedDotnetEdit || hasUnverifiedOtherEdit)
+                && (Regex.IsMatch(argsJson, @"""status""\s*:\s*""(completed|done)""", RegexOptions.IgnoreCase)
+                    || (Regex.IsMatch(argsJson, @"""action""\s*:\s*""clear""", RegexOptions.IgnoreCase) && dispatcher.HasPendingPlan)))
+            {
+                return $"{verifyMissingPrefix}: non puoi segnare un passo come completato né cancellare il piano — hai modificato codice dopo " +
+                       "l'ultima verifica. Prima " + (hasUnverifiedDotnetEdit
+                           ? "esegui sol_analyze"
+                           : "esegui con run_command il comando di build/test del progetto") +
+                       ", correggi eventuali errori, poi richiama manage_todo. Il piano NON è stato aggiornato.";
+            }
+        }
+        else if (IsReadOnlyCall(name, argsJson))
+        {
+            if (readOnlyNudgeGiven) restrictReadOnly = true;
+            if (restrictReadOnly)
+            {
+                readBlocks++;
+                if (readBlocks >= maxReadBlocks)
+                {
+                    loopDetected = true;
+                    stopReason = "⚠️ Mi fermo: ho continuato ad analizzare il codice senza riuscire a passare a una modifica concreta. " +
+                                 "Indicami il prossimo passo preciso da eseguire (file e cosa cambiare), oppure spezza il task in una richiesta più piccola.";
+                }
+                return $"{readBlockedPrefix}: hai già fatto troppe letture senza agire e hai ignorato l'ordine di passare all'azione " +
+                       $"(rifiuto {readBlocks}/{maxReadBlocks}). Questa lettura NON è stata eseguita. Hai già abbastanza informazioni: " +
+                       "ora puoi SOLO (1) applicare la modifica del passo corrente con edit_file/write_file, (2) verificare con " +
+                       "sol_analyze o un comando di build/test, (3) aggiornare il piano con manage_todo, oppure (4) rispondere " +
+                       "SUBITO all'utente: se la richiesta era una domanda/analisi, rispondi con quello che hai già letto " +
+                       "(dichiarando cosa non hai potuto vedere); se ti manca una decisione, fai una domanda precisa.";
+            }
+            if (CheckLineBudget(name, argsJson) is { } overBudget) return overBudget;
+            consecutiveReadOnly++;
+        }
+        else
+        {
+            // Azione concreta: si riparte da zero con il budget di letture.
+            consecutiveReadOnly = 0;
+            readOnlyNudgeGiven = false;
+            restrictReadOnly = false;
+            readBlocks = 0;
+        }
 
         var execResult = dispatcher.Execute(name, argsJson);
 
         var hash = HashCode.Combine(execResult.Length, execResult);
-        if (repeatCounts.TryGetValue(key, out var prev) && prev.ResultHash == hash)
-            repeatCounts[key] = (prev.Count + 1, hash);
-        else
-            repeatCounts[key] = (1, hash);
+        var count = repeatCounts.TryGetValue(key, out var prev) && prev.ResultHash == hash ? prev.Count + 1 : 1;
+        repeatCounts[key] = (count, hash);
+
+        // Avviso già dalla seconda ripetizione identica, prima del blocco: un risultato che
+        // il tool considera riuscito (es. script con try/catch che stampa "ERR: 401" ma esce
+        // con codice 0 → [ESITO: SUCCESSO]) non attiva nessuna riflessione, e il modello
+        // rilanciava lo stesso comando fino al LOOP-BLOCK senza aver mai ricevuto un segnale.
+        if (count >= 2)
+            execResult += $"\n\n[RIPETIZIONE {count}/{maxRepeats}] Questa chiamata è identica a una precedente e ha dato " +
+                          "ESATTAMENTE lo stesso risultato. Ripeterla non cambierà l'esito: se il risultato indica un " +
+                          "errore (es. 401, file mancante, servizio non raggiungibile) cambia approccio, oppure fermati e " +
+                          "chiedi all'utente come procedere.";
 
         return execResult;
     }
@@ -612,10 +816,15 @@ async Task<bool> RunAgentLoopAsync(
             try
             {
                 var context = history.LastOrDefault(m => m.Role == "user")?.Content ?? "";
+                var tools = dispatcher.GetRelevantDefinitions(context);
+                // Modalità "solo azione" (vedi readOnlyNudgeGiven): togliere i tool di lettura
+                // dalla richiesta è più efficace di qualunque istruzione testuale.
+                if (restrictReadOnly)
+                    tools = [.. tools.Where(t => !readOnlyTools.Contains(t.Function.Name))];
                 var request = new ChatRequest
                 {
                     Messages = history,
-                    Tools = dispatcher.GetRelevantDefinitions(context),
+                    Tools = tools,
                     ToolChoice = "auto",
                     MaxTokens = maxTokens,
                     Temperature = temperature,
@@ -768,6 +977,10 @@ async Task<bool> RunAgentLoopAsync(
 
         history.Add(message);
 
+        if (isStdinProtocol)
+            Trace($" [step {step}/{maxSteps}] tool_calls={message.ToolCalls?.Count ?? 0} " +
+                  $"prompt_tokens={usage?.PromptTokens ?? 0} testo: {OneLine(message.Content ?? "", 200)}");
+
         if (message.ToolCalls is { Count: > 0 })
         {
             // Le riflessioni (ruolo "user") vanno accodate DOPO tutti i risultati dei tool di
@@ -808,7 +1021,13 @@ async Task<bool> RunAgentLoopAsync(
                                result.Contains("ambigua") ||
                                result.Contains("[ESITO: FALLITO", StringComparison.OrdinalIgnoreCase);
 
-                if (isError)
+                if (result.StartsWith(readBlockedPrefix, StringComparison.Ordinal) ||
+                    result.StartsWith(verifyMissingPrefix, StringComparison.Ordinal))
+                {
+                    // Il rifiuto spiega già cosa fare: una riflessione generica "l'operazione è
+                    // fallita, analizza il motivo" spingerebbe il modello a indagare ancora.
+                }
+                else if (isError)
                 {
                     // Ruolo "user" (non "system"): alcuni chat template (es. Qwen3) impongono che
                     // il ruolo "system" compaia SOLO come primissimo messaggio e sollevano un'eccezione
@@ -828,10 +1047,14 @@ async Task<bool> RunAgentLoopAsync(
                     // decisione ORA invece di lasciare che continui a "rimuginare" chiamando
                     // altri tool di sola lettura con argomenti leggermente diversi (che il
                     // blocco anti-loop sopra non intercetta, dato che non sono identici).
-                    pendingReflections.Add($"[INTERNAL_REFLECTION]: Hai eseguito {consecutiveReadOnly} controlli di sola lettura consecutivi senza eseguire nessuna azione concreta (edit_file/write_file/run_command/...). " +
-                                  "STOP: nel prossimo passo devi SOLO una di queste due cose — (1) eseguire ORA l'azione che risolve il problema in base a quanto hai già scoperto, oppure " +
-                                  "(2) se non hai abbastanza certezza, fermarti e scrivere all'utente le ipotesi raccolte chiedendo quale approccio preferisce. Non chiamare un altro tool di sola lettura.");
+                    pendingReflections.Add($"[INTERNAL_REFLECTION]: Hai eseguito {consecutiveReadOnly} letture consecutive (file, ricerche, diff, comandi di sola lettura) senza nessuna azione concreta. " +
+                                  "STOP ANALISI: hai già abbastanza informazioni per il passo corrente. Nel prossimo step devi fare SOLO una di queste cose — " +
+                                  "(1) applicare ORA la modifica del passo corrente con edit_file/write_file, (2) verificare con sol_analyze o un comando di build/test, " +
+                                  "(3) se ti manca davvero una decisione, chiederla all'utente con una domanda precisa. " +
+                                  "Se il passo corrente è troppo grande per farlo subito, spezzalo con manage_todo in passi più piccoli e inizia dal primo. " +
+                                  "ATTENZIONE: la prossima lettura verrà rifiutata.");
                     consecutiveReadOnly = 0; // dato un ordine esplicito, riparte il conteggio
+                    readOnlyNudgeGiven = true;
                 }
                 // Nessun messaggio dopo un tool riuscito: il risultato del tool è già l'ultimo
                 // elemento della history e il modello continua da solo. Il vecchio messaggio
@@ -846,7 +1069,7 @@ async Task<bool> RunAgentLoopAsync(
             if (loopDetected)
             {
                 UI.Error("Loop rilevato: interruzione.");
-                EmitFinalNotice(
+                EmitFinalNotice(stopReason ??
                     "⚠️ Mi fermo: ho ripetuto più volte la stessa chiamata ottenendo lo stesso risultato. " +
                     "Dimmi come proseguire o indicami un approccio diverso.");
                 return true;
@@ -881,7 +1104,7 @@ async Task<bool> RunAgentLoopAsync(
                 if (loopDetected)
                 {
                     UI.Error("Loop rilevato: stesso tool richiamato troppe volte con argomenti identici — interruzione.");
-                    EmitFinalNotice(
+                    EmitFinalNotice(stopReason ??
                         "⚠️ Mi fermo: ho ripetuto più volte la stessa chiamata ottenendo lo stesso risultato. " +
                         "Dimmi come proseguire o indicami un approccio diverso.");
                     return true;
@@ -895,6 +1118,7 @@ async Task<bool> RunAgentLoopAsync(
                 if (announcementRetries < maxAnnouncementRetries)
                 {
                     announcementRetries++;
+                    if (isStdinProtocol) Trace($"  !! auto-continue {announcementRetries}: annuncio senza tool call");
                     UI.Dim($"  [auto-continue {announcementRetries}/{maxAnnouncementRetries}] risposta rilevata come annuncio senza tool call — forzo l'esecuzione...");
                     history.Add(new ChatMessage
                     {
@@ -961,6 +1185,7 @@ async Task<bool> RunAgentLoopAsync(
             else if (hasUnverifiedOtherEdit && autoBuildChecks < maxAutoBuildChecks)
             {
                 autoBuildChecks++;
+                if (isStdinProtocol) Trace("  !! auto-check: modifiche non verificate, richiesta verifica");
                 UI.Dim("  [auto-check] modifiche a file di codice non verificate — richiedo verifica esplicita...");
                 history.Add(new ChatMessage
                 {
@@ -969,6 +1194,28 @@ async Task<bool> RunAgentLoopAsync(
                               "per verificarli (build/lint/test). NON dichiarare il task concluso, la build riuscita o le modifiche " +
                               "corrette finché non hai eseguito ORA, con run_command, il comando di build/lint/test appropriato per " +
                               "questo progetto e ne hai controllato l'esito REALE nel risultato del tool."
+                });
+                continue;
+            }
+
+            // ── Gate di avanzamento del piano ────────────────────────────────────
+            // Il modello chiude il turno con testo mentre il piano su cui ha lavorato IN QUESTO
+            // turno ha ancora passi aperti e non sta chiedendo nulla all'utente: tipicamente un
+            // riepilogo intermedio dopo un singolo passo. Lo rimandiamo al passo successivo (max
+            // maxPlanContinueRetries volte). planTouchedThisTurn evita di forzare il piano su una
+            // domanda scollegata fatta in una chat che ha un piano salvato da prima.
+            if (planTouchedThisTurn && dispatcher.HasPendingPlan && !message.Content.Contains('?')
+                && planContinueRetries < maxPlanContinueRetries && step < maxSteps - 1)
+            {
+                planContinueRetries++;
+                if (isStdinProtocol) Trace($"  !! auto-continue piano {planContinueRetries}/{maxPlanContinueRetries}");
+                UI.Dim($"  [auto-continue piano {planContinueRetries}/{maxPlanContinueRetries}] passi ancora aperti — proseguo...");
+                history.Add(new ChatMessage
+                {
+                    Role = "user",
+                    Content = "[AUTO-CONTINUE] Il piano ha ancora passi non completati:\n" + dispatcher.PlanSummary() +
+                              "\nNon fermarti tra un passo e l'altro: aggiorna con manage_todo il passo appena concluso (se non l'hai fatto) " +
+                              "e prosegui SUBITO con il successivo. Se invece ti serve una decisione dell'utente, chiedila con una domanda esplicita."
                 });
                 continue;
             }
@@ -1099,8 +1346,9 @@ async Task RunStdinProtocolAsync()
                 // resettiamo tutto lo stato legato alla conversazione precedente (piano, cache
                 // dei file letti, cwd del terminale) per non mescolare conversazioni scollegate.
                 // Il processo stesso NON viene ucciso: resta vivo, si resetta solo il suo stato.
-                history = [ChatMessage.System(BuildSystemPrompt()), ChatMessage.User(prompt)];
+                // Il piano invece viene ricaricato da disco PRIMA del system prompt, che lo include.
                 dispatcher.ResetTodo();
+                history = [ChatMessage.System(BuildSystemPrompt()), ChatMessage.User(prompt)];
                 dispatcher.ClearCache();
                 dispatcher.ResetCwd();
             }
@@ -1112,18 +1360,31 @@ async Task RunStdinProtocolAsync()
                 history.Add(ChatMessage.User(prompt));
             }
 
+            Trace($"=== Turno {DateTime.Now:yyyy-MM-dd HH:mm:ss} | modello '{llm.Model}' | history={history.Count} msg | prompt: {OneLine(prompt, 200)}");
+
             await RunAgentLoopAsync(
                 maxTokens: 32768,
                 onToken: text => EmitEvent(new { type = "token", text }),
                 onToolCall: (tool, argsJson) =>
                 {
+                    Trace($"  -> {tool}({OneLine(argsJson, 300)})");
                     object args;
                     try { args = JsonSerializer.Deserialize<JsonElement>(argsJson); }
                     catch { args = argsJson; }
                     EmitEvent(new { type = "tool_call", tool, args });
                 },
-                onToolResult: (tool, result) => EmitEvent(new { type = "tool_result", tool, result }),
+                onToolResult: (tool, result) =>
+                {
+                    Trace($"  <- {tool}: {OneLine(result, 300)}");
+                    // La parte [PER L'AGENTE] di manage_todo (id, prossimo passo) serve al modello,
+                    // che la riceve comunque in history: in chat si mostra solo il piano.
+                    var hintAt = tool == "manage_todo" ? result.IndexOf(LocalCodeAgent.Tools.TodoTools.AgentHintMarker, StringComparison.Ordinal) : -1;
+                    if (hintAt >= 0) result = result[..hintAt];
+                    EmitEvent(new { type = "tool_result", tool, result });
+                },
                 onStatus: text => EmitEvent(new { type = "status", text }));
+
+            Trace("=== Fine turno");
 
             EmitEvent(new { type = "done" });
         }
@@ -1151,10 +1412,10 @@ async Task<bool> HandleSpecialCommandAsync(string input)
     switch (lower)
     {
         case "/reset":
+            dispatcher.ResetTodo();
             ResetHistory();
             dispatcher.ClearCache();
             dispatcher.ResetCwd();
-            dispatcher.ResetTodo();
             UI.Ok("Conversazione resettata.");
             return true;
 
@@ -1273,10 +1534,10 @@ async Task<bool> HandleSpecialCommandAsync(string input)
                 try
                 {
                     workspace.SetRoot(newPath);
+                    dispatcher.ResetTodo();
                     ResetHistory();
                     dispatcher.ClearCache();
                     dispatcher.ResetCwd();
-                    dispatcher.ResetTodo();
                     UI.Ok($"Workspace: {workspace.Root}");
                     var hasAgentsMd = File.Exists(Path.Combine(workspace.Root, "AGENTS.md"));
                     UI.Dim(hasAgentsMd ? "AGENTS.md trovato." : "Nessun AGENTS.md — usa /init.");

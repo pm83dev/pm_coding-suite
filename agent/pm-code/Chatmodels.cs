@@ -62,6 +62,18 @@ public class ChatRequest
     [JsonPropertyName("stream")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Stream { get; set; }
+
+    // Senza include_usage llama-server non manda il chunk finale con "usage" in streaming:
+    // prompt_tokens restava 0 e SessionManager.RecordRealUsage non ricalibrava mai la stima.
+    [JsonPropertyName("stream_options")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StreamOptions? StreamOptions { get; set; }
+}
+
+public class StreamOptions
+{
+    [JsonPropertyName("include_usage")]
+    public bool IncludeUsage { get; set; } = true;
 }
 
 public class ChatMessage

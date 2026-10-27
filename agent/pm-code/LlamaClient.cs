@@ -110,6 +110,7 @@ public class LlamaClient
     {
         request.Model  = Model;
         request.Stream = true;
+        request.StreamOptions = new StreamOptions();
 
         using var httpReq = new HttpRequestMessage(HttpMethod.Post, EndpointOverride ?? "/v1/chat/completions");
         httpReq.Content = JsonContent.Create(request, options: _json);
