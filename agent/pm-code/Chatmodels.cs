@@ -31,6 +31,34 @@ public class ChatRequest
     [JsonPropertyName("frequency_penalty")]
     public float FrequencyPenalty { get; set; } = 0.3f;
 
+    // Parametri di campionamento opzionali (LlmSettings in appsettings.json): se null non
+    // vengono inviati e llama-server usa i propri default (quelli di avvio del server).
+    // top_k, min_p, repeat_penalty e repeat_last_n non sono OpenAI-standard ma llama-server
+    // li accetta anche su /v1/chat/completions.
+    [JsonPropertyName("presence_penalty")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? PresencePenalty { get; set; }
+
+    [JsonPropertyName("top_p")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? TopP { get; set; }
+
+    [JsonPropertyName("top_k")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TopK { get; set; }
+
+    [JsonPropertyName("min_p")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? MinP { get; set; }
+
+    [JsonPropertyName("repeat_penalty")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? RepeatPenalty { get; set; }
+
+    [JsonPropertyName("repeat_last_n")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RepeatLastN { get; set; }
+
     [JsonPropertyName("stream")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Stream { get; set; }

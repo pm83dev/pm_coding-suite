@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Lavoro in corso**: leggi `../HANDOFF.md` (modifiche non ancora compilate a `pm-code/Program.cs`, verifiche aperte, progetto agente autonomo).
+
 ## Project Overview
 
 **pm-code-agent** is a local AI coding agent built in C# (.NET 8) that uses a ReAct (Reasoning + Acting) loop to autonomously generate and analyze code. It communicates with a local LLM inference server (llama.cpp) via an OpenAI-compatible REST API. The agent interaction language is Italian.

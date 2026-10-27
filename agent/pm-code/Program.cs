@@ -63,6 +63,31 @@ if (!Directory.Exists(fullWorkspacePath))
 var braveApiKey = config["WebSearchSettings:BraveApiKey"];
 var maxContextTokens = int.TryParse(config["AgentSettings:MaxContextTokens"], out var mct) ? mct : 6000;
 
+// Parametri di campionamento e soglie anti-loop, tutti opzionali: se assenti restano i
+// valori storici (temperature 0, frequency_penalty 0.3, nessun altro parametro inviato).
+// InvariantCulture obbligatoria: con cultura it-IT "0.4" verrebbe letto come 4.
+float? GetFloatSetting(string key) =>
+    float.TryParse(config[key], System.Globalization.NumberStyles.Float,
+        System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
+int? GetIntSetting(string key) => int.TryParse(config[key], out var v) ? v : null;
+
+var temperature      = GetFloatSetting("LlmSettings:Temperature") ?? 0.0f;
+var frequencyPenalty = GetFloatSetting("LlmSettings:FrequencyPenalty") ?? 0.3f;
+var presencePenalty  = GetFloatSetting("LlmSettings:PresencePenalty");
+var topP             = GetFloatSetting("LlmSettings:TopP");
+var topK             = GetIntSetting("LlmSettings:TopK");
+var minP             = GetFloatSetting("LlmSettings:MinP");
+var repeatPenalty    = GetFloatSetting("LlmSettings:RepeatPenalty");
+var repeatLastN      = GetIntSetting("LlmSettings:RepeatLastN");
+var maxRepeats             = GetIntSetting("AgentSettings:MaxRepeats") ?? 3;
+var maxConsecutiveReadOnly = GetIntSetting("AgentSettings:MaxConsecutiveReadOnly") ?? 6;
+
+UI.Dim($"Sampling: temperature={temperature} frequency_penalty={frequencyPenalty} " +
+       $"presence_penalty={presencePenalty?.ToString() ?? "-"} top_p={topP?.ToString() ?? "-"} " +
+       $"top_k={topK?.ToString() ?? "-"} min_p={minP?.ToString() ?? "-"} " +
+       $"repeat_penalty={repeatPenalty?.ToString() ?? "-"} repeat_last_n={repeatLastN?.ToString() ?? "-"} | " +
+       $"anti-loop: MaxRepeats={maxRepeats} MaxConsecutiveReadOnly={maxConsecutiveReadOnly}");
+
 var workspace = new WorkspaceContext(fullWorkspacePath);
 var llm = new LlamaClient(serverUrl, model);
 
@@ -350,8 +375,11 @@ async Task<bool> RunAgentLoopAsync(
     // Guard anti-loop: blocca chiamate identiche (stesso tool + stessi argomenti)
     // ripetute troppe volte — i modelli locali a volte ignorano il soft-block testuale
     // e ricontinuano a richiamare lo stesso tool all'infinito fino a maxSteps.
-    var repeatCounts = new Dictionary<string, int>();
-    const int maxRepeats = 3;
+    // Il contatore conta le chiamate identiche CHE DANNO ANCHE LO STESSO RISULTATO: una
+    // rilettura che restituisce contenuto diverso (es. file modificato nel frattempo) non è
+    // un loop. Viene inoltre azzerato interamente dopo ogni edit/write riuscito (TrackBuildState).
+    // Soglia: AgentSettings:MaxRepeats (default 3).
+    var repeatCounts = new Dictionary<string, (int Count, int ResultHash)>();
     bool loopDetected = false;
 
     // Tool di polling: rileggere lo stesso PID con gli stessi argomenti è il modo corretto
@@ -380,7 +408,7 @@ async Task<bool> RunAgentLoopAsync(
         "list_directory", "get_workspace_tree", "get_directory_details",
         "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
     };
-    const int maxConsecutiveReadOnly = 6;
+    // Soglia: AgentSettings:MaxConsecutiveReadOnly (default 6).
     int consecutiveReadOnly = 0;
 
     // Gate di build: il system prompt chiede di verificare le modifiche prima di dichiararle
@@ -487,6 +515,9 @@ async Task<bool> RunAgentLoopAsync(
                 else if (codeExtensions.Contains(Path.GetExtension(path)))
                     hasUnverifiedOtherEdit = true;
                 successfulEditSinceLastVerify = true;
+                // Il disco è cambiato: qualunque rilettura/verifica successiva si riferisce a
+                // uno stato diverso, quindi i conteggi anti-loop precedenti non valgono più.
+                repeatCounts.Clear();
             }
             catch { }
         }
@@ -527,22 +558,30 @@ async Task<bool> RunAgentLoopAsync(
 
         if (verificationTools.Contains(name) && successfulEditSinceLastVerify)
         {
-            repeatCounts[key] = 0;
+            repeatCounts.Remove(key);
             successfulEditSinceLastVerify = false;
         }
 
-        repeatCounts.TryGetValue(key, out var count);
-        repeatCounts[key] = ++count;
-        if (count > maxRepeats)
+        // Blocca solo se questa stessa chiamata ha già prodotto maxRepeats volte lo STESSO
+        // risultato: il modello non ha nuove informazioni e ripeterla non può servire.
+        if (repeatCounts.TryGetValue(key, out var state) && state.Count >= maxRepeats)
         {
             loopDetected = true;
-            return $"[LOOP-BLOCK] Tool '{name}' chiamato {count} volte con argomenti identici. " +
-                   "Interrotto per evitare un loop infinito.";
+            return $"[LOOP-BLOCK] Tool '{name}' chiamato {state.Count + 1} volte con argomenti identici " +
+                   "e risultato identico. Interrotto per evitare un loop infinito.";
         }
 
         consecutiveReadOnly = readOnlyTools.Contains(name) ? consecutiveReadOnly + 1 : 0;
 
-        return dispatcher.Execute(name, argsJson);
+        var execResult = dispatcher.Execute(name, argsJson);
+
+        var hash = HashCode.Combine(execResult.Length, execResult);
+        if (repeatCounts.TryGetValue(key, out var prev) && prev.ResultHash == hash)
+            repeatCounts[key] = (prev.Count + 1, hash);
+        else
+            repeatCounts[key] = (1, hash);
+
+        return execResult;
     }
 
     int step = 0;
@@ -579,7 +618,14 @@ async Task<bool> RunAgentLoopAsync(
                     Tools = dispatcher.GetRelevantDefinitions(context),
                     ToolChoice = "auto",
                     MaxTokens = maxTokens,
-                    Temperature = 0.0f
+                    Temperature = temperature,
+                    FrequencyPenalty = frequencyPenalty,
+                    PresencePenalty = presencePenalty,
+                    TopP = topP,
+                    TopK = topK,
+                    MinP = minP,
+                    RepeatPenalty = repeatPenalty,
+                    RepeatLastN = repeatLastN
                 };
 
                 // Print step indicator (solo REPL: in stdin-protocol andrebbe su stdout e
@@ -724,6 +770,11 @@ async Task<bool> RunAgentLoopAsync(
 
         if (message.ToolCalls is { Count: > 0 })
         {
+            // Le riflessioni (ruolo "user") vanno accodate DOPO tutti i risultati dei tool di
+            // questo messaggio: inserirle in mezzo spezza la sequenza assistant(tool_calls) ->
+            // tool, tool, ... che i chat template si aspettano contigua.
+            var pendingReflections = new List<string>();
+
             foreach (var tc in message.ToolCalls)
             {
                 if (onToolCall != null) onToolCall(tc.Function.Name, tc.Function.Arguments);
@@ -744,10 +795,10 @@ async Task<bool> RunAgentLoopAsync(
                 // BUG CRITICO CORRETTO: questo controllo non intercettava "ERRORE:" — il prefisso
                 // usato da QUASI TUTTE le validazioni di FileSystemTools (write_file/edit_file rifiutati
                 // per dimensione, file non letto, argomenti mancanti, ecc. — vedi FileSystemTools.cs).
-                // Un write_file rifiutato per limite di 2000 caratteri finiva quindi nel ramo ELSE sotto,
-                // che dice al modello "l'operazione è stata eseguita con successo" — un FALSO POSITIVO che
-                // spiega perché il modello, dopo un fallimento reale, dichiarava il task concluso con un
-                // annuncio testuale invece di correggere la tool call.
+                // Un write_file rifiutato per limite di 2000 caratteri veniva quindi trattato come riuscito
+                // (all'epoca con il messaggio "l'operazione è stata eseguita con successo", oggi rimosso) —
+                // un FALSO POSITIVO che spiegava perché il modello, dopo un fallimento reale, dichiarava il
+                // task concluso con un annuncio testuale invece di correggere la tool call.
                 bool isError = result.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase) ||
                                result.StartsWith("⚠️", StringComparison.Ordinal) ||
                                result.StartsWith("[LOOP-BLOCK]", StringComparison.Ordinal) ||
@@ -769,11 +820,7 @@ async Task<bool> RunAgentLoopAsync(
                     var reflection = result.StartsWith("[LOOP-BLOCK]", StringComparison.Ordinal)
                         ? "[INTERNAL_REFLECTION]: Hai richiamato lo stesso comando con gli stessi argomenti troppe volte di fila senza che il risultato cambiasse. NON ripetere lo stesso comando. Se stai verificando una modifica .NET usa sol_analyze (mai run_command/dotnet build). Se il comando è corretto ma l'errore persiste, il problema non è nel comando: rileggi l'output con attenzione, controlla se le tue modifiche precedenti sono state davvero applicate (es. rileggi il file), e correggi la causa reale — oppure fermati e spiega all'utente cosa hai provato e dove sei bloccato."
                         : "[INTERNAL_REFLECTION]: L'operazione precedente ha fallito o è stata ambigua. Analizza il motivo (percorso errato? stringa non univoca? file mancante?) e proponi una soluzione correttiva diversa nel prossimo passo.";
-                    history.Add(new ChatMessage
-                    {
-                        Role = "user",
-                        Content = reflection
-                    });
+                    pendingReflections.Add(reflection);
                 }
                 else if (consecutiveReadOnly >= maxConsecutiveReadOnly)
                 {
@@ -781,32 +828,32 @@ async Task<bool> RunAgentLoopAsync(
                     // decisione ORA invece di lasciare che continui a "rimuginare" chiamando
                     // altri tool di sola lettura con argomenti leggermente diversi (che il
                     // blocco anti-loop sopra non intercetta, dato che non sono identici).
-                    history.Add(new ChatMessage
-                    {
-                        Role = "user",
-                        Content = $"[INTERNAL_REFLECTION]: Hai eseguito {consecutiveReadOnly} controlli di sola lettura consecutivi senza eseguire nessuna azione concreta (edit_file/write_file/run_command/...). " +
+                    pendingReflections.Add($"[INTERNAL_REFLECTION]: Hai eseguito {consecutiveReadOnly} controlli di sola lettura consecutivi senza eseguire nessuna azione concreta (edit_file/write_file/run_command/...). " +
                                   "STOP: nel prossimo passo devi SOLO una di queste due cose — (1) eseguire ORA l'azione che risolve il problema in base a quanto hai già scoperto, oppure " +
-                                  "(2) se non hai abbastanza certezza, fermarti e scrivere all'utente le ipotesi raccolte chiedendo quale approccio preferisce. Non chiamare un altro tool di sola lettura."
-                    });
+                                  "(2) se non hai abbastanza certezza, fermarti e scrivere all'utente le ipotesi raccolte chiedendo quale approccio preferisce. Non chiamare un altro tool di sola lettura.");
                     consecutiveReadOnly = 0; // dato un ordine esplicito, riparte il conteggio
                 }
-                else
-                {
-                    // Se ha successo, incoraggiamo a procedere o a verificare se il task è finito
-                    history.Add(new ChatMessage
-                    {
-                        Role = "user",
-                        Content = "[INTERNAL_REFLECTION]: L'operazione è stata eseguita con successo. Valuta se il task è completato o se devi eseguire ulteriori azioni per raggiungere l'obiettivo."
-                    });
-                }
+                // Nessun messaggio dopo un tool riuscito: il risultato del tool è già l'ultimo
+                // elemento della history e il modello continua da solo. Il vecchio messaggio
+                // "operazione eseguita con successo" aggiungeva un turno "user" per ogni tool call
+                // senza dare informazione.
             }
 
-            // Impediamo loop infiniti (es. lo stesso tool fallisce 5 volte di fila)
+            // Impediamo loop infiniti (es. lo stesso tool fallisce 5 volte di fila).
+            // Il turno si chiude con un messaggio assistant (visibile in chat) così la history
+            // non finisce su un turno "user" e il messaggio successivo dell'utente non crea due
+            // "user" consecutivi (che i template tipo Qwen3 rifiutano).
             if (loopDetected)
             {
                 UI.Error("Loop rilevato: interruzione.");
+                EmitFinalNotice(
+                    "⚠️ Mi fermo: ho ripetuto più volte la stessa chiamata ottenendo lo stesso risultato. " +
+                    "Dimmi come proseguire o indicami un approccio diverso.");
                 return true;
             }
+
+            if (pendingReflections.Count > 0)
+                history.Add(new ChatMessage { Role = "user", Content = string.Join("\n\n", pendingReflections.Distinct()) });
             continue; // Torna all'inizio del ciclo per far elaborare i nuovi dati alla LLM
         }
 
@@ -834,6 +881,9 @@ async Task<bool> RunAgentLoopAsync(
                 if (loopDetected)
                 {
                     UI.Error("Loop rilevato: stesso tool richiamato troppe volte con argomenti identici — interruzione.");
+                    EmitFinalNotice(
+                        "⚠️ Mi fermo: ho ripetuto più volte la stessa chiamata ottenendo lo stesso risultato. " +
+                        "Dimmi come proseguire o indicami un approccio diverso.");
                     return true;
                 }
                 continue;
