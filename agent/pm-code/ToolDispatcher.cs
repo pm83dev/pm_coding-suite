@@ -17,6 +17,7 @@ public class ToolDispatcher
     private readonly GitTools _git;
     private readonly WebTools _web;
     private readonly TodoTools _todo;
+    private readonly ProjectNotesTools _notes;
 
     // Cache read_file: path → contenuto già letto (soft-block su duplicati)
     private readonly Dictionary<string, string> _fileCache =
@@ -31,6 +32,7 @@ public class ToolDispatcher
         _web = new WebTools(braveApiKey);
         _todo = new TodoTools(workspace);
         _todo.Reload();
+        _notes = new ProjectNotesTools(workspace);
     }
 
     public List<ToolDefinition> AllDefinitions =>
@@ -40,7 +42,8 @@ public class ToolDispatcher
         .._git.Definitions,
         .._agent.Definitions,
         .._web.Definitions,
-        .._todo.Definitions
+        .._todo.Definitions,
+        .._notes.Definitions
     ];
 
     public List<ToolDefinition> GetDefinitionsByCategory(string category) =>
@@ -81,6 +84,7 @@ public class ToolDispatcher
             "search_in_files" or "sym_search" or "glob_files" or
             "read_file_range"));
         defs.AddRange(_todo.Definitions);
+        defs.AddRange(_notes.Definitions);
 
         // Git in sola lettura — sempre inclusi: con un prompt tipo "prosegui" (nessuna parola
         // chiave git) il modello non li aveva e ripiegava su run_command "git diff | Select-Object
@@ -138,10 +142,15 @@ public class ToolDispatcher
 
     public bool HasPendingPlan => _todo.HasPendingItems;
 
+    public string? ProjectNotesSummary() => _notes.PromptSummary();
+
     public string Execute(string toolName, string argumentsJson)
     {
         if (toolName == "manage_todo")
             return _todo.Execute(argumentsJson);
+
+        if (toolName == "project_notes")
+            return _notes.Execute(argumentsJson);
 
         // ── Gestione read_file_range ──────────────────────────────────────
         if (toolName == "read_file_range")

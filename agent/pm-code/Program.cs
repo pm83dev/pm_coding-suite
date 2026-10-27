@@ -254,9 +254,19 @@ string BuildSystemPrompt()
 
         """;
 
+    var notes = dispatcher.ProjectNotesSummary();
+    var notesContext = notes == null
+        ? "\nMEMORIA DEL PROGETTO: vuota. Quando scopri come avviare/testare questo progetto, salvalo con project_notes.\n"
+        : $"""
+
+        MEMORIA DEL PROGETTO (note verificate nelle sessioni precedenti, gestite con project_notes — usale invece di riscoprire):
+        {notes}
+
+        """;
+
     return $"""
         Sei un agente di sviluppo software autonomo. Workspace: {workspace.Root}
-        {agentsContext}{planContext}
+        {agentsContext}{notesContext}{planContext}
         METODO DI LAVORO — PICCOLI PASSI (vale per ogni task che richiede più di 2 azioni):
         1. Crea il piano con manage_todo action="create": passi PICCOLI, ognuno = UNA modifica concreta e
            verificabile (es. "estrai metodo X", "aggiungi controllo null in Y + build"), mai passi tipo
@@ -273,6 +283,23 @@ string BuildSystemPrompt()
         Rispondi all'utente solo quando tutti i passi sono completati, oppure quando ti serve una sua decisione
         (in quel caso fai una domanda precisa). Un'informazione mancante non bloccante non è un motivo per
         fermarsi: fai l'ipotesi più ragionevole, scrivila nella note e prosegui.
+
+        VALIDAZIONE FUNZIONALE — sei TU a dover dimostrare che il risultato funziona, l'utente non testa al posto tuo:
+        - La build dice solo che il codice compila. Un task che cambia il comportamento NON è concluso finché non hai
+          ESEGUITO il programma e controllato l'esito reale: test automatici (dotnet test, npm test, pytest), oppure
+          avvio dell'app (run_command background=true, poi get_background_output per attendere che sia pronta) e
+          chiamata reale (Invoke-WebRequest/curl allo endpoint, script di test del progetto, programma con input di prova).
+        - Nel piano, l'ULTIMO passo è sempre "Test funzionale: <comando/procedura> → atteso: <risultato>". Se l'utente
+          ha fornito un risultato atteso (es. un JSON di riferimento), confronta campo per campo l'output reale con quello
+          e scrivi nella note quali campi coincidono e quali no.
+        - Se il test fallisce o l'output non coincide: individua la causa, correggi (nuovo passo nel piano), riesegui il
+          test. Ripeti finché coincide. Fermati solo se dopo 3 tentativi diversi non migliora: allora riporta all'utente
+          l'ultimo output reale, le differenze e le ipotesi.
+        - Se manca qualcosa per testare (es. credenziali, servizio esterno spento), cerca nel progetto come si fa (script
+          di test, README, launch.json, appsettings.Development) prima di chiedere; chiedi all'utente solo se non c'è.
+        - Comandi di test lunghi (chiamate a un LLM, elaborazione di PDF): passa timeout_ms adeguato (es. 300000).
+        - Quando hai capito come si avvia/testa il progetto (comando, endpoint, login, file di prova, esito atteso),
+          salvalo con project_notes action="add": nella prossima sessione lo troverai già pronto.
 
         REGOLE:
         - LIMITE RIGIDO ASSOLUTO, NESSUNA ECCEZIONE (leggi questo prima di ogni write_file/edit_file):
@@ -422,7 +449,14 @@ var actionCommandRegex = new Regex(
     @"cargo|go\s+(build|test|run)|mvn|gradle|make|msbuild|" +
     @"git\s+(add|commit|checkout|switch|restore|stash|reset|merge|rebase|apply|rm|mv)|" +
     @"Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget|" +
-    @"Stop-Process|Start-Process|kill|taskkill|Remove-Item|Move-Item|Rename-Item|New-Item|Set-Content|Add-Content|mkdir|rm\s|mv\s|cp\s)\b",
+    @"Stop-Process|Start-Process|kill|taskkill|Remove-Item|Move-Item|Rename-Item|New-Item|Set-Content|Add-Content|mkdir|rm\s|mv\s|cp\s)\b" +
+    @"|\.(ps1|sh|bat|cmd|exe)\b",
+    RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+// Comandi che ESEGUONO il programma o i suoi test (verifica funzionale, non solo build).
+var functionalCheckRegex = new Regex(
+    @"\b(dotnet\s+(test|run)|npm\s+(test|run|start)|npx|yarn|pnpm|pytest|python|py\s|node\s|go\s+(test|run)|" +
+    @"cargo\s+(test|run)|mvn|gradle|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget)\b|\.(ps1|sh|bat|cmd|exe)\b",
     RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
@@ -494,6 +528,20 @@ async Task<bool> RunAgentLoopAsync(
     bool planTouchedThisTurn = false;
     int planContinueRetries = 0;
     const int maxPlanContinueRetries = 2;
+
+    // Validazione funzionale: la build da sola non dimostra che il comportamento sia corretto
+    // (osservato: import PDF riscritto, build verde, mai eseguito → l'utente doveva testare a mano).
+    // Dopo l'ultima modifica al codice deve esserci stata un'esecuzione reale (test, programma,
+    // chiamata HTTP, script) prima di chiudere il piano o dichiarare concluso un task multi-step.
+    bool codeEditedThisTurn = false;
+    bool functionalCheckSinceEdit = false;
+    int functionalCheckRetries = 0;
+    const int maxFunctionalCheckRetries = 2;
+    const string functionalMissingPrefix = "⚠️ VERIFICA FUNZIONALE MANCANTE";
+
+    // Dopo un rifiuto per verifica mancante, altre modifiche sono bloccate finché il modello non
+    // tenta una build/test: altrimenti accumulava 5 edit e verificava tutto insieme alla fine.
+    bool verifyRequired = false;
 
     // Righe lette per file in questo turno (read_file/read_file_range con range). Le letture
     // a blocchi di 200-300 righe sono tutte diverse tra loro, quindi sfuggono al guard sulle
@@ -659,6 +707,11 @@ async Task<bool> RunAgentLoopAsync(
                     hasUnverifiedDotnetEdit = true;
                 else if (codeExtensions.Contains(Path.GetExtension(path)))
                     hasUnverifiedOtherEdit = true;
+                if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || codeExtensions.Contains(Path.GetExtension(path)))
+                {
+                    codeEditedThisTurn = true;
+                    functionalCheckSinceEdit = false;
+                }
                 successfulEditSinceLastVerify = true;
                 // Il disco è cambiato: qualunque rilettura/verifica successiva si riferisce a
                 // uno stato diverso, quindi i conteggi anti-loop precedenti non valgono più.
@@ -669,7 +722,8 @@ async Task<bool> RunAgentLoopAsync(
         }
         else if (toolName == "sol_analyze")
         {
-            hasUnverifiedDotnetEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
+            hasUnverifiedDotnetEdit = DotnetBuildFailed(result) && (codeEditedThisTurn || hasUnverifiedDotnetEdit);
+            verifyRequired = false;
         }
         else if (toolName == "run_dotnet")
         {
@@ -678,7 +732,11 @@ async Task<bool> RunAgentLoopAsync(
                 var el = JsonDocument.Parse(argsJson).RootElement;
                 var a = el.TryGetProperty("args", out var av) ? av.GetString() ?? "" : "";
                 if (Has(a, "build", "test", "run"))
-                    hasUnverifiedDotnetEdit = result.Contains("FALLITO") || Regex.IsMatch(result, @"error CS\d+");
+                {
+                    hasUnverifiedDotnetEdit = DotnetBuildFailed(result) && (codeEditedThisTurn || hasUnverifiedDotnetEdit);
+                    verifyRequired = false;
+                }
+                if (Has(a, "test", "run")) functionalCheckSinceEdit = true;
             }
             catch { }
         }
@@ -690,9 +748,29 @@ async Task<bool> RunAgentLoopAsync(
             // dichiarare a parole un esito mai controllato. Conta solo un comando che esegue
             // davvero qualcosa (build/test/run): un "Get-Content" o un comando rifiutato no.
             if (!result.StartsWith("ERRORE", StringComparison.Ordinal) && !IsReadOnlyCall(toolName, argsJson))
+            {
                 hasUnverifiedOtherEdit = false;
+                verifyRequired = false;
+                // Un'esecuzione reale (non l'avvio in background, che va poi interrogato con una
+                // chiamata vera) conta come verifica funzionale.
+                try
+                {
+                    var el = JsonDocument.Parse(argsJson).RootElement;
+                    var isBackground = el.TryGetProperty("background", out var bg) && bg.ValueKind == JsonValueKind.True;
+                    var cmd = el.TryGetProperty("command", out var c) ? c.GetString() ?? "" : "";
+                    if (!isBackground && functionalCheckRegex.IsMatch(cmd)) functionalCheckSinceEdit = true;
+                }
+                catch { }
+            }
         }
     }
+
+    // Un fallimento dovuto SOLO al file di output bloccato (MSB3021-3027: exe in uso, es. l'API
+    // già avviata da VS) non è un errore di codice: la compilazione è riuscita, fallisce solo la
+    // copia finale. Prima veniva trattato come "codice non verificato" e bloccava manage_todo.
+    static bool DotnetBuildFailed(string result) =>
+        Regex.IsMatch(result, @"error CS\d+") ||
+        (result.Contains("FALLITO") && !Regex.IsMatch(result, @"MSB302[1-7]"));
 
     bool Has(string s, params string[] kw) =>
         kw.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase));
@@ -722,6 +800,17 @@ async Task<bool> RunAgentLoopAsync(
         if (name == "manage_todo")
         {
             planTouchedThisTurn = true;
+            // Creare il piano è la risposta richiesta dall'ordine "agisci o spezza il task":
+            // riparte il budget di letture, altrimenti la prima lettura per il passo 1 veniva
+            // rifiutata subito dopo la creazione del piano. Solo create (non update), così
+            // alternare letture e aggiornamenti del piano non aggira il guard.
+            if (Regex.IsMatch(argsJson, @"""action""\s*:\s*""create""", RegexOptions.IgnoreCase))
+            {
+                consecutiveReadOnly = 0;
+                readOnlyNudgeGiven = false;
+                restrictReadOnly = false;
+                readBlocks = 0;
+            }
             // Un passo non può risultare "completato" su codice mai compilato/testato:
             // osservato un passo "riscrivi ImportService.cs" segnato completed dopo 14 edit
             // senza nessuna build, con il file che non compilava.
@@ -731,12 +820,35 @@ async Task<bool> RunAgentLoopAsync(
                 && (Regex.IsMatch(argsJson, @"""status""\s*:\s*""(completed|done)""", RegexOptions.IgnoreCase)
                     || (Regex.IsMatch(argsJson, @"""action""\s*:\s*""clear""", RegexOptions.IgnoreCase) && dispatcher.HasPendingPlan)))
             {
+                verifyRequired = true;
                 return $"{verifyMissingPrefix}: non puoi segnare un passo come completato né cancellare il piano — hai modificato codice dopo " +
                        "l'ultima verifica. Prima " + (hasUnverifiedDotnetEdit
                            ? "esegui sol_analyze"
                            : "esegui con run_command il comando di build/test del progetto") +
-                       ", correggi eventuali errori, poi richiama manage_todo. Il piano NON è stato aggiornato.";
+                       ", correggi eventuali errori, poi richiama manage_todo. Il piano NON è stato aggiornato. " +
+                       "Fino ad allora altre modifiche (edit_file/write_file) verranno rifiutate.";
             }
+
+            if (codeEditedThisTurn && !functionalCheckSinceEdit
+                && Regex.IsMatch(argsJson, @"""action""\s*:\s*""clear""", RegexOptions.IgnoreCase))
+            {
+                return $"{functionalMissingPrefix}: non puoi chiudere il piano — dopo l'ultima modifica hai solo compilato, " +
+                       "non hai mai ESEGUITO il programma. Esegui ora il test funzionale (test automatici, oppure avvia l'app " +
+                       "in background e fai la chiamata reale / lo script di test) e confronta l'output con il risultato atteso. " +
+                       "Se coincide chiudi il piano; se no correggi e ritesta. Se ti manca davvero qualcosa per testare, " +
+                       "chiedilo all'utente con una domanda precisa.";
+            }
+        }
+        else if (name == "project_notes")
+        {
+            // Neutro come manage_todo: annotare non è né leggere né agire.
+        }
+        else if (verifyRequired && name is ("edit_file" or "write_file")
+                 && (hasUnverifiedDotnetEdit || hasUnverifiedOtherEdit))
+        {
+            return $"{verifyMissingPrefix}: modifica rifiutata — devi prima verificare quelle già fatte. Esegui " +
+                   (hasUnverifiedDotnetEdit ? "sol_analyze" : "il comando di build/test con run_command") +
+                   " e, se fallisce, potrai correggere subito dopo.";
         }
         else if (IsReadOnlyCall(name, argsJson))
         {
@@ -1022,7 +1134,8 @@ async Task<bool> RunAgentLoopAsync(
                                result.Contains("[ESITO: FALLITO", StringComparison.OrdinalIgnoreCase);
 
                 if (result.StartsWith(readBlockedPrefix, StringComparison.Ordinal) ||
-                    result.StartsWith(verifyMissingPrefix, StringComparison.Ordinal))
+                    result.StartsWith(verifyMissingPrefix, StringComparison.Ordinal) ||
+                    result.StartsWith(functionalMissingPrefix, StringComparison.Ordinal))
                 {
                     // Il rifiuto spiega già cosa fare: una riflessione generica "l'operazione è
                     // fallita, analizza il motivo" spingerebbe il modello a indagare ancora.
@@ -1216,6 +1329,29 @@ async Task<bool> RunAgentLoopAsync(
                     Content = "[AUTO-CONTINUE] Il piano ha ancora passi non completati:\n" + dispatcher.PlanSummary() +
                               "\nNon fermarti tra un passo e l'altro: aggiorna con manage_todo il passo appena concluso (se non l'hai fatto) " +
                               "e prosegui SUBITO con il successivo. Se invece ti serve una decisione dell'utente, chiedila con una domanda esplicita."
+                });
+                continue;
+            }
+
+            // ── Gate di validazione funzionale ───────────────────────────────────
+            // Task multi-step che ha cambiato codice: il modello chiude con testo avendo solo
+            // compilato. Lo rimandiamo a eseguire davvero il programma/i test (max N volte), a
+            // meno che stia facendo una domanda all'utente (es. gli mancano le credenziali).
+            if (planTouchedThisTurn && codeEditedThisTurn && !functionalCheckSinceEdit && !message.Content.Contains('?')
+                && functionalCheckRetries < maxFunctionalCheckRetries && step < maxSteps - 1)
+            {
+                functionalCheckRetries++;
+                if (isStdinProtocol) Trace($"  !! auto-test {functionalCheckRetries}/{maxFunctionalCheckRetries}: nessuna esecuzione dopo l'ultima modifica");
+                UI.Dim($"  [auto-test {functionalCheckRetries}/{maxFunctionalCheckRetries}] modifiche mai eseguite — richiedo il test funzionale...");
+                history.Add(new ChatMessage
+                {
+                    Role = "user",
+                    Content = "[AUTO-TEST] Hai modificato il codice e verificato solo la compilazione: il task non è concluso finché " +
+                              "non hai ESEGUITO il programma e controllato l'esito reale. Fallo ora: test automatici, oppure avvia " +
+                              "l'app con run_command background=true, attendi che sia pronta con get_background_output, ed esegui la " +
+                              "chiamata/lo script di test reale; confronta l'output con il risultato atteso (se l'utente l'ha fornito, " +
+                              "campo per campo). Aggiungi al piano il passo di test se manca. Se l'esito non è quello atteso, correggi e " +
+                              "ritesta. Se ti manca qualcosa per testare che non trovi nel progetto, chiedilo all'utente con una domanda precisa."
                 });
                 continue;
             }

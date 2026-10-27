@@ -158,7 +158,7 @@ public class TerminalTools(WorkspaceContext workspace)
         }},
         new() { Function = new() {
             Name = "sol_analyze",
-            Description = "dotnet build: solo errori/warning.",
+            Description = "dotnet build: solo errori/warning. Senza 'project' usa la root o, se lì non c'è, l'unico .sln/.csproj delle sottocartelle.",
             Parameters = new { type = "object",
                 properties = new {
                     project = new { type = "string" }
@@ -451,8 +451,47 @@ public class TerminalTools(WorkspaceContext workspace)
                 workDir = abs;
             }
         }
+        else if (FindBuildTargets(workDir) is { Count: > 0 } found)
+        {
+            // Nessun progetto indicato e nessun .sln/.csproj nella root (es. repo con api/ e web/):
+            // "dotnet build" fallirebbe con MSB1003. Si usa l'unico .sln, o in mancanza l'unico
+            // .csproj, delle sottocartelle; se sono più di uno si chiede al modello quale.
+            if (found.Count > 1)
+                return "ERRORE: nella root non c'è un .sln/.csproj e nelle sottocartelle ce ne sono più di uno. " +
+                       "Richiama sol_analyze con project=<path> scegliendo tra:\n" +
+                       string.Join('\n', found.Select(f => "  " + Path.GetRelativePath(workspace.Root, f)));
+            workDir = Path.GetDirectoryName(found[0])!;
+            buildArg = Path.GetFileName(found[0]);
+        }
         var raw = RunProcess("dotnet", $"build {buildArg}".TrimEnd(), workDir, timeoutMs: 120_000);
-        return FilterBuildOutput(raw);
+        var filtered = FilterBuildOutput(raw);
+        if (System.Text.RegularExpressions.Regex.IsMatch(raw, @"MSB302[1-7]")
+            && !System.Text.RegularExpressions.Regex.IsMatch(raw, @"error CS\d+"))
+            filtered += "\n[NOTA] Il codice compila: fallisce solo la copia dell'eseguibile perché è in uso da un processo " +
+                        "in esecuzione (es. l'app avviata da VS o in background). Non è un errore di codice e non va corretto. " +
+                        "Per testare la versione nuova devi prima fermare quel processo (stop_background_job se l'hai avviato tu, " +
+                        "altrimenti chiedi all'utente) e riavviare l'app.";
+        return filtered;
+    }
+
+    // Candidati per "dotnet build" quando la root non ne contiene: prima i .sln, altrimenti i
+    // .csproj delle sottocartelle. Lista vuota se la root ha già un target (build normale).
+    private static List<string> FindBuildTargets(string root)
+    {
+        static bool InRoot(string dir) =>
+            Directory.EnumerateFiles(dir, "*.sln").Any() || Directory.EnumerateFiles(dir, "*.slnx").Any() ||
+            Directory.EnumerateFiles(dir, "*.csproj").Any();
+        try
+        {
+            if (InRoot(root)) return [];
+            var opts = new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 4, IgnoreInaccessible = true };
+            static bool Skip(string p) => p.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Any(s => s is "bin" or "obj" or "node_modules" or ".git" or AgentStateDir.DirName or "publish");
+            var slns = Directory.EnumerateFiles(root, "*.sln", opts).Where(p => !Skip(p)).Take(10).ToList();
+            if (slns.Count > 0) return slns;
+            return Directory.EnumerateFiles(root, "*.csproj", opts).Where(p => !Skip(p)).Take(10).ToList();
+        }
+        catch { return []; }
     }
 
     private void SyncWorkspace()

@@ -480,17 +480,33 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
 
     private static List<string> GetGlobMatches(string root, string pattern)
     {
-        // Normalize separators
-        pattern = pattern.Replace('/', Path.DirectorySeparatorChar);
-
-        // Split into directory and file parts
-        var parts = pattern.Split(Path.DirectorySeparatorChar);
-        var results = new List<string>();
-        GlobRecursive(root, root, parts, 0, results);
+        // Directory.GetFiles non supporta le graffe: "*.{ts,html}" non trovava NULLA e
+        // search_in_files rispondeva "Nessun risultato" anche su file che contenevano il
+        // pattern — il modello concludeva che il codice non esisteva. Si espandono le
+        // alternative ("*.ts", "*.html") e si uniscono i risultati.
+        var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var expanded in ExpandBraces(pattern))
+        {
+            var parts = expanded.Replace('/', Path.DirectorySeparatorChar).Split(Path.DirectorySeparatorChar);
+            var found = new List<string>();
+            GlobRecursive(root, root, parts, 0, found);
+            results.UnionWith(found);
+        }
         return results
             .Where(f => !IsIgnored(f))
             .OrderBy(f => f)
             .ToList();
+    }
+
+    private static IEnumerable<string> ExpandBraces(string pattern)
+    {
+        var open = pattern.IndexOf('{');
+        var close = open < 0 ? -1 : pattern.IndexOf('}', open);
+        if (open < 0 || close < 0) return [pattern];
+        var head = pattern[..open];
+        var tail = pattern[(close + 1)..];
+        return pattern[(open + 1)..close].Split(',')
+            .SelectMany(alt => ExpandBraces(head + alt.Trim() + tail));
     }
 
     private static void GlobRecursive(string root, string current, string[] parts, int index, List<string> results)
