@@ -14,6 +14,12 @@ var isStdinProtocol = args.Contains("--stdin-protocol");
 // dall'agente (dev server, app di prova, pwsh in attesa) restavano vivi senza più nessun padre.
 ProcessJob.KillChildrenOnExit();
 
+// L'extension scrive su stdin in UTF-8, ma su Windows Console.In decodifica con la codepage OEM
+// (437): "già" arrivava al modello come "gi├á". Non si usa Console.InputEncoding perché con stdin
+// rediretto e nessuna console agganciata SetConsoleCP può fallire.
+if (isStdinProtocol)
+    Console.SetIn(new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false)));
+
 if (!isStdinProtocol)
 {
     // Garantisce una finestra console anche quando il processo viene avviato
