@@ -436,6 +436,9 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         if (!accepted)
             return $"⚠️ Scrittura proposta per {path} ma NON applicata (rifiutata dall'utente).";
 
+        // Il contenuto l'ha scritto il modello: è già "visto". Senza, il primo edit_file sul file
+        // appena creato veniva rifiutato da RequireRead e costava una rilettura inutile.
+        _readPaths.Add(absPath);
         return $"✓ File scritto: {path} ({content.Length} caratteri, {content.Split('\n').Length} righe)";
     }
 
