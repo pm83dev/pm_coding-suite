@@ -1039,6 +1039,14 @@ async Task<bool> RunAgentLoopAsync(
     // La richiesta dell'utente di questo turno: il rollover la conserva per intero.
     var turnRequest = history.LastOrDefault(m => m.Role == "user")?.Content;
 
+    // Set di tool fisso per tutto il turno, scelto sulla richiesta dell'utente. Prima veniva
+    // ricalcolato a ogni step sull'ULTIMO messaggio user, che a metà turno è quasi sempre un
+    // messaggio del motore ([AUTO-...], nudge): le parole chiave cambiavano, cambiava la lista
+    // dei tool, e con il template Qwen (tool nel system prompt, in testa) cambiava l'inizio del
+    // prompt. llama.cpp non poteva riusare la cache e rielaborava tutto: ~56 s per 40K token a step.
+    var turnTools = dispatcher.GetRelevantDefinitions(turnRequest ?? "");
+    turnTools.Add(ExploreSubAgent.Definition);
+
     int step = 0;
     while (step < maxSteps)
     {
@@ -1072,11 +1080,10 @@ async Task<bool> RunAgentLoopAsync(
 
             try
             {
-                var context = history.LastOrDefault(m => m.Role == "user")?.Content ?? "";
-                var tools = dispatcher.GetRelevantDefinitions(context);
-                tools.Add(ExploreSubAgent.Definition);
+                var tools = turnTools;
                 // Modalità "solo azione" (vedi readOnlyNudgeGiven): togliere i tool di lettura
-                // dalla richiesta è più efficace di qualunque istruzione testuale.
+                // dalla richiesta è più efficace di qualunque istruzione testuale. Costa una
+                // rielaborazione completa del prompt, ma scatta di rado.
                 if (restrictReadOnly)
                     tools = [.. tools.Where(t => !readOnlyTools.Contains(t.Function.Name))];
                 var request = new ChatRequest
