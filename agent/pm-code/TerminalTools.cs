@@ -296,7 +296,7 @@ public class TerminalTools(WorkspaceContext workspace)
         if (_blocklist.Any(b => b.IsMatch(command)))
             return $"ERRORE: comando bloccato per sicurezza: {command}";
 
-        if (CheckForeignKill(command) is { } killRefusal)
+        if (CheckForeignKill(command, out var killNote) is { } killRefusal)
             return killRefusal;
 
         // Ripristinare un file dal cestino dell'agente è l'opposto di una cancellazione: permesso.
@@ -387,7 +387,7 @@ public class TerminalTools(WorkspaceContext workspace)
             : "";
 
         var finalOutput = AgentStateDir.Overflow(workspace.Root, "cmd", SanitizeOutput(raw.Trim()), 3000);
-        return cwdPrefix + (string.IsNullOrEmpty(finalOutput) ? "(nessun output)" : finalOutput);
+        return killNote + cwdPrefix + (string.IsNullOrEmpty(finalOutput) ? "(nessun output)" : finalOutput);
     }
 
     // PowerShell con CWD persistente e gestione Encoding.
@@ -501,12 +501,14 @@ public class TerminalTools(WorkspaceContext workspace)
     // Rifiuta il comando se termina un processo che non è un job dell'agente: PID non suoi,
     // per nome (-Name, /IM, pkill) o da pipeline (Get-Process x | Stop-Process), dove non si
     // può sapere a priori cosa verrà terminato.
-    private string? CheckForeignKill(string command)
+    private string? CheckForeignKill(string command, out string? note)
     {
+        note = null;
         var matches = KillRegex.Matches(command);
         if (matches.Count == 0) return null;
 
         var own = OwnPids();
+        var projectApps = new List<string>();
         foreach (System.Text.RegularExpressions.Match m in matches)
         {
             var start = m.Index + m.Length;
@@ -516,17 +518,67 @@ public class TerminalTools(WorkspaceContext workspace)
             // Numeri non preceduti da '-' (esclude "kill -9") né da lettere/cifre.
             var pids = System.Text.RegularExpressions.Regex.Matches(segment, @"(?<![-\w])\d+\b")
                 .Select(x => int.Parse(x.Value)).ToList();
+            // Per nome: Stop-Process -Name X, taskkill /IM X.exe
+            var names = System.Text.RegularExpressions.Regex.Matches(segment,
+                    @"(?:-Name|-ProcessName|/IM)\s+['""]?([\w.\-]+?)(?:\.exe)?['""]?(?=[\s,]|$)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                .Select(x => x.Groups[1].Value).ToList();
 
-            if (piped || pids.Count == 0 || pids.Any(p => !own.Contains(p)))
+            var ok = !piped && (pids.Count > 0 || names.Count > 0);
+            foreach (var pid in pids.Where(p => !own.Contains(p)))
+            {
+                if (ProjectAppName(pid) is { } app) projectApps.Add($"{app} (PID {pid})");
+                else ok = false;
+            }
+            foreach (var name in names)
+            {
+                if (IsProjectName(name)) projectApps.Add(name);
+                else ok = false;
+            }
+
+            if (!ok)
             {
                 var ownList = _jobs.Count == 0 ? "nessuno" : string.Join(", ", _jobs.Keys);
                 return "ERRORE: comando rifiutato — run_command può terminare solo i processi che hai avviato tu in background " +
-                       $"(PID: {ownList}), e per quelli devi usare stop_background_job. Un processo che non hai avviato tu " +
-                       "(es. l'app aperta dall'utente in Visual Studio o da terminale) NON va terminato: fermati e chiedi " +
-                       "all'utente di chiuderlo, spiegando perché ti serve (es. exe bloccato in build, porta occupata).";
+                       $"(PID: {ownList}, usa stop_background_job) o l'eseguibile di un progetto di questo workspace (per PID o per nome, " +
+                       "es. Stop-Process -Name <NomeProgetto>). Questo processo non è nessuno dei due, quindi NON va terminato. " +
+                       "Non controllare a ripetizione se si è chiuso: o prosegui senza (es. avvia l'app su un'altra porta libera), " +
+                       "o chiedi all'utente di chiuderlo con una domanda precisa (PID, nome, perché ti serve) e chiudi il turno.";
             }
         }
+        if (projectApps.Count > 0)
+            note = $"[NOTA] Terminato {string.Join(", ", projectApps)}: è l'app di un progetto di questo workspace ma non l'avevi " +
+                   "avviata tu (forse l'utente la stava usando). Scrivilo all'utente nella risposta finale.\n";
         return null;
+    }
+
+    // Nomi dei progetti .NET del workspace: un processo con lo stesso nome è l'app che l'agente
+    // sta compilando/avviando (tipicamente un'istanza precedente che blocca exe e porta), non un
+    // programma qualsiasi dell'utente. "dotnet", "node" ecc. non sono mai nomi di progetto.
+    private HashSet<string> ProjectNames()
+    {
+        try
+        {
+            var opts = new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 5, IgnoreInaccessible = true };
+            return Directory.EnumerateFiles(workspace.Root, "*.csproj", opts)
+                .Where(p => !p.Split(Path.DirectorySeparatorChar).Any(s => s is "bin" or "obj" or "node_modules" or ".git"))
+                .Select(Path.GetFileNameWithoutExtension)
+                .OfType<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        catch { return []; }
+    }
+
+    private bool IsProjectName(string name) => ProjectNames().Contains(name);
+
+    private string? ProjectAppName(int pid)
+    {
+        try
+        {
+            var name = Process.GetProcessById(pid).ProcessName;
+            return IsProjectName(name) ? name : null;
+        }
+        catch { return null; }
     }
 
     private HashSet<int> OwnPids()
@@ -601,6 +653,7 @@ public class TerminalTools(WorkspaceContext workspace)
     {
         var workDir = workspace.Root;
         var buildArg = "";
+        var autoNote = "";
         if (args.TryGetProperty("project", out var proj) && !string.IsNullOrEmpty(proj.GetString()))
         {
             var abs = workspace.Resolve(proj.GetString()!);
@@ -619,26 +672,68 @@ public class TerminalTools(WorkspaceContext workspace)
             // Nessun progetto indicato e nessun .sln/.csproj nella root (es. repo con api/ e web/):
             // "dotnet build" fallirebbe con MSB1003. Si usa l'unico .sln, o in mancanza l'unico
             // .csproj, delle sottocartelle; se sono più di uno si chiede al modello quale.
+            // Con più progetti si sceglie quello con la modifica più recente: prima si restituiva
+            // l'elenco e il modello spendeva sempre un passo per richiamare sol_analyze con project.
+            var target = found.Count == 1 ? found[0] : PickRecentlyChanged(found);
             if (found.Count > 1)
-                return "ERRORE: nella root non c'è un .sln/.csproj e nelle sottocartelle ce ne sono più di uno. " +
-                       "Richiama sol_analyze con project=<path> scegliendo tra:\n" +
-                       string.Join('\n', found.Select(f => "  " + Path.GetRelativePath(workspace.Root, f)));
-            workDir = Path.GetDirectoryName(found[0])!;
-            buildArg = Path.GetFileName(found[0]);
+                autoNote = $"[progetto scelto automaticamente: {Path.GetRelativePath(workspace.Root, target)} (contiene l'ultima modifica). " +
+                           "Altri: " + string.Join(", ", found.Where(f => f != target).Select(f => Path.GetRelativePath(workspace.Root, f))) +
+                           " — per compilarne un altro richiama sol_analyze con project=<path>]\n";
+            workDir = Path.GetDirectoryName(target)!;
+            buildArg = Path.GetFileName(target);
         }
         var raw = RunProcess("dotnet", $"build {buildArg}".TrimEnd(), workDir, timeoutMs: 120_000);
-        var filtered = FilterBuildOutput(raw);
+        var filtered = autoNote + FilterBuildOutput(raw);
         if (System.Text.RegularExpressions.Regex.IsMatch(raw, @"MSB302[1-7]")
             && !System.Text.RegularExpressions.Regex.IsMatch(raw, @"error CS\d+"))
             filtered += "\n[NOTA] Il codice compila: fallisce solo la copia dell'eseguibile perché è in uso da un processo " +
                         "in esecuzione (es. l'app avviata da VS o in background). Non è un errore di codice e non va corretto. " +
-                        "Per testare la versione nuova devi prima fermare quel processo (stop_background_job se l'hai avviato tu, " +
-                        "altrimenti chiedi all'utente) e riavviare l'app.";
+                        "Per testare la versione nuova devi prima fermare quel processo (stop_background_job se l'hai avviato tu; " +
+                        "se è l'exe di questo progetto puoi terminarlo con Stop-Process -Name <NomeProgetto>, altrimenti chiedi " +
+                        "all'utente) e riavviare l'app.";
         return filtered;
     }
 
     // Candidati per "dotnet build" quando la root non ne contiene: prima i .sln, altrimenti i
     // .csproj delle sottocartelle. Lista vuota se la root ha già un target (build normale).
+    private static readonly string[] SourceExtensions = [".cs", ".csproj", ".razor", ".cshtml", ".json"];
+
+    /// <summary>
+    /// Il progetto (o la solution) che contiene il file sorgente modificato più di recente. Se è
+    /// una libreria referenziata da un altro candidato (es. Shared usata da Api), si compila chi la
+    /// referenzia: così la build copre anche il codice che la usa.
+    /// </summary>
+    private static string PickRecentlyChanged(List<string> candidates)
+    {
+        static DateTime LastChange(string target)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(target)!;
+                var opts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+                return Directory.EnumerateFiles(dir, "*", opts)
+                    .Where(f => SourceExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase)
+                                && !f.Split(Path.DirectorySeparatorChar).Any(s => s is "bin" or "obj" or "node_modules"))
+                    .Select(File.GetLastWriteTimeUtc)
+                    .DefaultIfEmpty(DateTime.MinValue)
+                    .Max();
+            }
+            catch { return DateTime.MinValue; }
+        }
+
+        var newest = candidates.OrderByDescending(LastChange).First();
+        if (!newest.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)) return newest;
+        var newestFile = Path.GetFileName(newest);
+        var referencing = candidates
+            .Where(c => c != newest && c.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
+                        && SafeRead(c).Contains(newestFile, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(LastChange)
+            .FirstOrDefault();
+        return referencing ?? newest;
+
+        static string SafeRead(string f) { try { return File.ReadAllText(f); } catch { return ""; } }
+    }
+
     private static List<string> FindBuildTargets(string root)
     {
         static bool InRoot(string dir) =>
