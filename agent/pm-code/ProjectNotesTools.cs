@@ -11,22 +11,37 @@ namespace LocalCodeAgent.Tools;
 /// una nuova chat non deve riscoprire tutto (ed è questo che permette di validare da soli il
 /// risultato invece di fermarsi alla build).
 /// </summary>
-public class ProjectNotesTools(WorkspaceContext workspace)
+// La stessa classe serve due memorie: le note del progetto (nel workspace) e le lezioni
+// globali (nel profilo utente, valide per tutti i progetti) — cambiano solo file, nome e descrizione.
+public class ProjectNotesTools(Func<string> stateFile, string toolName, string description)
 {
     private const int MaxNotes = 40;
     private const int MaxNoteLength = 400;
 
-    private string StateFile => Path.Combine(workspace.Root, AgentStateDir.DirName, "notes.json");
+    public static ProjectNotesTools ForProject(WorkspaceContext workspace) => new(
+        () => Path.Combine(workspace.Root, AgentStateDir.DirName, "notes.json"),
+        "project_notes",
+        "Memoria permanente del progetto, mostrata in ogni sessione futura. Salva (action=\"add\") ciò che hai " +
+        "verificato e che servirà di nuovo: come avviare l'app, il comando/la procedura di TEST FUNZIONALE " +
+        "end-to-end con il risultato atteso, quale progetto buildare, endpoint, come autenticarsi, dati di test, " +
+        "insidie scoperte. Una nota = un fatto breve e verificato. action=\"remove\" con id per togliere una nota " +
+        "sbagliata o superata, action=\"list\" per rileggerle.");
+
+    public static ProjectNotesTools GlobalLessons() => new(
+        () => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), AgentStateDir.DirName, "lessons.json"),
+        "lessons",
+        "Lezioni apprese valide per TUTTI i progetti, mostrate in ogni sessione futura. Salva (action=\"add\") una regola " +
+        "GENERALE quando hai superato un errore dopo tentativi falliti: cosa non funziona e cosa fare invece (es. \"PowerShell 7: " +
+        "per leggere il corpo di un errore HTTP usa -SkipHttpErrorCheck, non GetResponseStream\"). Niente fatti di un singolo " +
+        "progetto (quelli vanno in project_notes). action=\"remove\" con id per una lezione sbagliata, action=\"list\" per rileggerle.");
+
+    private string StateFile => stateFile();
 
     public List<ToolDefinition> Definitions =>
     [
         new() { Function = new() {
-            Name = "project_notes",
-            Description = "Memoria permanente del progetto, mostrata in ogni sessione futura. Salva (action=\"add\") ciò che hai " +
-                           "verificato e che servirà di nuovo: come avviare l'app, il comando/la procedura di TEST FUNZIONALE " +
-                           "end-to-end con il risultato atteso, quale progetto buildare, endpoint, come autenticarsi, dati di test, " +
-                           "insidie scoperte. Una nota = un fatto breve e verificato. action=\"remove\" con id per togliere una nota " +
-                           "sbagliata o superata, action=\"list\" per rileggerle.",
+            Name = toolName,
+            Description = description,
             Parameters = new { type = "object",
                 properties = new {
                     action = new { type = "string", description = "\"add\", \"remove\" o \"list\"" },
@@ -100,7 +115,7 @@ public class ProjectNotesTools(WorkspaceContext workspace)
 
     private void Save(List<Note> notes)
     {
-        AgentStateDir.Ensure(workspace.Root);
+        Directory.CreateDirectory(Path.GetDirectoryName(StateFile)!);
         File.WriteAllText(StateFile, JsonSerializer.Serialize(notes, new JsonSerializerOptions { WriteIndented = true }));
     }
 

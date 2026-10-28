@@ -19,6 +19,7 @@ export type AgentEvent =
   | { type: 'tool_result'; tool: string; result: string }
   | { type: 'edit_proposal'; path: string; content: string }
   | { type: 'status'; text: string }
+  | { type: 'notice'; text: string }
   | { type: 'done' };
 
 /**
@@ -161,6 +162,16 @@ export class AgentProcess {
 
   dispose(): void {
     this.rl?.close();
+    // Su Windows proc.kill() termina solo pm-code: i processi avviati dall'agent (pwsh,
+    // dotnet run, dev server) restavano vivi senza padre — osservate app di prova in loop
+    // infinito per ore dopo uno Stop. taskkill /T termina l'intero albero.
+    if (process.platform === 'win32' && this.proc?.pid !== undefined && !this.proc.killed) {
+      try {
+        cp.execFileSync('taskkill', ['/PID', String(this.proc.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } catch {
+        // processo già terminato
+      }
+    }
     this.proc?.kill();
     this.proc = undefined;
     this.rl = undefined;

@@ -153,7 +153,8 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
             Name = "delete_file",
             Description = "Elimina un file (lo sposta nel cestino recuperabile dell'agente). È l'UNICO modo consentito per " +
                            "cancellare file: run_command non può cancellare. Usalo solo per file davvero da rimuovere, " +
-                           "mai per poter riscrivere da zero un file che write_file ha rifiutato.",
+                           "mai per poter riscrivere da zero un file che write_file ha rifiutato. Accetta anche una " +
+                           "cartella VUOTA (per una cartella con contenuto elimina prima i file).",
             Parameters = new { type = "object",
                 properties = new {
                     path = new { type = "string" }
@@ -570,13 +571,17 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
         var headLimit = args.TryGetProperty("head_limit", out var hl) && hl.ValueKind == JsonValueKind.Number
             ? Math.Clamp(hl.GetInt32(), 1, 200) : 50;
 
-        Regex regex;
-        try
-        {
-            var opts = RegexOptions.Compiled | (caseInsensitive ? RegexOptions.IgnoreCase : RegexOptions.None);
-            regex = new Regex(pattern, opts);
-        }
-        catch (Exception ex) { return $"ERRORE regex non valida: {ex.Message}"; }
+        // Il modello passa spesso testo letterale con caratteri speciali (es. "Task<string?> CallLlmAsync"):
+        // come regex "?" rende opzionale la "g" e la riga reale non combacia → "Nessun risultato" su un
+        // metodo che esiste, e il modello si convince che il codice non ci sia. Se la regex non è valida
+        // o non trova nulla, si riprova una volta con il pattern letterale.
+        var opts = RegexOptions.Compiled | (caseInsensitive ? RegexOptions.IgnoreCase : RegexOptions.None);
+        Regex? regex;
+        try { regex = new Regex(pattern, opts); }
+        catch { regex = null; }
+        var literalRegex = new Regex(Regex.Escape(pattern), opts);
+        var usedLiteral = regex == null;
+        regex ??= literalRegex;
 
         // Senza glob la ricerca scansiona l'intero workspace file per file: su repo grandi
         // (es. fork di progetti web con backend+frontend) può significare decine di migliaia
@@ -594,24 +599,41 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
                    "Restringi con il parametro 'glob' (es. \"**/*.svelte\", \"src/**/*.py\", \"**/*logo*\").";
         }
 
-        var fileMatches = new List<(string Path, List<int> Lines)>();
+        // Cartelle di stato dell'agente e source map dei bundle: rumore che sommergeva i risultati
+        // veri (osservato: "AnalyzePdfAsync" trovava notes.json, output salvati e *.js.map).
+        candidates = candidates
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + AgentStateDir.DirName + Path.DirectorySeparatorChar)
+                        && !f.EndsWith(".map", StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
-        foreach (var file in candidates)
+        List<(string Path, List<int> Lines)> Scan(Regex rx)
         {
-            List<int>? lineNumbers = null;
-            try
+            var found = new List<(string Path, List<int> Lines)>();
+            foreach (var file in candidates)
             {
-                var lines = File.ReadAllLines(file);
-                for (int i = 0; i < lines.Length; i++)
+                List<int>? lineNumbers = null;
+                try
                 {
-                    if (regex.IsMatch(lines[i]))
-                        (lineNumbers ??= []).Add(i + 1);
+                    var lines = File.ReadAllLines(file);
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        if (rx.IsMatch(lines[i]))
+                            (lineNumbers ??= []).Add(i + 1);
+                    }
                 }
-            }
-            catch { /* file binario o locked */ }
+                catch { /* file binario o locked */ }
 
-            if (lineNumbers is { Count: > 0 })
-                fileMatches.Add((Path.GetRelativePath(workspace.Root, file), lineNumbers));
+                if (lineNumbers is { Count: > 0 })
+                    found.Add((Path.GetRelativePath(workspace.Root, file), lineNumbers));
+            }
+            return found;
+        }
+
+        var fileMatches = Scan(regex);
+        if (fileMatches.Count == 0 && !usedLiteral && Regex.Escape(pattern) != pattern)
+        {
+            fileMatches = Scan(literalRegex);
+            usedLiteral = fileMatches.Count > 0;
         }
 
         if (fileMatches.Count == 0)
@@ -631,6 +653,14 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
             return $"Nessun risultato per '{pattern}'";
         }
 
+        var body = FormatSearchResults(fileMatches, outputMode, context, headLimit);
+        return usedLiteral
+            ? $"[nota: pattern cercato come testo letterale, non come regex]\n{body}"
+            : body;
+    }
+
+    private string FormatSearchResults(List<(string Path, List<int> Lines)> fileMatches, string? outputMode, int context, int headLimit)
+    {
         switch (outputMode)
         {
             case "count":
@@ -665,7 +695,10 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
 
             default: // files_with_matches
                 {
-                    var paths = fileMatches.Select(f => f.Path).Take(headLimit).ToList();
+                    // Con il numero della prima riga trovata: senza, il modello doveva leggere il
+                    // file a blocchi per ritrovare il punto, consumando il budget di letture.
+                    var paths = fileMatches.Select(f => $"{f.Path}:{f.Lines[0]}" + (f.Lines.Count > 1 ? $" (+{f.Lines.Count - 1})" : ""))
+                        .Take(headLimit).ToList();
                     var suffix = fileMatches.Count > headLimit ? $"\n... (+{fileMatches.Count - headLimit} altri file)" : "";
                     return string.Join('\n', paths) + suffix;
                 }
@@ -729,6 +762,20 @@ public class FileSystemTools(WorkspaceContext workspace, Func<string, string, bo
     {
         var path = args.GetProperty("path").GetString()!;
         var absPath = workspace.Resolve(path);
+
+        // Cartella: solo se vuota (non c'è niente da recuperare). Senza questo, dopo aver svuotato
+        // una cartella creata per errore l'agente non aveva modo di toglierla: Remove-Item è
+        // bloccato in run_command e delete_file rispondeva "File non trovato".
+        if (Directory.Exists(absPath))
+        {
+            if (Path.GetFullPath(absPath).TrimEnd('\\', '/').Equals(Path.GetFullPath(workspace.Root).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                return "ERRORE: non puoi eliminare la root del workspace.";
+            var entries = Directory.EnumerateFileSystemEntries(absPath).Count();
+            if (entries > 0)
+                return $"ERRORE: la cartella {path} non è vuota ({entries} elementi): elimina prima i file che contiene con delete_file.";
+            Directory.Delete(absPath);
+            return $"✓ Cartella vuota eliminata: {path}";
+        }
 
         if (!File.Exists(absPath))
             return $"File non trovato: {path}";

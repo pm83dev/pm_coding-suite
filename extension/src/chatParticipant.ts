@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { ActivityLevel, describeCall, describeOutcome, resultPreview } from './activityLog';
 import { AgentContextMessage, AgentEvent, AgentProcess, getAgentProcess } from './agentProcess';
 import { loadCopilotModelEndpoints } from './copilotModels';
 import { EditProposalProvider } from './editProposalProvider';
@@ -117,31 +118,63 @@ export async function handleChatRequest(
     config.get<boolean>('autoApprove', false);
   console.log(`[PM Agent] permissionLevel=${permissionLevel ?? 'undefined'} autoApprove=${autoApprove}`);
 
+  // Cronaca delle azioni (vedi activityLog.ts). La riga di una tool call viene scritta
+  // quando arriva il suo risultato, così chiamata ed esito stanno sulla stessa riga.
+  const activityLevel = config.get<ActivityLevel>('activityLog', 'compact');
+  let pendingCall: { tool: string; args: unknown } | undefined;
+  let lastWasActivity = false;
+  const writeActivity = (line: string) => {
+    // Riga vuota prima del primo elemento: senza, il markdown attaccherebbe l'elenco
+    // all'ultima frase del modello.
+    stream.markdown(`${lastWasActivity ? '' : '\n\n'}- ${line}\n`);
+    lastWasActivity = true;
+  };
+
   try {
     await agent.sendRequest(request.prompt, agentContext, (event: Exclude<AgentEvent, { type: 'done' }>) => {
       switch (event.type) {
         case 'token':
+          if (lastWasActivity) {
+            stream.markdown('\n');
+            lastWasActivity = false;
+          }
           stream.markdown(event.text);
           break;
         case 'tool_call':
-          stream.progress(`Tool: ${event.tool}…`);
+          stream.progress(activityLevel === 'off' ? `Tool: ${event.tool}…` : `${describeCall(event.tool, event.args)}…`);
+          pendingCall = { tool: event.tool, args: event.args };
           break;
-        case 'tool_result':
+        case 'tool_result': {
+          const call = pendingCall?.tool === event.tool ? pendingCall : undefined;
+          pendingCall = undefined;
           // manage_todo restituisce già il piano formattato in markdown (checklist
-          // ✅/🔄/⬜): è l'unico tool_result "di successo" che ha senso mostrare per
-          // intero, gli altri sono dettagli interni del ragionamento dell'agent.
+          // ✅/🔄/⬜): lo si mostra per intero in ogni modalità.
           if (event.tool === 'manage_todo') {
-            stream.markdown(`\n${event.result}\n`);
+            if (lastWasActivity) stream.markdown('\n');
+            stream.markdown(`\n${event.result}\n\n`);
+            lastWasActivity = false;
             break;
           }
-          // Un fallimento (validazione rifiutata, stringa ambigua, loop rilevato, ecc.)
-          // andava perso qui senza che l'utente lo vedesse mai: il tool_call mostrava
-          // "Tool: write_file…" e basta, mentre il motivo del fallimento restava solo nei
-          // log dell'agent — indistinguibile da un turno bloccato. Ogni fallimento va
-          // sempre mostrato, qualunque sia il tool.
-          if (/^(ERRORE|⚠️|\[LOOP-BLOCK\])/.test(event.result)) {
-            stream.markdown(`\n${event.result}\n`);
+          if (activityLevel === 'off') {
+            // Un fallimento (validazione rifiutata, stringa ambigua, loop rilevato, ecc.)
+            // va sempre mostrato, anche senza cronaca: altrimenti resta solo nei log.
+            if (/^(ERRORE|⚠️|\[LOOP-BLOCK\])/.test(event.result)) {
+              stream.markdown(`\n${event.result}\n`);
+            }
+            break;
           }
+          const outcome = describeOutcome(event.tool, event.result);
+          writeActivity(`${describeCall(event.tool, call?.args)}${outcome ? ' → ' + outcome : ''}`);
+          if (activityLevel === 'detailed' && event.result.trim()) {
+            stream.markdown(`\n\`\`\`text\n${resultPreview(event.result).replace(/```/g, "'''")}\n\`\`\`\n`);
+            lastWasActivity = false;
+          }
+          break;
+        }
+        case 'notice':
+          // Interventi automatici del motore (auto-continue del piano, richiesta di test
+          // funzionale, verifica non eseguita): sono correzioni di rotta, utili da vedere.
+          if (activityLevel !== 'off') writeActivity(`⚙️ Motore: ${event.text}`);
           break;
         case 'edit_proposal':
           void handleEditProposal(event.path, event.content, stream);

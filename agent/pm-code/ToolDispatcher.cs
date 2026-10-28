@@ -18,6 +18,7 @@ public class ToolDispatcher
     private readonly WebTools _web;
     private readonly TodoTools _todo;
     private readonly ProjectNotesTools _notes;
+    private readonly ProjectNotesTools _lessons;
 
     // Cache read_file: path → contenuto già letto (soft-block su duplicati)
     private readonly Dictionary<string, string> _fileCache =
@@ -32,7 +33,8 @@ public class ToolDispatcher
         _web = new WebTools(braveApiKey);
         _todo = new TodoTools(workspace);
         _todo.Reload();
-        _notes = new ProjectNotesTools(workspace);
+        _notes = ProjectNotesTools.ForProject(workspace);
+        _lessons = ProjectNotesTools.GlobalLessons();
     }
 
     public List<ToolDefinition> AllDefinitions =>
@@ -43,7 +45,8 @@ public class ToolDispatcher
         .._agent.Definitions,
         .._web.Definitions,
         .._todo.Definitions,
-        .._notes.Definitions
+        .._notes.Definitions,
+        .._lessons.Definitions
     ];
 
     public List<ToolDefinition> GetDefinitionsByCategory(string category) =>
@@ -85,6 +88,7 @@ public class ToolDispatcher
             "read_file_range"));
         defs.AddRange(_todo.Definitions);
         defs.AddRange(_notes.Definitions);
+        defs.AddRange(_lessons.Definitions);
 
         // Git in sola lettura — sempre inclusi: con un prompt tipo "prosegui" (nessuna parola
         // chiave git) il modello non li aveva e ripiegava su run_command "git diff | Select-Object
@@ -144,6 +148,8 @@ public class ToolDispatcher
 
     public string? ProjectNotesSummary() => _notes.PromptSummary();
 
+    public string? LessonsSummary() => _lessons.PromptSummary();
+
     public string Execute(string toolName, string argumentsJson)
     {
         if (toolName == "manage_todo")
@@ -151,6 +157,9 @@ public class ToolDispatcher
 
         if (toolName == "project_notes")
             return _notes.Execute(argumentsJson);
+
+        if (toolName == "lessons")
+            return _lessons.Execute(argumentsJson);
 
         // ── Gestione read_file_range ──────────────────────────────────────
         if (toolName == "read_file_range")

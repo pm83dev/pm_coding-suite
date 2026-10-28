@@ -2,7 +2,7 @@
   "name": "pm-chat-participant",
   "displayName": "PM Chat Participant (Local LLM)",
   "description": "Chat participant frontend per PM Code Agent (tool calling delegato all'agent .NET locale)",
-  "version": "2.0.20",
+  "version": "2.0.21",
   "publisher": "pm-software-automation",
   "engines": {
     "vscode": "^1.125.0"
@@ -36,6 +36,17 @@
             "type": "boolean",
             "default": false,
             "description": "Se attivo, write_file/edit_file vengono applicati senza richiesta di conferma. Se disattivo (default), ogni modifica richiede l'approvazione dell'utente tramite il diff nativo VS Code."
+          },
+          "pmChat.activityLog": {
+            "type": "string",
+            "enum": ["off", "compact", "detailed"],
+            "enumDescriptions": [
+              "Nessuna cronaca: in chat solo risposte, piano ed errori (comportamento precedente).",
+              "Una riga per ogni azione dell'agente con il suo esito, più gli interventi del motore.",
+              "Come compact, più un'anteprima del risultato di ogni azione."
+            ],
+            "default": "compact",
+            "description": "Quanto dettaglio mostrare in chat sulle azioni dell'agente (file letti, ricerche, modifiche, build, comandi, test)."
           }
         }
       }

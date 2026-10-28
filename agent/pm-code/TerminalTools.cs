@@ -300,7 +300,7 @@ public class TerminalTools(WorkspaceContext workspace)
         // estratto il sentinel della cwd in coda all'output.
         return RunProcess(ShellExe,
             $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
-            _cwd, timeoutMs, maxChars: int.MaxValue);
+            _cwd, timeoutMs, maxChars: int.MaxValue, killLeftovers: true);
     }
 
     // bash -c riceve lo script come singolo elemento di argv (nessuna shell intermedia a
@@ -312,7 +312,7 @@ public class TerminalTools(WorkspaceContext workspace)
         var cwdEscaped = _cwd.Replace("'", "'\\''");
         var script = $"cd '{cwdEscaped}' || exit 1\n{{ {command}\n}} 2>&1\nprintf '\\n%s%s' '{Sentinel}' '{(Directory.Exists(_cwd) ? _cwd : "UNKNOWN")}'";
 
-        return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs, maxChars: int.MaxValue);
+        return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs, maxChars: int.MaxValue, killLeftovers: true);
     }
 
     private string StartBackground(string command)
@@ -542,7 +542,7 @@ public class TerminalTools(WorkspaceContext workspace)
         return result;
     }
 
-    private static string RunProcess(string executable, string arguments, string workDir, int timeoutMs = 60_000, int maxChars = 3000)
+    private static string RunProcess(string executable, string arguments, string workDir, int timeoutMs = 60_000, int maxChars = 3000, bool killLeftovers = false)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -555,12 +555,12 @@ public class TerminalTools(WorkspaceContext workspace)
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        return RunProcess(startInfo, timeoutMs, maxChars);
+        return RunProcess(startInfo, timeoutMs, maxChars, killLeftovers);
     }
 
     // Passa gli argomenti come argv (nessuna shell intermedia a rifare il parsing): evita
     // problemi di escaping per script multilinea con virgolette annidate, es. bash -c "<script>".
-    private static string RunProcess(string executable, string[] argumentList, string workDir, int timeoutMs = 60_000, int maxChars = 3000)
+    private static string RunProcess(string executable, string[] argumentList, string workDir, int timeoutMs = 60_000, int maxChars = 3000, bool killLeftovers = false)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -573,10 +573,22 @@ public class TerminalTools(WorkspaceContext workspace)
             CreateNoWindow = true
         };
         foreach (var a in argumentList) startInfo.ArgumentList.Add(a);
-        return RunProcess(startInfo, timeoutMs, maxChars);
+        return RunProcess(startInfo, timeoutMs, maxChars, killLeftovers);
     }
 
-    private static string RunProcess(ProcessStartInfo startInfo, int timeoutMs, int maxChars)
+    // killLeftovers: per run_command in primo piano. Tutto ciò che il comando ha avviato e che
+    // è ancora vivo quando il comando finisce (tipicamente "Start-Process ..." senza -Wait) viene
+    // terminato e segnalato: i processi che devono restare vivi vanno avviati con background=true,
+    // dove l'agente li vede e li può fermare. Senza questo restavano orfani per ore.
+    private static void KillAll(IEnumerable<int> pids)
+    {
+        foreach (var pid in pids)
+        {
+            try { Process.GetProcessById(pid).Kill(entireProcessTree: true); } catch { /* già terminato */ }
+        }
+    }
+
+    private static string RunProcess(ProcessStartInfo startInfo, int timeoutMs, int maxChars, bool killLeftovers = false)
     {
         using var proc = new Process { StartInfo = startInfo };
 
@@ -586,7 +598,19 @@ public class TerminalTools(WorkspaceContext workspace)
         proc.OutputDataReceived += (_, e) => { if (e.Data != null) output.AppendLine(e.Data); };
         proc.ErrorDataReceived += (_, e) => { if (e.Data != null) errors.AppendLine(e.Data); };
 
+        if (killLeftovers)
+        {
+            // Server di build condivisi (nodi MSBuild riusabili, compilatore Roslyn, MSBuild server):
+            // restano vivi apposta dopo un "dotnet build" e verrebbero scambiati per processi orfani.
+            startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+            startInfo.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+            startInfo.Environment["UseSharedCompilation"] = "false";
+            startInfo.Environment["UseRazorBuildServer"] = "false";
+        }
+
         proc.Start();
+        var startedAt = DateTime.Now.AddSeconds(-1);
+        using var job = killLeftovers ? ProcessJob.ForProcess(proc) : null;
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
         proc.StandardInput.Close();
@@ -594,14 +618,46 @@ public class TerminalTools(WorkspaceContext workspace)
         bool finished = proc.WaitForExit(timeoutMs);
         if (!finished)
         {
+            var detached = killLeftovers ? ProcessJob.Descendants(proc.Id, startedAt) : [];
             proc.Kill(entireProcessTree: true);
-            return "ERRORE: timeout (60s) — processo terminato forzatamente.";
+            job?.Terminate();
+            KillAll(detached);
+            var partial = SanitizeOutput(output.ToString().Trim());
+            if (partial.Length > 1500) partial = "...(inizio troncato)\n" + partial[^1500..];
+            return $"ERRORE: timeout ({timeoutMs / 1000}s) — processo terminato forzatamente." +
+                   (partial.Length > 0 ? $"\nUltimo output prima del timeout:\n{partial}" : "") +
+                   "\nSe il programma è interattivo (legge input da tastiera in un ciclo) non termina mai da solo: " +
+                   "non rilanciarlo uguale. Avvialo con background=true e leggi l'output con get_background_output, " +
+                   "oppure verifica che esca quando l'input finisce (ReadLine() == null → uscita dal ciclo).";
+        }
+
+        string? leftoverNote = null;
+        if (killLeftovers)
+        {
+            var leftovers = (job?.ActivePids() ?? []).Union(ProcessJob.Descendants(proc.Id, startedAt))
+                .Where(pid => pid != proc.Id).ToList();
+            var names = leftovers.Select(pid =>
+            {
+                try { return Process.GetProcessById(pid).ProcessName; }
+                catch { return null; }
+            }).Zip(leftovers)
+              .Where(x => x.First != null && !x.First.Equals("conhost", StringComparison.OrdinalIgnoreCase))
+              .Select(x => $"{x.First} (PID {x.Second})").ToList();
+            job?.Terminate();
+            KillAll(leftovers);
+            if (names.Count > 0)
+            {
+                leftoverNote = $"\n[PROCESSI TERMINATI] Il comando ha lasciato in esecuzione {string.Join(", ", names)}: " +
+                               "sono stati terminati. Un comando normale deve finire da solo; per un processo che deve restare " +
+                               "attivo (server, app da interrogare) usa run_command con background=true, NON Start-Process.";
+            }
         }
 
         var result = new System.Text.StringBuilder();
         if (output.Length > 0) result.Append(output);
         if (errors.Length > 0) result.AppendLine($"\n[STDERR]\n{errors}");
-        
+        if (leftoverNote != null) result.AppendLine(leftoverNote);
+
         if (proc.ExitCode != 0) result.AppendLine($"\n[EXIT CODE: {proc.ExitCode}]");
 
         var text = SanitizeOutput(result.ToString().Trim());

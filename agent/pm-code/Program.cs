@@ -10,6 +10,10 @@ using Microsoft.Extensions.Configuration;
 // padre (VS Code) e non dobbiamo mai allocare/agganciare una finestra console.
 var isStdinProtocol = args.Contains("--stdin-protocol");
 
+// Lo Stop in chat termina questo processo con TerminateProcess: senza job i processi avviati
+// dall'agente (dev server, app di prova, pwsh in attesa) restavano vivi senza più nessun padre.
+ProcessJob.KillChildrenOnExit();
+
 if (!isStdinProtocol)
 {
     // Garantisce una finestra console anche quando il processo viene avviato
@@ -39,6 +43,15 @@ void Trace(string line)
 {
     Console.Error.WriteLine($"[trace] {line}");
     try { File.AppendAllText(traceFile, line + Environment.NewLine); } catch { }
+}
+// Intervento automatico del motore (auto-continue, richiesta di test, verifica mancante):
+// finisce nella traccia e, in --stdin-protocol, come evento "notice" mostrato in chat dalla
+// cronaca dell'estensione. Le estensioni precedenti ignorano i tipi di evento sconosciuti.
+void Notice(string text)
+{
+    if (!isStdinProtocol) return;
+    Trace($"  !! {text}");
+    EmitEvent(new { type = "notice", text });
 }
 static string OneLine(string s, int max)
 {
@@ -254,6 +267,16 @@ string BuildSystemPrompt()
 
         """;
 
+    // Lezioni globali (~/.pm-agent/lessons.json): errori già superati in qualunque progetto,
+    // così lo stesso errore non costa di nuovo decine di step.
+    var lessons = dispatcher.LessonsSummary();
+    var lessonsContext = lessons == null ? "" : $"""
+
+        LEZIONI APPRESE (da sessioni precedenti, valide per tutti i progetti — gestite con lessons; rispettale):
+        {lessons}
+
+        """;
+
     var notes = dispatcher.ProjectNotesSummary();
     var notesContext = notes == null
         ? "\nMEMORIA DEL PROGETTO: vuota. Quando scopri come avviare/testare questo progetto, salvalo con project_notes.\n"
@@ -266,7 +289,7 @@ string BuildSystemPrompt()
 
     return $"""
         Sei un agente di sviluppo software autonomo. Workspace: {workspace.Root}
-        {agentsContext}{notesContext}{planContext}
+        {agentsContext}{lessonsContext}{notesContext}{planContext}
         METODO DI LAVORO — PICCOLI PASSI (vale per ogni task che richiede più di 2 azioni):
         1. Crea il piano con manage_todo action="create": passi PICCOLI, ognuno = UNA modifica concreta e
            verificabile (es. "estrai metodo X", "aggiungi controllo null in Y + build"), mai passi tipo
@@ -298,6 +321,13 @@ string BuildSystemPrompt()
         - Se manca qualcosa per testare (es. credenziali, servizio esterno spento), cerca nel progetto come si fa (script
           di test, README, launch.json, appsettings.Development) prima di chiedere; chiedi all'utente solo se non c'è.
         - Comandi di test lunghi (chiamate a un LLM, elaborazione di PDF): passa timeout_ms adeguato (es. 300000).
+        - Prima di scrivere a mano una chiamata complessa (upload multipart, login + richiesta), cerca se il progetto ha già
+          uno script di test o di upload (*.ps1, *.sh, *.http, test/) e usalo.
+        - Test HTTP da PowerShell 7: per leggere il corpo di una risposta di errore (400/500) usa
+          Invoke-WebRequest ... -SkipHttpErrorCheck e poi $r.StatusCode / $r.Content (oppure $_.ErrorDetails.Message nel catch).
+          NON usare $_.Exception.Response.GetResponseStream(): in PowerShell 7 non esiste e fallisce sempre.
+          Per un upload di file: Invoke-WebRequest -Form con una hashtable che associa il nome del campo (quello del parametro
+          del controller) a Get-Item del file.
         - Quando hai capito come si avvia/testa il progetto (comando, endpoint, login, file di prova, esito atteso),
           salvalo con project_notes action="add": nella prossima sessione lo troverai già pronto.
 
@@ -456,7 +486,7 @@ var actionCommandRegex = new Regex(
 // Comandi che ESEGUONO il programma o i suoi test (verifica funzionale, non solo build).
 var functionalCheckRegex = new Regex(
     @"\b(dotnet\s+(test|run)|npm\s+(test|run|start)|npx|yarn|pnpm|pytest|python|py\s|node\s|go\s+(test|run)|" +
-    @"cargo\s+(test|run)|mvn|gradle|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget)\b|\.(ps1|sh|bat|cmd|exe)\b",
+    @"cargo\s+(test|run)|mvn|gradle|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget|Start-Process)\b|\.(ps1|sh|bat|cmd|exe)\b",
     RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
@@ -479,6 +509,12 @@ async Task<bool> RunAgentLoopAsync(
     // un loop. Viene inoltre azzerato interamente dopo ogni edit/write riuscito (TrackBuildState).
     // Soglia: AgentSettings:MaxRepeats (default 3).
     var repeatCounts = new Dictionary<string, (int Count, int ResultHash)>();
+    // Chiamate uguali a meno dei numeri (vedi ExecuteToolGuarded): avviso dalla 3ª, blocco oltre maxSimilarCalls.
+    var similarCounts = new Dictionary<string, int>();
+    const int maxSimilarCalls = 5;
+    int lastErrorHash = 0;
+    int sameErrorStreak = 0;
+    string? lastErrorTool = null;
     bool loopDetected = false;
 
     // Tool di polling: rileggere lo stesso PID con gli stessi argomenti è il modo corretto
@@ -537,6 +573,11 @@ async Task<bool> RunAgentLoopAsync(
     bool functionalCheckSinceEdit = false;
     int functionalCheckRetries = 0;
     const int maxFunctionalCheckRetries = 2;
+    // Il rifiuto di "clear" per test mancante vale al massimo 2 volte per turno: osservato il
+    // modello che, non riuscendo a eseguire l'app (console interattiva che non termina), la
+    // rilanciava a ogni rifiuto lasciando processi orfani, senza mai fermarsi a chiedere.
+    int functionalClearRejects = 0;
+    const int maxFunctionalClearRejects = 2;
     const string functionalMissingPrefix = "⚠️ VERIFICA FUNZIONALE MANCANTE";
 
     // Dopo un rifiuto per verifica mancante, altre modifiche sono bloccate finché il modello non
@@ -716,6 +757,10 @@ async Task<bool> RunAgentLoopAsync(
                 // Il disco è cambiato: qualunque rilettura/verifica successiva si riferisce a
                 // uno stato diverso, quindi i conteggi anti-loop precedenti non valgono più.
                 repeatCounts.Clear();
+                // Solo un file di codice: scrivere un nuovo file di input per il test (test_input5.txt)
+                // fa parte del ciclo di ripetizioni, non è una correzione.
+                if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || codeExtensions.Contains(Path.GetExtension(path)))
+                    similarCounts.Clear();
                 if (FullPathOf(argsJson) is { } editedFull) linesReadPerFile.Remove(editedFull);
             }
             catch { }
@@ -797,6 +842,35 @@ async Task<bool> RunAgentLoopAsync(
                    "e risultato identico. Interrotto per evitare un loop infinito.";
         }
 
+        // Chiamate QUASI identiche: stessi argomenti a meno dei numeri. Osservato: lo stesso test
+        // rilanciato 14 volte cambiando solo "test_tool5.txt" → "test_tool6.txt"…, sempre con
+        // [ESITO: SUCCESSO] e il file creato nella cartella sbagliata. Né il guard sopra (argomenti
+        // diversi) né quello sugli errori (nessun errore) lo vedevano. Azzerato dopo ogni edit
+        // riuscito: rilanciare il test dopo una correzione è legittimo.
+        // Solo i tool che ESEGUONO: delete_file/read_file su file numerati diversi (test_tool5, 6, 7…)
+        // sono operazioni distinte, non un loop (osservato: pulizia di 10 file bloccata al 6°).
+        string? similarWarning = null;
+        if (name is "run_command" or "run_dotnet")
+        {
+            var similarKey = $"{name}|{Regex.Replace(argsJson, @"\d+", "#")}";
+            var similar = similarCounts.TryGetValue(similarKey, out var sc) ? sc + 1 : 1;
+            similarCounts[similarKey] = similar;
+            if (similar > maxSimilarCalls)
+            {
+                loopDetected = true;
+                stopReason = $"⚠️ Mi fermo: ho rilanciato {similar} volte lo stesso comando '{name}' cambiando solo dei numeri, " +
+                             "senza modificare il codice né capire il risultato. Dimmi come proseguire o indicami cosa controllare.";
+                return $"[LOOP-BLOCK] '{name}' rilanciato {similar} volte quasi identico (cambiano solo i numeri) senza " +
+                       "modifiche al codice nel frattempo. Interrotto.";
+            }
+            if (similar >= 3)
+                similarWarning = $"\n\n[RIPETIZIONE QUASI IDENTICA {similar}/{maxSimilarCalls}] Hai eseguito questa chiamata {similar} volte " +
+                                 "cambiando solo numeri o nomi. Rilanciarla non darà informazioni nuove. Verifica l'ESITO REALE " +
+                                 "dell'ultima esecuzione (es. il file è stato creato DOVE ti aspettavi? Test-Path sul percorso " +
+                                 "atteso, contenuto, messaggi d'errore nell'output) e, se non coincide, cerca la causa nel codice " +
+                                 "e correggila. Se non sai come proseguire, fermati e spiega all'utente cosa hai osservato.";
+        }
+
         if (name == "manage_todo")
         {
             planTouchedThisTurn = true;
@@ -830,7 +904,8 @@ async Task<bool> RunAgentLoopAsync(
             }
 
             if (codeEditedThisTurn && !functionalCheckSinceEdit
-                && Regex.IsMatch(argsJson, @"""action""\s*:\s*""clear""", RegexOptions.IgnoreCase))
+                && Regex.IsMatch(argsJson, @"""action""\s*:\s*""clear""", RegexOptions.IgnoreCase)
+                && functionalClearRejects++ < maxFunctionalClearRejects)
             {
                 return $"{functionalMissingPrefix}: non puoi chiudere il piano — dopo l'ultima modifica hai solo compilato, " +
                        "non hai mai ESEGUITO il programma. Esegui ora il test funzionale (test automatici, oppure avvia l'app " +
@@ -839,7 +914,7 @@ async Task<bool> RunAgentLoopAsync(
                        "chiedilo all'utente con una domanda precisa.";
             }
         }
-        else if (name == "project_notes")
+        else if (name is "project_notes" or "lessons")
         {
             // Neutro come manage_todo: annotare non è né leggere né agire.
         }
@@ -882,10 +957,46 @@ async Task<bool> RunAgentLoopAsync(
         }
 
         var execResult = dispatcher.Execute(name, argsJson);
+        if (similarWarning != null) execResult += similarWarning;
 
         var hash = HashCode.Combine(execResult.Length, execResult);
         var count = repeatCounts.TryGetValue(key, out var prev) && prev.ResultHash == hash ? prev.Count + 1 : 1;
         repeatCounts[key] = (count, hash);
+
+        // Stesso ERRORE dallo stesso tool con argomenti DIVERSI: il modello ritocca un dettaglio
+        // del comando e riprova (osservato: 5 upload PowerShell di fila, tutti "Cannot access a
+        // disposed object"). Il guard sopra non lo vede perché gli argomenti cambiano. Si confronta
+        // l'inizio dell'errore (le prime righe), che resta uguale anche se cambia il comando citato.
+        var looksLikeError = execResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase)
+            || execResult.Contains("Exception") || execResult.Contains("[ESITO: FALLITO")
+            || Regex.IsMatch(execResult, @"\b(4\d\d|5\d\d)\b.{0,40}(Bad Request|Unauthorized|Not Found|Internal Server Error|validation errors)", RegexOptions.IgnoreCase);
+        if (looksLikeError)
+        {
+            var signature = Regex.Replace(execResult.Length > 400 ? execResult[^400..] : execResult, @"\s+", " ");
+            var errHash = HashCode.Combine(name, signature);
+            sameErrorStreak = errHash == lastErrorHash ? sameErrorStreak + 1 : 1;
+            lastErrorHash = errHash;
+            if (sameErrorStreak >= 3)
+                execResult += $"\n\n[STESSO ERRORE {sameErrorStreak} VOLTE] '{name}' ha restituito lo stesso errore {sameErrorStreak} volte di fila " +
+                              "anche cambiando gli argomenti: ritoccare il comando non funziona. Cambia APPROCCIO: usa uno script/strumento " +
+                              "già esistente nel progetto, un metodo diverso (es. altro cmdlet/API), oppure leggi la documentazione dello " +
+                              "strumento; se non vedi alternative, fermati e spiega all'utente l'errore.";
+        }
+        else
+        {
+            // Successo dopo almeno 2 errori di fila sullo stesso tool: l'agente ha appena
+            // scoperto qualcosa che vale la pena ricordare in ogni progetto futuro.
+            if (sameErrorStreak >= 2 && name == lastErrorTool)
+            {
+                execResult += $"\n\n[LEZIONE] Hai superato un errore che si era ripetuto {sameErrorStreak} volte. Se la soluzione è " +
+                              "una regola GENERALE (non specifica di questo progetto), salvala ORA con lessons action=\"add\" in una " +
+                              "frase: cosa non funzionava e cosa fare invece. Poi prosegui con il task.";
+                Notice($"errore ripetuto {sameErrorStreak} volte poi superato: chiedo di salvare la lezione");
+            }
+            sameErrorStreak = 0;
+            lastErrorHash = 0;
+        }
+        lastErrorTool = name;
 
         // Avviso già dalla seconda ripetizione identica, prima del blocco: un risultato che
         // il tool considera riuscito (es. script con try/catch che stampa "ERR: 401" ma esce
@@ -1231,7 +1342,7 @@ async Task<bool> RunAgentLoopAsync(
                 if (announcementRetries < maxAnnouncementRetries)
                 {
                     announcementRetries++;
-                    if (isStdinProtocol) Trace($"  !! auto-continue {announcementRetries}: annuncio senza tool call");
+                    Notice($"ha annunciato un'azione senza eseguirla, lo rimando a farla ({announcementRetries}/{maxAnnouncementRetries})");
                     UI.Dim($"  [auto-continue {announcementRetries}/{maxAnnouncementRetries}] risposta rilevata come annuncio senza tool call — forzo l'esecuzione...");
                     history.Add(new ChatMessage
                     {
@@ -1298,7 +1409,7 @@ async Task<bool> RunAgentLoopAsync(
             else if (hasUnverifiedOtherEdit && autoBuildChecks < maxAutoBuildChecks)
             {
                 autoBuildChecks++;
-                if (isStdinProtocol) Trace("  !! auto-check: modifiche non verificate, richiesta verifica");
+                Notice("ha modificato codice senza verificarlo, richiesta build/test");
                 UI.Dim("  [auto-check] modifiche a file di codice non verificate — richiedo verifica esplicita...");
                 history.Add(new ChatMessage
                 {
@@ -1321,7 +1432,7 @@ async Task<bool> RunAgentLoopAsync(
                 && planContinueRetries < maxPlanContinueRetries && step < maxSteps - 1)
             {
                 planContinueRetries++;
-                if (isStdinProtocol) Trace($"  !! auto-continue piano {planContinueRetries}/{maxPlanContinueRetries}");
+                Notice($"il piano ha ancora passi aperti, lo rimando a proseguire ({planContinueRetries}/{maxPlanContinueRetries})");
                 UI.Dim($"  [auto-continue piano {planContinueRetries}/{maxPlanContinueRetries}] passi ancora aperti — proseguo...");
                 history.Add(new ChatMessage
                 {
@@ -1341,7 +1452,7 @@ async Task<bool> RunAgentLoopAsync(
                 && functionalCheckRetries < maxFunctionalCheckRetries && step < maxSteps - 1)
             {
                 functionalCheckRetries++;
-                if (isStdinProtocol) Trace($"  !! auto-test {functionalCheckRetries}/{maxFunctionalCheckRetries}: nessuna esecuzione dopo l'ultima modifica");
+                Notice($"ha solo compilato, gli chiedo di eseguire un test reale ({functionalCheckRetries}/{maxFunctionalCheckRetries})");
                 UI.Dim($"  [auto-test {functionalCheckRetries}/{maxFunctionalCheckRetries}] modifiche mai eseguite — richiedo il test funzionale...");
                 history.Add(new ChatMessage
                 {
@@ -1468,11 +1579,13 @@ async Task RunStdinProtocolAsync()
                 }
             }
 
-            if (history.Count == 0)
+            if (history.Count <= 1)
             {
-                // Primo turno di vita del processo: se l'extension manda già una history
-                // (es. riavvio dell'agent a metà conversazione dopo un crash) la usiamo come
-                // seed, altrimenti si parte da zero.
+                // Primo turno di vita del processo (la history contiene solo il system prompt
+                // creato all'avvio da ResetHistory): se l'extension manda già una history
+                // (es. riavvio dell'agent dopo uno Stop in chat, che termina il processo) la
+                // usiamo come seed, altrimenti si parte da zero. Con "== 0" questo ramo non
+                // scattava mai e dopo ogni Stop la conversazione veniva scartata (history=2).
                 history = [ChatMessage.System(BuildSystemPrompt()), .. contextMessages, ChatMessage.User(prompt)];
             }
             else if (contextMessages.Count == 0)
