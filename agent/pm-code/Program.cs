@@ -1148,6 +1148,21 @@ async Task<bool> RunAgentLoopAsync(
                 // attesa di minuti per un fallimento 500 garantito — la stessa correzione della
                 // tool call troppo grande, ma quasi istantanea.
                 UI.Error($"Tool call '{ex.ToolName}' interrotta: troppo grande, avrebbe fallito comunque.");
+                if (ex.Degenerate)
+                {
+                    Notice($"generazione di '{ex.ToolName}' interrotta: argomenti lunghissimi, probabile testo ripetuto in loop");
+                    history.Add(ChatMessage.User(
+                        $"ERRORE: la tool call '{ex.ToolName}' è stata interrotta: gli argomenti avevano superato migliaia di " +
+                        "caratteri, segno che stavi ripetendo lo stesso testo in loop. Rifai la chiamata con argomenti BREVI " +
+                        "(per manage_todo: solo id, status e una note di una riga) e prosegui con il passo corrente."));
+                    if (recoverableErrorRetries < maxRecoverableErrorRetries)
+                    {
+                        recoverableErrorRetries++;
+                        continue;
+                    }
+                    EmitFinalNotice($"⚠️ Il modello ha generato più volte argomenti in loop per '{ex.ToolName}'. Mi fermo: scrivi \"prosegui\" per riprendere dal piano salvato.");
+                    return false;
+                }
                 UI.Dim("  → Il modello ha tentato di scrivere un intero file/blocco di codice in una sola tool call.");
                 history.Add(ChatMessage.User(
                     $"ERRORE: la tool call '{ex.ToolName}' è stata interrotta perché il contenuto generato superava " +

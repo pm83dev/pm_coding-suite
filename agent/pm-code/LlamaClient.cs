@@ -17,6 +17,12 @@ public sealed class ToolCallTooLargeException(string toolName, int length) : Exc
     "(probabile write_file/edit_file con un intero file/blocco di codice in una sola chiamata).")
 {
     public string ToolName { get; } = toolName;
+
+    /// <summary>
+    /// true se il tool non porta codice (manage_todo, run_command, ricerche...): argomenti così
+    /// lunghi sono una generazione degenerata (testo ripetuto), non un file troppo grande.
+    /// </summary>
+    public bool Degenerate { get; } = !LlamaClient.IsCodeTool(toolName);
 }
 
 public class LlamaClient
@@ -27,6 +33,13 @@ public class LlamaClient
     // Qwen3.6-35B / Qwen3-Coder-Next in locale a 102-128K di contesto e max_tokens = 32768
     // per turno, c'è ampio margine sotto il ceiling reale del server.
     private const int MaxToolCallArgsLength = 40000;
+
+    // Per i tool che non portano codice basta molto meno. Osservato: un manage_todo arrivato a
+    // 22K caratteri e 6K+ token (nota ripetuta in loop), minuti di generazione per un aggiornamento
+    // del piano che normalmente sta in poche centinaia di caratteri.
+    private const int MaxNonCodeToolArgsLength = 8000;
+
+    public static bool IsCodeTool(string name) => name is "write_file" or "edit_file";
 
     private readonly HttpClient _http;
 
@@ -176,7 +189,10 @@ public class LlamaClient
                     // risponde 500 solo DOPO aver generato fino al limite (minuti sprecati). Qui
                     // interrompiamo la connessione non appena gli argomenti accumulati superano
                     // la soglia di sicurezza, invece di aspettare il fallimento a fine generazione.
-                    if (builder.Args.Length > MaxToolCallArgsLength)
+                    var maxArgs = string.IsNullOrEmpty(builder.Name) || IsCodeTool(builder.Name)
+                        ? MaxToolCallArgsLength
+                        : MaxNonCodeToolArgsLength;
+                    if (builder.Args.Length > maxArgs)
                         throw new ToolCallTooLargeException(builder.Name, builder.Args.Length);
 
                     if (onHeartbeat != null && DateTime.UtcNow - lastHeartbeat >= HeartbeatInterval)
