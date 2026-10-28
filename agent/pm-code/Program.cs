@@ -1064,7 +1064,16 @@ async Task<bool> RunAgentLoopAsync(
             onNotice: text => { if (isStdinProtocol) Notice(text); else UI.Dim(text); },
             onSummary: text => { if (isStdinProtocol) Trace("  [rollover] " + text.Replace("\n", "\n  [rollover] ")); });
         // Il contenuto dei file letti è uscito dal contesto: prima di modificarli vanno riletti.
-        if (!ReferenceEquals(beforeRollover, history)) dispatcher.ClearCache();
+        // Per questo riparte anche il budget di letture: altrimenti il guard delle letture
+        // rifiutava la rilettura e RequireRead la modifica (osservato: stallo dopo un rollover).
+        if (!ReferenceEquals(beforeRollover, history))
+        {
+            dispatcher.ClearCache();
+            consecutiveReadOnly = 0;
+            readOnlyNudgeGiven = false;
+            restrictReadOnly = false;
+            readBlocks = 0;
+        }
 
         // ── Call LLM (streaming) ──────────────────────────────────────────────
         ChatMessage message;
