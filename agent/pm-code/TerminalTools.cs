@@ -18,6 +18,9 @@ public class TerminalTools(WorkspaceContext workspace)
     // installato lo preferiamo per compatibilità, altrimenti ripieghiamo su powershell.exe.
     private static readonly string ShellExe = ResolveWindowsShellExe();
 
+    /// <summary>True se run_command su Windows usa PowerShell 7+ (supporta '&&' e '||').</summary>
+    public static bool UsesPwsh => ShellExe == "pwsh.exe";
+
     private static string ResolveWindowsShellExe()
     {
         var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";

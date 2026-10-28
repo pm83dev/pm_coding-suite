@@ -67,6 +67,7 @@ Tree snapshots are capped at **2 levels deep and 30 files**; `.git`, `bin`, `obj
 | `TerminalTools.cs` | `run_command` (PowerShell on Windows / bash on Linux/macOS, 60s timeout), `run_dotnet`, `analyze_solution` |
 | `AgentTools.cs` | `get_workspace_tree`, `get_directory_details`, `set_workspace` |
 | `GitTools.cs` | `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit`, `git_checkout` |
+| `ExploreSubAgent.cs` | `explore` — read-only sub-agent with its own history and its own `ToolDispatcher` (max 12 steps); returns only the conclusion to the main loop. Wired in `Program.cs` (`ExecuteToolGuarded`), counts as one read-only call for the anti-loop guards. |
 
 `analyze_solution` runs `dotnet build` and filters output to errors/warnings/files only — prefer it over `run_dotnet build` to keep context small.
 
