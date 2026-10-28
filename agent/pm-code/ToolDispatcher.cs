@@ -136,6 +136,12 @@ public class ToolDispatcher
 
     public void ResetCwd() => _terminal.ResetCwd();
 
+    public string? ReapOrphanJobs() => _terminal.ReapOrphanJobs();
+
+    public void SnapshotJobs() => _terminal.SnapshotJobs();
+
+    public List<(int Pid, string Command)> RunningJobs() => _terminal.RunningJobs();
+
     // Il piano è salvato su disco per workspace (.pm-agent/plan.json): su /reset, nuova chat o
     // cambio workspace viene RICARICATO, non azzerato, così "prosegui" in una chat nuova riparte
     // dal primo passo non completato. Un piano concluso o abbandonato si cancella con

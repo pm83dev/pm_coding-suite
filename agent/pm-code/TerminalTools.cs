@@ -87,6 +87,91 @@ public class TerminalTools(WorkspaceContext workspace)
         public DateTime LastActivityUtc { get; set; } = DateTime.UtcNow;
     }
 
+    // Registro su disco dei job e dei loro discendenti (PID + ora di avvio, per non confondere
+    // un PID riutilizzato). Il Job Object con kill-on-close non basta: il pwsh dello Store crea i
+    // figli fuori dal job, e quando l'estensione termina pm-code "dotnet run" e l'app restano vivi.
+    // Osservato: un LlmLab.Api orfano teneva la porta 5000 e l'exe bloccato in build, e nella
+    // sessione successiva l'agente non poteva più fermarlo (non era un suo job).
+    private string JobsFile => Path.Combine(workspace.Root, AgentStateDir.DirName, "jobs.json");
+    private sealed record ProcRef(int Pid, long StartTicksUtc);
+    private sealed record JobRecord(ProcRef Root, string Command, List<ProcRef> Descendants);
+
+    private static ProcRef? Ref(int pid)
+    {
+        try { return new ProcRef(pid, Process.GetProcessById(pid).StartTime.ToUniversalTime().Ticks); }
+        catch { return null; }
+    }
+
+    /// <summary>Riscrive il registro con i job vivi e i loro discendenti attuali.</summary>
+    public void SnapshotJobs()
+    {
+        try
+        {
+            var records = new List<JobRecord>();
+            foreach (var (pid, job) in _jobs)
+            {
+                if (job.Process.HasExited || Ref(pid) is not { } root) continue;
+                var descendants = ProcessJob.Descendants(pid, job.Process.StartTime)
+                    .Select(Ref).OfType<ProcRef>().ToList();
+                records.Add(new JobRecord(root, job.Command, descendants));
+            }
+            if (records.Count == 0)
+            {
+                if (File.Exists(JobsFile)) File.Delete(JobsFile);
+                return;
+            }
+            AgentStateDir.Ensure(workspace.Root);
+            File.WriteAllText(JobsFile, JsonSerializer.Serialize(records));
+        }
+        catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// All'avvio: termina i processi di una sessione precedente ancora vivi (registrati in
+    /// jobs.json e con la stessa ora di avvio). Restituisce una descrizione, o null se non c'era nulla.
+    /// </summary>
+    public string? ReapOrphanJobs()
+    {
+        try
+        {
+            if (!File.Exists(JobsFile)) return null;
+            var records = JsonSerializer.Deserialize<List<JobRecord>>(File.ReadAllText(JobsFile)) ?? [];
+            File.Delete(JobsFile);
+
+            var killed = new List<string>();
+            foreach (var rec in records)
+            {
+                var targets = new List<ProcRef>(rec.Descendants);
+                if (SameProcess(rec.Root))
+                {
+                    var since = new DateTime(rec.Root.StartTicksUtc, DateTimeKind.Utc).ToLocalTime();
+                    targets.AddRange(ProcessJob.Descendants(rec.Root.Pid, since).Select(Ref).OfType<ProcRef>());
+                    targets.Add(rec.Root);
+                }
+                foreach (var p in targets.DistinctBy(t => t.Pid).Where(SameProcess))
+                {
+                    try
+                    {
+                        var proc = Process.GetProcessById(p.Pid);
+                        var name = proc.ProcessName;
+                        proc.Kill(entireProcessTree: true);
+                        killed.Add($"{name} (PID {p.Pid})");
+                    }
+                    catch { /* già uscito o non accessibile */ }
+                }
+            }
+            return killed.Count == 0 ? null
+                : "terminati processi rimasti attivi da una sessione precedente: " + string.Join(", ", killed);
+        }
+        catch { return null; }
+    }
+
+    private static bool SameProcess(ProcRef p) => Ref(p.Pid) is { } now && now.StartTicksUtc == p.StartTicksUtc;
+
+    /// <summary>Job in background ancora in esecuzione (PID e comando).</summary>
+    public List<(int Pid, string Command)> RunningJobs() =>
+        _jobs.Where(j => !j.Value.Process.HasExited).Select(j => (j.Key, j.Value.Command)).ToList();
+
     // Regex statiche per performance
     private static readonly System.Text.RegularExpressions.Regex DiagRx = new(
         @"(error|warning)\s+[A-Z]+\d+",
@@ -371,6 +456,7 @@ public class TerminalTools(WorkspaceContext workspace)
         proc.StandardInput.Close(); // nessun input previsto: chiudi per dare EOF immediato ai figli
 
         _jobs[proc.Id] = job;
+        SnapshotJobs();
         return $"✓ avviato in background (PID {proc.Id}): {command}\n" +
                $"Usa get_background_output(pid={proc.Id}) per leggere l'output, stop_background_job(pid={proc.Id}) per terminarlo.";
     }
@@ -456,9 +542,15 @@ public class TerminalTools(WorkspaceContext workspace)
 
         if (!job.Process.HasExited)
         {
+            // I discendenti vanno raccolti prima: il pwsh dello Store li crea fuori dall'albero
+            // che Kill(entireProcessTree) riesce a vedere.
+            var descendants = ProcessJob.Descendants(pid, job.Process.StartTime);
             try { job.Process.Kill(entireProcessTree: true); } catch { /* già terminato */ }
+            foreach (var d in descendants)
+                try { Process.GetProcessById(d).Kill(entireProcessTree: true); } catch { /* già terminato */ }
         }
         _jobs.Remove(pid);
+        SnapshotJobs();
         return $"✓ job PID {pid} terminato.";
     }
 

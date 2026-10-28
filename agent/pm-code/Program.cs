@@ -228,6 +228,11 @@ if (isStdinProtocol)
 }
 
 var dispatcher = new ToolDispatcher(workspace, braveApiKey, proposeWrite);
+if (dispatcher.ReapOrphanJobs() is { } reaped)
+{
+    if (isStdinProtocol) Trace($"  !! {reaped}");
+    else UI.Dim($"  [{reaped}]");
+}
 
 // Sotto-agente "explore": dispatcher proprio (vedi ExploreSubAgent) e stessi parametri di campionamento.
 var exploreAgent = new ExploreSubAgent(llm, new ToolDispatcher(workspace, braveApiKey), workspace, r =>
@@ -575,6 +580,11 @@ async Task<bool> RunAgentLoopAsync(
     bool planTouchedThisTurn = false;
     int planContinueRetries = 0;
     const int maxPlanContinueRetries = 2;
+
+    // Processi in background lasciati accesi a fine turno: un'API avviata per il test finale
+    // restava viva, teneva porta ed exe bloccati e nella sessione successiva l'agente non poteva
+    // più fermarla. Un solo promemoria per turno: se servono all'utente, li dichiara nella risposta.
+    bool jobsReminderSent = false;
 
     // Validazione funzionale: la build da sola non dimostra che il comportamento sia corretto
     // (osservato: import PDF riscritto, build verde, mai eseguito → l'utente doveva testare a mano).
@@ -1491,6 +1501,25 @@ async Task<bool> RunAgentLoopAsync(
                 });
                 continue;
             }
+
+            // ── Promemoria processi in background ────────────────────────────────
+            if (!jobsReminderSent && dispatcher.RunningJobs() is { Count: > 0 } running && step < maxSteps - 1)
+            {
+                jobsReminderSent = true;
+                var list = string.Join("\n", running.Select(j => $"  PID {j.Pid}: {OneLine(j.Command, 150)}"));
+                Notice($"processi in background ancora attivi ({running.Count}), gli chiedo se vanno fermati");
+                UI.Dim($"  [auto-jobs] {running.Count} processi in background ancora attivi — chiedo di gestirli...");
+                history.Add(new ChatMessage
+                {
+                    Role = "user",
+                    Content = "[PROCESSI ATTIVI] Stai chiudendo il turno con questi processi in background ancora in esecuzione:\n" + list +
+                              "\nSe li hai avviati solo per verificare il tuo lavoro, fermali ORA con stop_background_job: altrimenti " +
+                              "restano accesi, tengono occupate porte ed exe e bloccano build e test successivi. Se invece l'utente " +
+                              "ti ha chiesto di avviarli o gli servono accesi, lasciali e scrivilo nella risposta (PID e indirizzo)."
+                });
+                continue;
+            }
+            dispatcher.SnapshotJobs();
 
             if (usage is { } u)
                 UI.Dim($"[tokens: prompt={u.PromptTokens} completion={u.CompletionTokens} | step={step}]");
