@@ -31,6 +31,28 @@ function sanitizeHistoryText(text: string): string {
     .trim();
 }
 
+/** Metadata del ChatResult: il solo testo scritto dal modello, senza la cronaca delle azioni. */
+interface PmChatMetadata {
+  agentText?: string;
+}
+
+/**
+ * Toglie dal markdown di una risposta la cronaca scritta dall'estensione (righe "- 📖 Legge…",
+ * piano ✅/🔄/⬜, anteprime ```text). Serve solo per le risposte salvate prima dei metadata:
+ * rimandata all'agent come testo "assistant", il modello la imitava scrivendo azioni finte
+ * invece di chiamare i tool.
+ */
+function stripActivityLog(text: string): string {
+  return text
+    .replace(/```text\n[\s\S]*?```/g, '')
+    .split('\n')
+    .filter((line) => !/^- \p{Extended_Pictographic}/u.test(line))
+    .filter((line) => !/^\s*(\*\*Piano:\*\*|✅|🔄|⬜)/u.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** Ricostruisce il "context" (solo testo user/assistant) da inviare all'agent. */
 function buildAgentContext(history: readonly vscode.ChatContext['history'][number][]): AgentContextMessage[] {
   const messages: AgentContextMessage[] = [];
@@ -38,15 +60,18 @@ function buildAgentContext(history: readonly vscode.ChatContext['history'][numbe
     if (turn instanceof vscode.ChatRequestTurn) {
       messages.push({ role: 'user', content: turn.prompt });
     } else if (turn instanceof vscode.ChatResponseTurn) {
-      const text = turn.response
-        .filter(
-          (part): part is vscode.ChatResponseMarkdownPart =>
-            part instanceof vscode.ChatResponseMarkdownPart,
-        )
-        .map((part) => part.value.value)
-        .join('');
-      const clean = sanitizeHistoryText(text);
-      if (clean) messages.push({ role: 'assistant', content: clean });
+      const saved = (turn.result.metadata as PmChatMetadata | undefined)?.agentText;
+      const text = typeof saved === 'string'
+        ? saved
+        : stripActivityLog(turn.response
+            .filter(
+              (part): part is vscode.ChatResponseMarkdownPart =>
+                part instanceof vscode.ChatResponseMarkdownPart,
+            )
+            .map((part) => part.value.value)
+            .join(''));
+      // Mai saltare il turno: due "user" consecutivi vengono rifiutati dai template tipo Qwen3.
+      messages.push({ role: 'assistant', content: sanitizeHistoryText(text) || '(azioni eseguite con i tool, nessun testo)' });
     }
   }
   return messages;
@@ -123,6 +148,8 @@ export async function handleChatRequest(
   const activityLevel = config.get<ActivityLevel>('activityLog', 'compact');
   let pendingCall: { tool: string; args: unknown } | undefined;
   let lastWasActivity = false;
+  // Testo del modello senza cronaca: finisce nei metadata e torna come context ai turni successivi.
+  let agentText = '';
   const writeActivity = (line: string) => {
     // Riga vuota prima del primo elemento: senza, il markdown attaccherebbe l'elenco
     // all'ultima frase del modello.
@@ -139,6 +166,7 @@ export async function handleChatRequest(
             lastWasActivity = false;
           }
           stream.markdown(event.text);
+          agentText += event.text;
           break;
         case 'tool_call':
           stream.progress(activityLevel === 'off' ? `Tool: ${event.tool}…` : `${describeCall(event.tool, event.args)}…`);
@@ -193,7 +221,8 @@ export async function handleChatRequest(
     stream.markdown(`\n\n⚠️ **Errore comunicando con PM Code Agent:** ${msg}`);
   }
 
-  return undefined;
+  const metadata: PmChatMetadata = { agentText };
+  return { metadata };
 }
 
 let proposalProvider: EditProposalProvider | undefined;

@@ -2,7 +2,7 @@
   "name": "pm-chat-participant",
   "displayName": "PM Chat Participant (Local LLM)",
   "description": "Chat participant frontend per PM Code Agent (tool calling delegato all'agent .NET locale)",
-  "version": "2.0.21",
+  "version": "2.0.22",
   "publisher": "pm-software-automation",
   "engines": {
     "vscode": "^1.125.0"
@@ -39,7 +39,11 @@
           },
           "pmChat.activityLog": {
             "type": "string",
-            "enum": ["off", "compact", "detailed"],
+            "enum": [
+              "off",
+              "compact",
+              "detailed"
+            ],
             "enumDescriptions": [
               "Nessuna cronaca: in chat solo risposte, piano ed errori (comportamento precedente).",
               "Una riga per ogni azione dell'agente con il suo esito, più gli interventi del motore.",
