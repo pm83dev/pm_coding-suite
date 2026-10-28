@@ -218,9 +218,9 @@ public class TodoTools(WorkspaceContext workspace)
         if (_items.Count == 0) return "Piano vuoto.";
         var lines = _items.Select(i => i.Status switch
         {
-            TodoStatus.Completed  => $"✅ {i.Content}",
-            TodoStatus.InProgress => $"🔄 {i.Content}",
-            _                     => $"⬜ {i.Content}",
+            TodoStatus.Completed  => $"[x] {i.Content}",
+            TodoStatus.InProgress => $"[>] {i.Content}",
+            _                     => $"[ ] {i.Content}",
         });
         return "**Piano:**\n" + string.Join('\n', lines);
     }

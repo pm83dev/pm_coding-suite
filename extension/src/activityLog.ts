@@ -9,6 +9,9 @@
 
 export type ActivityLevel = 'off' | 'compact' | 'detailed';
 
+/** Tag davanti a ogni riga della cronaca: la distingue dal testo del modello, a occhio e nel filtro del context. */
+export const ACTIVITY_PREFIX = '[pm]';
+
 type Args = Record<string, unknown>;
 
 function str(v: unknown): string {
@@ -44,72 +47,72 @@ export function describeCall(tool: string, rawArgs: unknown): string {
     case 'read_file':
     case 'read_file_range': {
       const range = a.start_line !== undefined ? ` (righe ${str(a.start_line)}-${str(a.end_line)})` : '';
-      return `📖 Legge ${code(path)}${range}`;
+      return `Legge ${code(path)}${range}`;
     }
     case 'search_in_files':
-      return `🔍 Cerca ${code(str(a.pattern), 60)}${a.glob ? ` in ${code(str(a.glob), 50)}` : ''}`;
+      return `Cerca ${code(str(a.pattern), 60)}${a.glob ? ` in ${code(str(a.glob), 50)}` : ''}`;
     case 'sym_search':
-      return `🔍 Cerca il simbolo ${code(str(a.symbol ?? a.name ?? a.query))}`;
+      return `Cerca il simbolo ${code(str(a.symbol ?? a.name ?? a.query))}`;
     case 'glob_files':
-      return `🗂️ Cerca file ${code(str(a.pattern))}`;
+      return `Cerca file ${code(str(a.pattern))}`;
     case 'list_directory':
     case 'get_directory_details':
-      return `🗂️ Esplora ${code(path || '.')}`;
+      return `Esplora ${code(path || '.')}`;
     case 'get_workspace_tree':
-      return '🗂️ Guarda la struttura del progetto';
+      return 'Guarda la struttura del progetto';
     case 'edit_file':
-      return `✏️ Modifica ${code(path)}`;
+      return `Modifica ${code(path)}`;
     case 'write_file':
-      return `📝 Scrive ${code(path)}`;
+      return `Scrive ${code(path)}`;
     case 'delete_file':
-      return `🗑️ Elimina ${code(path)}`;
+      return `Elimina ${code(path)}`;
     case 'move_file':
-      return `📦 Sposta ${code(shortPath(str(a.source)))} → ${code(shortPath(str(a.destination)))}`;
+      return `Sposta ${code(shortPath(str(a.source)))} → ${code(shortPath(str(a.destination)))}`;
     case 'create_directory':
-      return `📁 Crea la cartella ${code(path)}`;
+      return `Crea la cartella ${code(path)}`;
     case 'sol_analyze':
-      return `🔨 Build${a.project ? ` di ${code(shortPath(str(a.project)))}` : ''}`;
+      return `Build${a.project ? ` di ${code(shortPath(str(a.project)))}` : ''}`;
     case 'run_dotnet':
-      return `🔨 dotnet ${code(str(a.args))}`;
+      return `dotnet ${code(str(a.args))}`;
     case 'run_command':
       return a.background === true
-        ? `🚀 Avvia in background ${code(str(a.command))}`
-        : `⚙️ Esegue ${code(str(a.command))}`;
+        ? `Avvia in background ${code(str(a.command))}`
+        : `Esegue ${code(str(a.command))}`;
     case 'get_background_output':
-      return `⏳ Controlla il processo ${str(a.pid)}`;
+      return `Controlla il processo ${str(a.pid)}`;
     case 'stop_background_job':
-      return `⏹️ Ferma il processo ${str(a.pid)}`;
+      return `Ferma il processo ${str(a.pid)}`;
     case 'list_background_jobs':
-      return '⏳ Elenca i processi in background';
+      return 'Elenca i processi in background';
     case 'git_status':
-      return '🌿 git status';
+      return 'git status';
     case 'git_diff':
-      return `🌿 git diff${a.path ? ` ${code(path)}` : ''}`;
+      return `git diff${a.path ? ` ${code(path)}` : ''}`;
     case 'git_log':
-      return '🌿 git log';
+      return 'git log';
     case 'git_add':
     case 'git_commit':
     case 'git_checkout':
-      return `🌿 ${tool.replace('_', ' ')} ${code(str(a.path ?? a.message ?? a.branch))}`;
+      return `${tool.replace('_', ' ')} ${code(str(a.path ?? a.message ?? a.branch))}`;
     case 'project_notes':
       return a.action === 'add'
-        ? `🧠 Memorizza: ${code(str(a.note), 120)}`
-        : `🧠 Note del progetto (${str(a.action)})`;
+        ? `Memorizza: ${code(str(a.note), 120)}`
+        : `Note del progetto (${str(a.action)})`;
     case 'web_search':
     case 'web_fetch':
-      return `🌐 ${tool === 'web_search' ? 'Cerca sul web' : 'Apre'} ${code(str(a.query ?? a.url))}`;
+      return `${tool === 'web_search' ? 'Cerca sul web' : 'Apre'} ${code(str(a.query ?? a.url))}`;
     default:
-      return `🔧 ${tool}`;
+      return `${tool}`;
   }
 }
 
 // Interventi del motore riconoscibili dal prefisso del risultato: mostrati sempre,
 // sono esattamente i momenti in cui l'agent viene corretto o fermato.
 const GUARD_PATTERNS: [RegExp, string][] = [
-  [/^⚠️ LETTURA BLOCCATA/, '🛑 Lettura rifiutata dal motore: troppe letture senza agire'],
-  [/^⚠️ VERIFICA FUNZIONALE MANCANTE/, '🛑 Il motore chiede un test reale prima di chiudere'],
-  [/^⚠️ VERIFICA MANCANTE/, '🛑 Il motore chiede la build prima di proseguire'],
-  [/^\[LOOP-BLOCK\]/, '🛑 Bloccato: stessa chiamata ripetuta con lo stesso risultato'],
+  [/^⚠️ LETTURA BLOCCATA/, 'Lettura rifiutata dal motore: troppe letture senza agire'],
+  [/^⚠️ VERIFICA FUNZIONALE MANCANTE/, 'Il motore chiede un test reale prima di chiudere'],
+  [/^⚠️ VERIFICA MANCANTE/, 'Il motore chiede la build prima di proseguire'],
+  [/^\[LOOP-BLOCK\]/, 'Bloccato: stessa chiamata ripetuta con lo stesso risultato'],
 ];
 
 /** Esito sintetico della chiamata, o stringa vuota se non c'è niente di utile da dire. */
@@ -118,13 +121,13 @@ export function describeOutcome(tool: string, result: string): string {
     if (rx.test(result)) return label;
   }
   const notes: string[] = [];
-  if (/\[RIPETIZIONE \d+\/\d+\]/.test(result)) notes.push('⚠️ risultato identico a prima');
-  if (/\[STESSO ERRORE \d+ VOLTE\]/.test(result)) notes.push('⚠️ stesso errore ripetuto, il motore chiede di cambiare approccio');
+  if (/\[RIPETIZIONE \d+\/\d+\]/.test(result)) notes.push('attenzione: risultato identico a prima');
+  if (/\[STESSO ERRORE \d+ VOLTE\]/.test(result)) notes.push('attenzione: stesso errore ripetuto, il motore chiede di cambiare approccio');
   if (/^\[OUTPUT LUNGO/.test(result)) notes.push('output lungo salvato su file');
 
   let main = '';
   if (/^ERRORE/i.test(result)) {
-    main = `❌ ${firstLine(result.replace(/^ERRORE:?\s*/i, ''), 160)}`;
+    main = `errore: ${firstLine(result.replace(/^ERRORE:?\s*/i, ''), 160)}`;
   } else {
     switch (tool) {
       case 'search_in_files':
@@ -135,40 +138,40 @@ export function describeOutcome(tool: string, result: string): string {
       case 'read_file':
       case 'read_file_range':
         if (/^\[WARNING\]/.test(result)) main = 'file grande: solo anteprima';
-        else if (/non trovato/i.test(result)) main = '❌ file non trovato';
+        else if (/non trovato/i.test(result)) main = 'file non trovato';
         break;
       case 'edit_file':
       case 'write_file': {
         const m = result.match(/riga ~\d+/);
-        main = /^✓/.test(result) ? `✅${m ? ' ' + m[0] : ''}` : `❌ ${firstLine(result)}`;
+        main = /^✓/.test(result) ? `ok${m ? ' ' + m[0] : ''}` : `errore: ${firstLine(result)}`;
         break;
       }
       case 'delete_file':
-        main = /^✓/.test(result) ? '✅ spostato nel cestino recuperabile' : firstLine(result);
+        main = /^✓/.test(result) ? 'spostato nel cestino recuperabile' : firstLine(result);
         break;
       case 'sol_analyze':
       case 'run_dotnet': {
         const errors = result.match(/error CS\d+/g);
-        if (errors) main = `❌ ${new Set(errors).size} tipi di errore (${[...new Set(errors)].slice(0, 3).join(', ')})`;
-        else if (/\[NOTA\] Il codice compila/.test(result)) main = '✅ compila (exe in uso da un processo)';
-        else if (/Build succeeded|ESITO: SUCCESSO/.test(result)) main = '✅ ok';
-        else if (/FALLITO|MSB\d+/.test(result)) main = `❌ ${firstLine(result)}`;
+        if (errors) main = `errore: ${new Set(errors).size} tipi di errore (${[...new Set(errors)].slice(0, 3).join(', ')})`;
+        else if (/\[NOTA\] Il codice compila/.test(result)) main = 'compila (exe in uso da un processo)';
+        else if (/Build succeeded|ESITO: SUCCESSO/.test(result)) main = 'ok';
+        else if (/FALLITO|MSB\d+/.test(result)) main = `errore: ${firstLine(result)}`;
         break;
       }
       case 'run_command': {
         const pid = result.match(/PID (\d+)/);
-        if (/avviato in background/.test(result) && pid) { main = `✅ PID ${pid[1]}`; break; }
+        if (/avviato in background/.test(result) && pid) { main = `PID ${pid[1]}`; break; }
         // Exit code 0 non basta: uno script con try/catch che stampa "ERR: 401" esce con 0.
         const failed = !/\[ESITO: SUCCESSO\]/.test(result) || /Exception|\bERR(ORE)?\b|\b[45]\d\d\b/.test(result);
         const body = firstLine(result.replace(/\[ESITO:[^\]]*\]/g, '').replace(/^\[OUTPUT LUNGO[^\]]*\]/, ''), 120);
-        main = `${failed ? '❌' : '✅'}${body ? ' ' + code(body, 120) : ''}`;
+        main = `${failed ? 'errore' : 'ok'}${body ? ' ' + code(body, 120) : ''}`;
         break;
       }
       case 'get_background_output':
         main = /\[in esecuzione\]/.test(result) ? 'in esecuzione' : firstLine(result, 80);
         break;
       case 'project_notes':
-        main = /^✓/.test(result) ? '✅' : '';
+        main = /^✓/.test(result) ? 'ok' : '';
         break;
     }
   }

@@ -72,7 +72,7 @@ public class SessionManager
         _currentId     = Guid.NewGuid();
 
         WriteStatus($"  [rollover {previousId.ToString("N")[..8]}→{_currentId.ToString("N")[..8]}, {history.Count - 1} msg compressi]");
-        onNotice?.Invoke($"🔄 Contesto a ~{estimated / 1000}K token: ho compresso la conversazione in un riassunto" +
+        onNotice?.Invoke($"Contesto a ~{estimated / 1000}K token: ho compresso la conversazione in un riassunto" +
                          (atTurnStart ? "" : " a metà lavoro (il piano resta salvato)") + " e continuo da lì.");
 
         // Ricostruito da zero (non riusa history[0]): se nel frattempo il workspace è

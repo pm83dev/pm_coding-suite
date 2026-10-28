@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ActivityLevel, describeCall, describeOutcome, resultPreview } from './activityLog';
+import { ACTIVITY_PREFIX, ActivityLevel, describeCall, describeOutcome, resultPreview } from './activityLog';
 import { AgentContextMessage, AgentEvent, AgentProcess, getAgentProcess } from './agentProcess';
 import { loadCopilotModelEndpoints } from './copilotModels';
 import { EditProposalProvider } from './editProposalProvider';
@@ -37,17 +37,17 @@ interface PmChatMetadata {
 }
 
 /**
- * Toglie dal markdown di una risposta la cronaca scritta dall'estensione (righe "- 📖 Legge…",
- * piano ✅/🔄/⬜, anteprime ```text). Serve solo per le risposte salvate prima dei metadata:
+ * Toglie dal markdown di una risposta la cronaca scritta dall'estensione (righe "- [pm] Legge…",
+ * piano [x]/[>]/[ ], anteprime ```text). Serve solo per le risposte salvate prima dei metadata:
  * rimandata all'agent come testo "assistant", il modello la imitava scrivendo azioni finte
- * invece di chiamare i tool.
+ * invece di chiamare i tool. Riconosce anche il formato precedente con le emoji.
  */
 function stripActivityLog(text: string): string {
   return text
     .replace(/```text\n[\s\S]*?```/g, '')
     .split('\n')
-    .filter((line) => !/^- \p{Extended_Pictographic}/u.test(line))
-    .filter((line) => !/^\s*(\*\*Piano:\*\*|✅|🔄|⬜)/u.test(line))
+    .filter((line) => !line.startsWith(`- ${ACTIVITY_PREFIX} `) && !/^- \p{Extended_Pictographic}/u.test(line))
+    .filter((line) => !/^\s*(\*\*Piano:\*\*|\[[x> ]\] |✅|🔄|⬜)/u.test(line))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -94,7 +94,7 @@ export async function handleChatRequest(
 
   if (!agentPath) {
     stream.markdown(
-      '⚠️ Nessun percorso configurato per PM Code Agent. Imposta `pmChat.agentPath` ' +
+      'Nessun percorso configurato per PM Code Agent. Imposta `pmChat.agentPath` ' +
         'nelle impostazioni di VS Code (percorso dell\'eseguibile `pm-code`).',
     );
     stream.button({
@@ -107,7 +107,7 @@ export async function handleChatRequest(
 
   const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspacePath) {
-    stream.markdown('⚠️ Apri una cartella come workspace prima di usare `@pm`.');
+    stream.markdown('Apri una cartella come workspace prima di usare `@pm`.');
     return undefined;
   }
 
@@ -153,7 +153,7 @@ export async function handleChatRequest(
   const writeActivity = (line: string) => {
     // Riga vuota prima del primo elemento: senza, il markdown attaccherebbe l'elenco
     // all'ultima frase del modello.
-    stream.markdown(`${lastWasActivity ? '' : '\n\n'}- ${line}\n`);
+    stream.markdown(`${lastWasActivity ? '' : '\n\n'}- ${ACTIVITY_PREFIX} ${line}\n`);
     lastWasActivity = true;
   };
 
@@ -176,7 +176,7 @@ export async function handleChatRequest(
           const call = pendingCall?.tool === event.tool ? pendingCall : undefined;
           pendingCall = undefined;
           // manage_todo restituisce già il piano formattato in markdown (checklist
-          // ✅/🔄/⬜): lo si mostra per intero in ogni modalità.
+          // [x]/[>]/[ ]): lo si mostra per intero in ogni modalità.
           if (event.tool === 'manage_todo') {
             if (lastWasActivity) stream.markdown('\n');
             stream.markdown(`\n${event.result}\n\n`);
@@ -202,7 +202,7 @@ export async function handleChatRequest(
         case 'notice':
           // Interventi automatici del motore (auto-continue del piano, richiesta di test
           // funzionale, verifica non eseguita): sono correzioni di rotta, utili da vedere.
-          if (activityLevel !== 'off') writeActivity(`⚙️ Motore: ${event.text}`);
+          if (activityLevel !== 'off') writeActivity(`Motore: ${event.text}`);
           break;
         case 'edit_proposal':
           void handleEditProposal(event.path, event.content, stream);
@@ -218,7 +218,7 @@ export async function handleChatRequest(
     }, token, request.model.id, endpoint, autoApprove);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    stream.markdown(`\n\n⚠️ **Errore comunicando con PM Code Agent:** ${msg}`);
+    stream.markdown(`\n\n**Errore comunicando con PM Code Agent:** ${msg}`);
   }
 
   const metadata: PmChatMetadata = { agentText };
@@ -252,7 +252,7 @@ async function handleEditProposal(
 
   const root = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (!root) {
-    stream.markdown(`⚠️ Nessun workspace aperto: impossibile applicare la modifica a \`${relativePath}\`.`);
+    stream.markdown(`Nessun workspace aperto: impossibile applicare la modifica a \`${relativePath}\`.`);
     getCurrentAgentProcess()?.sendEditDecision(false);
     return;
   }
@@ -272,8 +272,8 @@ async function handleEditProposal(
 
   stream.markdown(
     fileExists
-      ? `\n📝 **Modifica proposta:** \`${relativePath}\`\n`
-      : `\n📝 **Nuovo file proposto:** \`${relativePath}\`\n`,
+      ? `\n**Modifica proposta:** \`${relativePath}\`\n`
+      : `\n**Nuovo file proposto:** \`${relativePath}\`\n`,
   );
 
   if (fileExists) {
@@ -292,12 +292,12 @@ async function handleEditProposal(
   stream.button({
     command: 'pmChat.acceptEditProposal',
     arguments: [relativePath, content],
-    title: '✅ Applica',
+    title: 'Applica',
   });
   stream.button({
     command: 'pmChat.rejectEditProposal',
     arguments: [],
-    title: '❌ Rifiuta',
+    title: 'Rifiuta',
   });
 }
 
