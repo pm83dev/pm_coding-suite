@@ -51,10 +51,15 @@ public class SessionManager
     /// <paramref name="currentRequest"/> è la richiesta dell'utente del turno in corso: va
     /// conservata per intero, altrimenti dopo il rollover il modello la conoscerebbe solo dai
     /// 200 caratteri del riassunto.
+    /// <paramref name="planSummary"/> è il piano non concluso (se c'è): il riassunto lo usa per
+    /// dire a che punto del passo in corso si era arrivati. Il riassunto generato viene salvato
+    /// in .pm-agent/rollover/ di <paramref name="workspaceRoot"/> e passato a <paramref name="onSummary"/>
+    /// (traccia): senza, dopo un rollover non c'era modo di vedere cosa il modello aveva ricevuto.
     /// </summary>
     public async Task<List<ChatMessage>> MaybeRolloverAsync(
         List<ChatMessage> history, bool atTurnStart, bool hasPendingPlan, string? currentRequest,
-        Action<string>? onNotice = null)
+        string? planSummary, string workspaceRoot,
+        Action<string>? onNotice = null, Action<string>? onSummary = null)
     {
         var estimated = EstimateTokens(history);
         var limit = atTurnStart && !hasPendingPlan ? (int)(HardLimit * TurnStartFraction) : HardLimit;
@@ -67,11 +72,14 @@ public class SessionManager
         var toSummarize = atTurnStart && history.Count > 1 && history[^1].Role == "user"
             ? history.Take(history.Count - 1).ToList()
             : history;
-        var summary    = await GenerateSummaryAsync(toSummarize);
+        var summary    = await GenerateSummaryAsync(toSummarize, atTurnStart ? null : planSummary);
         var previousId = _currentId;
         _currentId     = Guid.NewGuid();
 
         WriteStatus($"  [rollover {previousId.ToString("N")[..8]}→{_currentId.ToString("N")[..8]}, {history.Count - 1} msg compressi]");
+        var savedTo = SaveSummary(workspaceRoot, summary, estimated, limit, atTurnStart, toSummarize.Count - 1);
+        onSummary?.Invoke($"rollover ~{estimated} token (soglia {limit}, {(atTurnStart ? "inizio turno" : "metà lavoro")})" +
+                          (savedTo != null ? $" — salvato in {savedTo}" : "") + "\n" + summary);
         onNotice?.Invoke($"Contesto a ~{estimated / 1000}K token: ho compresso la conversazione in un riassunto" +
                          (atTurnStart ? "" : " a metà lavoro (il piano resta salvato)") + " e continuo da lì.");
 
@@ -95,7 +103,33 @@ public class SessionManager
         return fresh;
     }
 
-    private async Task<string> GenerateSummaryAsync(List<ChatMessage> messages)
+    private const int MaxSavedSummaries = 20;
+
+    private static string? SaveSummary(string workspaceRoot, string summary, int estimated, int limit, bool atTurnStart, int messageCount)
+    {
+        try
+        {
+            var dir = Path.Combine(AgentStateDir.Ensure(workspaceRoot), "rollover");
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, $"rollover-{DateTime.Now:yyyyMMdd-HHmmss}.md");
+            File.WriteAllText(file,
+                $"# Rollover {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n" +
+                $"- Momento: {(atTurnStart ? "inizio turno" : "metà lavoro")}\n" +
+                $"- Token stimati: ~{estimated} (soglia {limit})\n" +
+                $"- Messaggi compressi: {messageCount}\n\n" +
+                "## Riassunto ricevuto dal modello\n\n" + summary + "\n");
+
+            foreach (var old in new DirectoryInfo(dir).GetFiles("rollover-*.md")
+                         .OrderByDescending(f => f.LastWriteTimeUtc).Skip(MaxSavedSummaries))
+            {
+                try { old.Delete(); } catch { }
+            }
+            return file;
+        }
+        catch { return null; /* best effort: il rollover non deve fallire per il salvataggio */ }
+    }
+
+    private async Task<string> GenerateSummaryAsync(List<ChatMessage> messages, string? planSummary)
     {
         try
         {
@@ -111,10 +145,14 @@ public class SessionManager
                         "2) Cosa è già stato fatto e risultati ottenuti\n" +
                         "3) Cosa resta da fare\n" +
                         "4) Eventuali errori incontrati e come sono stati gestiti\n" +
-                        "5) File modificati e comandi di build/avvio/test usati\n\n" +
-                        "Sessione:\n" + FormatHistory(messages) }
+                        "5) File modificati e comandi di build/avvio/test usati\n" +
+                        "6) SCOPERTE DEL LAVORO IN CORSO (la parte più importante, chi riprende non le ha viste): " +
+                        "messaggi di errore esatti, causa individuata, ipotesi già verificate o scartate, " +
+                        "fix tentati e il loro esito, e il punto preciso (file e funzione) su cui si stava intervenendo.\n\n" +
+                        (string.IsNullOrWhiteSpace(planSummary) ? "" : "Piano in corso:\n" + planSummary + "\n\n") +
+                        "Sessione (i messaggi più recenti sono riportati per esteso):\n" + FormatHistory(messages) }
                 ],
-                MaxTokens   = 1024,
+                MaxTokens   = 1536,
                 Temperature = 0.0f
             };
 
@@ -128,30 +166,40 @@ public class SessionManager
         }
     }
 
+    // Ultimi messaggi riportati per esteso: con 100 caratteri per risultato il riassunto perdeva
+    // proprio le scoperte del debug in corso (es. il testo esatto di un HTTP 400), e dopo il
+    // rollover l'agente rifaceva da capo la stessa indagine.
+    private const int RecentMessages = 16;
+
     private static string FormatHistory(List<ChatMessage> messages)
     {
         var sb = new System.Text.StringBuilder();
-        foreach (var msg in messages.Skip(1))
+        var body = messages.Skip(1).ToList();
+        for (var i = 0; i < body.Count; i++)
         {
+            var msg = body[i];
+            var recent = i >= body.Count - RecentMessages;
             var content = (msg.Content ?? "").Replace('\n', ' ');
             if (msg.Role == "user" && !string.IsNullOrWhiteSpace(content))
-                sb.AppendLine($"U: {content[..Math.Min(200, content.Length)]}");
+                sb.AppendLine($"U: {Clip(content, recent ? 1500 : 200)}");
             else if (msg.Role == "assistant")
             {
                 if (msg.ToolCalls is { Count: > 0 })
                     foreach (var tc in msg.ToolCalls)
                     {
                         var a = tc.Function.Arguments.Replace('\n', ' ');
-                        sb.AppendLine($"→ {tc.Function.Name}({a[..Math.Min(80, a.Length)]})");
+                        sb.AppendLine($"→ {tc.Function.Name}({Clip(a, recent ? 300 : 80)})");
                     }
                 else if (!string.IsNullOrWhiteSpace(content))
-                    sb.AppendLine($"A: {content[..Math.Min(200, content.Length)]}");
+                    sb.AppendLine($"A: {Clip(content, recent ? 1500 : 200)}");
             }
             else if (msg.Role == "tool" && !string.IsNullOrWhiteSpace(content))
-                sb.AppendLine($"R: {content[..Math.Min(100, content.Length)]}");
+                sb.AppendLine($"R: {Clip(content, recent ? 1200 : 100)}");
         }
         return sb.ToString();
     }
+
+    private static string Clip(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     private static string BuildFallbackSummary(List<ChatMessage> messages)
     {

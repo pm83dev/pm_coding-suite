@@ -1042,7 +1042,9 @@ async Task<bool> RunAgentLoopAsync(
         // droppato la richiesta per contesto eccessivo.
         var beforeRollover = history;
         history = await sessionManager.MaybeRolloverAsync(history, atTurnStart: step == 1, dispatcher.HasPendingPlan, turnRequest,
-            onNotice: text => { if (isStdinProtocol) Notice(text); else UI.Dim(text); });
+            dispatcher.PlanSummary(), workspace.Root,
+            onNotice: text => { if (isStdinProtocol) Notice(text); else UI.Dim(text); },
+            onSummary: text => { if (isStdinProtocol) Trace("  [rollover] " + text.Replace("\n", "\n  [rollover] ")); });
         // Il contenuto dei file letti è uscito dal contesto: prima di modificarli vanno riletti.
         if (!ReferenceEquals(beforeRollover, history)) dispatcher.ClearCache();
 
