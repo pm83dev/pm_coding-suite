@@ -11,9 +11,19 @@ public class SessionManager
 {
     private readonly LlamaClient _llm;
     private readonly int _maxTokens;
+    private readonly int _rolloverTokens;
     private readonly Func<string> _buildSystemPrompt;
     private const float Threshold = 0.70f;
+    // All'inizio di un turno senza piano aperto non c'è lavoro in corso: è il momento più sicuro
+    // per ripartire, quindi basta una frazione della soglia.
+    private const float TurnStartFraction = 0.6f;
     private Guid _currentId = Guid.NewGuid();
+
+    // Soglia di QUALITÀ (AgentSettings:RolloverTokens), separata dal contesto del server: un
+    // modello locale perde precisione molto prima di riempirlo (osservato: 43K token con 128K
+    // disponibili, quando il rollover sarebbe scattato solo a ~90K). Il 70% di MaxContextTokens
+    // resta come limite rigido.
+    private int HardLimit => Math.Min((int)(_maxTokens * Threshold), _rolloverTokens);
 
     // char/4 era una stima generica per prosa naturale: questo agente scambia soprattutto
     // JSON di tool call e codice, dove il rapporto caratteri/token reale è diverso (spesso
@@ -26,10 +36,11 @@ public class SessionManager
     // Fallback a 4.0 finché non arriva la prima misura reale (nessuna richiesta ancora fatta).
     private double _charsPerToken = 4.0;
 
-    public SessionManager(LlamaClient llm, int maxTokens, Func<string> buildSystemPrompt)
+    public SessionManager(LlamaClient llm, int maxTokens, int rolloverTokens, Func<string> buildSystemPrompt)
     {
         _llm = llm;
         _maxTokens = maxTokens;
+        _rolloverTokens = rolloverTokens;
         _buildSystemPrompt = buildSystemPrompt;
     }
 
@@ -37,32 +48,51 @@ public class SessionManager
     /// Controlla se il contesto supera la soglia e, se sì, esegue il rollover:
     /// chiama il LLM per un riassunto e restituisce una history pulita.
     /// Se il LLM non è disponibile, usa un riassunto testuale di fallback.
+    /// <paramref name="currentRequest"/> è la richiesta dell'utente del turno in corso: va
+    /// conservata per intero, altrimenti dopo il rollover il modello la conoscerebbe solo dai
+    /// 200 caratteri del riassunto.
     /// </summary>
-    public async Task<List<ChatMessage>> MaybeRolloverAsync(List<ChatMessage> history)
+    public async Task<List<ChatMessage>> MaybeRolloverAsync(
+        List<ChatMessage> history, bool atTurnStart, bool hasPendingPlan, string? currentRequest,
+        Action<string>? onNotice = null)
     {
         var estimated = EstimateTokens(history);
-        if (estimated < _maxTokens * Threshold)
+        var limit = atTurnStart && !hasPendingPlan ? (int)(HardLimit * TurnStartFraction) : HardLimit;
+        if (estimated < limit)
             return history;
 
-        WriteStatus($"  [sessione: ~{estimated} token stimati — rollover in corso...]");
+        WriteStatus($"  [sessione: ~{estimated} token stimati (soglia {limit}) — rollover in corso...]");
 
-        var summary    = await GenerateSummaryAsync(history);
+        // A inizio turno l'ultimo messaggio è la nuova richiesta, non lavoro da riassumere.
+        var toSummarize = atTurnStart && history.Count > 1 && history[^1].Role == "user"
+            ? history.Take(history.Count - 1).ToList()
+            : history;
+        var summary    = await GenerateSummaryAsync(toSummarize);
         var previousId = _currentId;
         _currentId     = Guid.NewGuid();
 
         WriteStatus($"  [rollover {previousId.ToString("N")[..8]}→{_currentId.ToString("N")[..8]}, {history.Count - 1} msg compressi]");
+        onNotice?.Invoke($"🔄 Contesto a ~{estimated / 1000}K token: ho compresso la conversazione in un riassunto" +
+                         (atTurnStart ? "" : " a metà lavoro (il piano resta salvato)") + " e continuo da lì.");
 
         // Ricostruito da zero (non riusa history[0]): se nel frattempo il workspace è
         // cambiato tramite il tool set_workspace — che aggiorna solo WorkspaceContext e non
         // passa da /cd, quindi non rigenera il system message — riusare history[0] farebbe
         // "dimenticare" al modello il workspace corrente e ripartire da quello di default,
         // perché il riassunto generato di solito non ripete esplicitamente il path attuale.
-        return
+        List<ChatMessage> fresh =
         [
             ChatMessage.System(_buildSystemPrompt()),
             new ChatMessage { Role = "user",      Content = $"[SESSIONE PRECEDENTE #{previousId}]\n{summary}" },
             new ChatMessage { Role = "assistant",  Content = "Contesto sessione precedente acquisito. Continuo." }
         ];
+        if (!string.IsNullOrWhiteSpace(currentRequest))
+            fresh.Add(ChatMessage.User(atTurnStart
+                ? currentRequest
+                : "[RICHIESTA IN CORSO — il contesto è stato compresso a metà lavoro: riprendi dal punto indicato nel " +
+                  "riassunto e nel piano, senza rifare i passi già completati. Prima di modificare un file rileggi le " +
+                  "righe interessate.]\n" + currentRequest));
+        return fresh;
     }
 
     private async Task<string> GenerateSummaryAsync(List<ChatMessage> messages)
@@ -80,10 +110,11 @@ public class SessionManager
                         "1) Obiettivo originale dell'utente\n" +
                         "2) Cosa è già stato fatto e risultati ottenuti\n" +
                         "3) Cosa resta da fare\n" +
-                        "4) Eventuali errori incontrati e come sono stati gestiti\n\n" +
+                        "4) Eventuali errori incontrati e come sono stati gestiti\n" +
+                        "5) File modificati e comandi di build/avvio/test usati\n\n" +
                         "Sessione:\n" + FormatHistory(messages) }
                 ],
-                MaxTokens   = 512,
+                MaxTokens   = 1024,
                 Temperature = 0.0f
             };
 

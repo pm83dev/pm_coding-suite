@@ -35,6 +35,7 @@ No automated test framework exists. Validation is done through live agent intera
 - `LlmSettings:Model` — Model name sent in API requests
 - `AgentSettings:Workspace` — Agent's sandboxed working directory (default: `./AgentWorkspace`)
 - `AgentSettings:MaxSteps` — Max tool-call iterations per user turn (default: 20)
+- `AgentSettings:RolloverTokens` — quality threshold for the session rollover in `SessionManager` (default: 40000, capped at 70% of `MaxContextTokens`). At the start of a turn with no open plan the rollover already fires at 60% of it; the current request is always kept verbatim and a `notice` is shown in chat.
 
 ## Architecture
 

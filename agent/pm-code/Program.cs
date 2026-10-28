@@ -398,7 +398,10 @@ string BuildSystemPrompt()
         """;
 }
 
-var sessionManager = new SessionManager(llm, maxContextTokens, BuildSystemPrompt);
+// Default 40000 anche se MaxContextTokens è molto più alto: è la soglia di qualità del modello
+// locale, non la capienza del server (vedi SessionManager.HardLimit).
+var rolloverTokens = GetIntSetting("AgentSettings:RolloverTokens") ?? 40000;
+var sessionManager = new SessionManager(llm, maxContextTokens, rolloverTokens, BuildSystemPrompt);
 
 var history = new List<ChatMessage>();
 void ResetHistory() => history = [ChatMessage.System(BuildSystemPrompt())];
@@ -478,6 +481,17 @@ var functionalCheckRegex = new Regex(
     @"\b(dotnet\s+(test|run)|npm\s+(test|run|start)|npx|yarn|pnpm|pytest|python|py\s|node\s|go\s+(test|run)|" +
     @"cargo\s+(test|run)|mvn|gradle|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget|Start-Process)\b|\.(ps1|sh|bat|cmd|exe)\b",
     RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+// Comandi che compilano, installano o analizzano senza eseguire il programma: "npx ng build" e
+// "npm run build" passavano come verifica funzionale (npx e "npm run" in generale lo sono) e il
+// piano si chiudeva dopo la sola build. Valutati per segmento: "npm run build; npm test" resta funzionale.
+var buildOnlyRegex = new Regex(
+    @"\b(ng\s+(build|lint)|(npm|pnpm|yarn)\s+(run\s+)?(build|lint|install|ci|add|i)|tsc|vite\s+build|webpack|eslint|prettier|" +
+    @"dotnet\s+(build|restore)|mvn\s+(compile|package|install)|gradle\s+(build|assemble))\b",
+    RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+bool IsFunctionalCheck(string cmd) =>
+    Regex.Split(cmd, @"[;\n]|&&|\|\|").Any(seg => functionalCheckRegex.IsMatch(seg) && !buildOnlyRegex.IsMatch(seg));
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
 // Restituisce true se il LLM ha risposto (anche senza tool call), false su errore HTTP.
@@ -794,7 +808,7 @@ async Task<bool> RunAgentLoopAsync(
                     var el = JsonDocument.Parse(argsJson).RootElement;
                     var isBackground = el.TryGetProperty("background", out var bg) && bg.ValueKind == JsonValueKind.True;
                     var cmd = el.TryGetProperty("command", out var c) ? c.GetString() ?? "" : "";
-                    if (!isBackground && functionalCheckRegex.IsMatch(cmd)) functionalCheckSinceEdit = true;
+                    if (!isBackground && IsFunctionalCheck(cmd)) functionalCheckSinceEdit = true;
                 }
                 catch { }
             }
@@ -1006,6 +1020,9 @@ async Task<bool> RunAgentLoopAsync(
         return execResult;
     }
 
+    // La richiesta dell'utente di questo turno: il rollover la conserva per intero.
+    var turnRequest = history.LastOrDefault(m => m.Role == "user")?.Content;
+
     int step = 0;
     while (step < maxSteps)
     {
@@ -1017,7 +1034,11 @@ async Task<bool> RunAgentLoopAsync(
         // e verifica più volte l'output). Senza questo controllo per-step, il rollover
         // scatterebbe solo al turno SUCCESSIVO, dopo che il server ha già rifiutato o
         // droppato la richiesta per contesto eccessivo.
-        history = await sessionManager.MaybeRolloverAsync(history);
+        var beforeRollover = history;
+        history = await sessionManager.MaybeRolloverAsync(history, atTurnStart: step == 1, dispatcher.HasPendingPlan, turnRequest,
+            onNotice: text => { if (isStdinProtocol) Notice(text); else UI.Dim(text); });
+        // Il contenuto dei file letti è uscito dal contesto: prima di modificarli vanno riletti.
+        if (!ReferenceEquals(beforeRollover, history)) dispatcher.ClearCache();
 
         // ── Call LLM (streaming) ──────────────────────────────────────────────
         ChatMessage message;

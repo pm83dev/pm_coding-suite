@@ -66,6 +66,13 @@ public class TerminalTools(WorkspaceContext workspace)
         @"(Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|\bcp\b|\bmv\b|>>?)[^;|\n]*\.(cs|csproj|sln|ts|tsx|js|jsx|mjs|py|java|go|rs|cpp|c|h|hpp|html|css|scss|less|vue|svelte|razor|json|xml|ya?ml)\b",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    // Terminare processi da shell: permesso solo sui job in background avviati dall'agente (e sui
+    // loro figli). Osservato: l'API avviata dall'utente teneva bloccato l'exe in build e il modello
+    // l'ha terminata con Stop-Process -Force, nonostante la nota di sol_analyze dicesse di chiedere.
+    private static readonly System.Text.RegularExpressions.Regex KillRegex = new(
+        @"(^|[;&|{(\s])(Stop-Process|spps|kill|taskkill|pkill|killall)(\.exe)?(?=\s|$)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
     // Working directory persistente tra chiamate, come Claude Code Bash tool
     private string _cwd = workspace.Root;
 
@@ -198,6 +205,9 @@ public class TerminalTools(WorkspaceContext workspace)
 
         if (_blocklist.Any(b => b.IsMatch(command)))
             return $"ERRORE: comando bloccato per sicurezza: {command}";
+
+        if (CheckForeignKill(command) is { } killRefusal)
+            return killRefusal;
 
         // Ripristinare un file dal cestino dell'agente è l'opposto di una cancellazione: permesso.
         var restoringFromTrash = System.Text.RegularExpressions.Regex.IsMatch(command, @"\.pm-agent[\\/]+trash",
@@ -389,6 +399,53 @@ public class TerminalTools(WorkspaceContext workspace)
                 ? $"in esecuzione, nessun nuovo output da {idleSeconds:F0}s"
                 : "in esecuzione";
         return $"[{status}]\n{(string.IsNullOrWhiteSpace(output) ? "(nessun output)" : output)}";
+    }
+
+    // Rifiuta il comando se termina un processo che non è un job dell'agente: PID non suoi,
+    // per nome (-Name, /IM, pkill) o da pipeline (Get-Process x | Stop-Process), dove non si
+    // può sapere a priori cosa verrà terminato.
+    private string? CheckForeignKill(string command)
+    {
+        var matches = KillRegex.Matches(command);
+        if (matches.Count == 0) return null;
+
+        var own = OwnPids();
+        foreach (System.Text.RegularExpressions.Match m in matches)
+        {
+            var start = m.Index + m.Length;
+            var end = command.IndexOfAny([';', '|', '&', '\n'], start);
+            var segment = end < 0 ? command[start..] : command[start..end];
+            var piped = command[..m.Index].TrimEnd().EndsWith('|');
+            // Numeri non preceduti da '-' (esclude "kill -9") né da lettere/cifre.
+            var pids = System.Text.RegularExpressions.Regex.Matches(segment, @"(?<![-\w])\d+\b")
+                .Select(x => int.Parse(x.Value)).ToList();
+
+            if (piped || pids.Count == 0 || pids.Any(p => !own.Contains(p)))
+            {
+                var ownList = _jobs.Count == 0 ? "nessuno" : string.Join(", ", _jobs.Keys);
+                return "ERRORE: comando rifiutato — run_command può terminare solo i processi che hai avviato tu in background " +
+                       $"(PID: {ownList}), e per quelli devi usare stop_background_job. Un processo che non hai avviato tu " +
+                       "(es. l'app aperta dall'utente in Visual Studio o da terminale) NON va terminato: fermati e chiedi " +
+                       "all'utente di chiuderlo, spiegando perché ti serve (es. exe bloccato in build, porta occupata).";
+            }
+        }
+        return null;
+    }
+
+    private HashSet<int> OwnPids()
+    {
+        var pids = new HashSet<int>();
+        foreach (var (pid, job) in _jobs)
+        {
+            pids.Add(pid);
+            try
+            {
+                if (!job.Process.HasExited)
+                    pids.UnionWith(ProcessJob.Descendants(pid, job.Process.StartTime));
+            }
+            catch { /* processo terminato nel frattempo */ }
+        }
+        return pids;
     }
 
     private string StopBackgroundJob(JsonElement args)
