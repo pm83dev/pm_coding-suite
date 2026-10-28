@@ -60,6 +60,11 @@ public class TerminalTools(WorkspaceContext workspace)
         @"(^|[;&|{(\s])(Remove-Item|ri|rm|rmdir|rd|del|erase|Clear-Content|clc|unlink|shred)(\s|$)",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    // Here-string PowerShell e stringhe tra apici/virgolette (contenuto di body JSON, messaggi).
+    private static readonly System.Text.RegularExpressions.Regex QuotedRx = new(
+        @"@'[\s\S]*?'@|@""[\s\S]*?""@|'[^'\n]*'|""(?:[^""\\\n]|\\.)*""",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
     // Scrittura da shell sopra file di codice/config: aggira edit_file (e la conferma in chat).
     // Scrivere su .txt/.log (es. salvare un diff o un output) resta permesso.
     private static readonly System.Text.RegularExpressions.Regex CodeOverwriteRegex = new(
@@ -298,8 +303,14 @@ public class TerminalTools(WorkspaceContext workspace)
         var restoringFromTrash = System.Text.RegularExpressions.Regex.IsMatch(command, @"\.pm-agent[\\/]+trash",
                                      System.Text.RegularExpressions.RegexOptions.IgnoreCase)
                                  && !FileDeleteRegex.IsMatch(command);
-        if (!restoringFromTrash && (FileDeleteRegex.IsMatch(command) || CodeOverwriteRegex.IsMatch(command)))
-            return "ERRORE: run_command non può cancellare file né scrivere/sovrascrivere file di codice " +
+        // I comandi di cancellazione si cercano fuori dalle stringhe: il testo di un body JSON in
+        // italiano ("il nome del tool") faceva scattare "del" e bloccava una semplice chiamata HTTP.
+        // La sovrascrittura resta sul comando intero, perché il path di destinazione è spesso tra virgolette.
+        var deleteMatch = FileDeleteRegex.Match(QuotedRx.Replace(command, "''"));
+        var overwriteMatch = CodeOverwriteRegex.Match(command);
+        if (!restoringFromTrash && (deleteMatch.Success || overwriteMatch.Success))
+            return $"ERRORE: run_command non può cancellare file né scrivere/sovrascrivere file di codice (trovato: " +
+                   $"\"{(deleteMatch.Success ? deleteMatch.Value : overwriteMatch.Value).Trim()}\") " +
                    "(Remove-Item, del, rm, Clear-Content, Set-Content/Out-File/'>' su file di codice). " +
                    "Per cancellare usa delete_file (sposta nel cestino recuperabile); per modificare codice usa edit_file. " +
                    "Non aggirare il rifiuto di un altro tool: se write_file è stato rifiutato, procedi con edit_file a blocchi.";
