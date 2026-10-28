@@ -676,7 +676,7 @@ public class TerminalTools(WorkspaceContext workspace)
             // l'elenco e il modello spendeva sempre un passo per richiamare sol_analyze con project.
             var target = found.Count == 1 ? found[0] : PickRecentlyChanged(found);
             if (found.Count > 1)
-                autoNote = $"[progetto scelto automaticamente: {Path.GetRelativePath(workspace.Root, target)} (contiene l'ultima modifica). " +
+                autoNote = $"[progetto scelto automaticamente: {Path.GetRelativePath(workspace.Root, target)} (contiene o referenzia l'ultima modifica). " +
                            "Altri: " + string.Join(", ", found.Where(f => f != target).Select(f => Path.GetRelativePath(workspace.Root, f))) +
                            " — per compilarne un altro richiama sol_analyze con project=<path>]\n";
             workDir = Path.GetDirectoryName(target)!;
