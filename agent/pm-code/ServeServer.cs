@@ -16,12 +16,17 @@ public sealed class ServeServer
 {
     private readonly HttpListener _listener = new();
 
-    public ServeServer(int port)
+    // Default storicamente 127.0.0.1 (solo loopback): l'unica autenticazione è il token
+    // applicativo (hello), quindi esporre il server su un'interfaccia diversa è una scelta
+    // esplicita del chiamante (vedi ServeSettings:BindAddress in Program.cs), non il default.
+    // Un indirizzo diverso da 127.0.0.1/localhost su Windows richiede quasi sempre un URL ACL
+    // registrato (netsh http add urlacl) o un processo elevato — vedi docs/serve-mode.md.
+    public string Prefix { get; }
+
+    public ServeServer(int port, string bindAddress = "127.0.0.1")
     {
-        // SOLO loopback: mai un prefisso che esponga il server su un'interfaccia diversa da
-        // 127.0.0.1 — l'unica autenticazione è il token applicativo (hello), non ce n'è
-        // nessun'altra a livello di rete.
-        _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        Prefix = $"http://{bindAddress}:{port}/";
+        _listener.Prefixes.Add(Prefix);
     }
 
     /// <summary>

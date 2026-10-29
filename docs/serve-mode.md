@@ -50,7 +50,8 @@ In `agent/pm-code/appsettings.json`:
 },
 "ServeSettings": {
   "Port": 8765,
-  "Token": ""   // vedi sotto: meglio PM_SERVE_TOKEN
+  "Token": "",             // vedi sotto: meglio PM_SERVE_TOKEN
+  "BindAddress": "127.0.0.1" // default; vedi §2b per esporlo su un'altra interfaccia (es. Tailscale)
 }
 ```
 
@@ -63,6 +64,8 @@ In `agent/pm-code/appsettings.json`:
   in appsettings.json. Se nessuno dei due è impostato, il processo si ferma subito con un
   errore (non parte "senza protezione"). Preferisci la variabile d'ambiente: non finisce in un
   file versionato per errore.
+- **`ServeSettings:BindAddress`**: default `127.0.0.1` (solo loopback, nessun'altra macchina può
+  raggiungerlo). Vedi §2b per esporlo su un'altra interfaccia.
 
 ## 2. Avvio
 
@@ -73,10 +76,36 @@ dotnet run -- --serve --port 8765
 # oppure, sul build pubblicato: .\pm-code.exe --serve --port 8765
 ```
 
-`--port` è opzionale (default: `ServeSettings:Port`, poi `8765`). Il server ascolta SOLO su
-`127.0.0.1` — non è raggiungibile da altre macchine nemmeno se il firewall lo permettesse,
-l'indirizzo non viene nemmeno aperto. Log diagnostici (connessioni, errori) vanno sulla console
-del processo, mai sul socket: non fanno parte del protocollo.
+`--port` è opzionale (default: `ServeSettings:Port`, poi `8765`). Per default il server ascolta
+SOLO su `127.0.0.1` — non è raggiungibile da altre macchine nemmeno se il firewall lo
+permettesse, l'indirizzo non viene nemmeno aperto. Log diagnostici (connessioni, errori) vanno
+sulla console del processo, mai sul socket: non fanno parte del protocollo.
+
+## 2b. Raggiungerlo da un'altra macchina (es. un altro PC sulla stessa rete Tailscale)
+
+Per default `--serve` è raggiungibile SOLO dalla stessa macchina (§2). Per aprirlo anche a un
+altro PC della tua rete (es. un nodo Tailscale), imposta `ServeSettings:BindAddress`
+sull'indirizzo di quell'interfaccia (mai `0.0.0.0`/tutte le interfacce, a meno che non sia
+davvero quello che vuoi — più alzi il perimetro, più l'unico token di `hello` è tutto ciò che ti
+protegge):
+
+```jsonc
+"ServeSettings": { "Port": 8765, "Token": "...", "BindAddress": "100.x.y.z" } // il tuo IP Tailscale
+```
+
+Su Windows, `HttpListener` richiede un URL ACL per ascoltare su un indirizzo diverso da
+`127.0.0.1`/`localhost` — senza, `--serve` si ferma con un errore chiaro invece di un crash e ti
+stampa il comando esatto. Da un prompt **come Amministratore**, UNA volta (poi resta valido tra
+un avvio e l'altro):
+
+```powershell
+netsh http add urlacl url=http://100.x.y.z:8765/ user=TUO-PC\tuo-utente
+```
+
+(per togliere l'ACL in futuro: `netsh http delete urlacl url=http://100.x.y.z:8765/`). Serve
+anche che il firewall di Windows permetta connessioni in ingresso su quella porta per
+`pm-code.exe` (di solito compare un prompt la prima volta che il processo apre la porta, se non
+l'hai già consentito tu).
 
 ## 3. Flusso del protocollo (questa fase)
 

@@ -1983,9 +1983,17 @@ async Task RunServeModeAsync()
     var turnInProgress = false;
     var turnLock = new object();
 
-    var server = new ServeServer(servePort);
-    UI.Ok($"[serve] in ascolto su ws://127.0.0.1:{servePort}/ (token richiesto in 'hello')");
+    // Default 127.0.0.1 (invariato): un indirizzo diverso è una scelta esplicita in
+    // appsettings.json (es. l'IP di un'interfaccia Tailscale, per raggiungerlo da un altro PC
+    // della stessa rete) — vedi il commento di sicurezza su ServeServer e docs/serve-mode.md.
+    var serveBindAddress = config["ServeSettings:BindAddress"];
+    if (string.IsNullOrWhiteSpace(serveBindAddress)) serveBindAddress = "127.0.0.1";
 
+    var server = new ServeServer(servePort, serveBindAddress);
+    UI.Ok($"[serve] in ascolto su ws://{serveBindAddress}:{servePort}/ (token richiesto in 'hello')");
+
+    try
+    {
     await server.RunAsync(async (conn, connCt) =>
     {
         // ── hello: deve essere il PRIMO messaggio della connessione ─────────────────
@@ -2135,6 +2143,20 @@ async Task RunServeModeAsync()
 
         await conn.CloseAsync();
     }, CancellationToken.None);
+    }
+    catch (System.Net.HttpListenerException ex) when (ex.ErrorCode == 5) // ERROR_ACCESS_DENIED
+    {
+        // Bind su un indirizzo diverso da localhost (es. un'interfaccia Tailscale, per
+        // raggiungere il server da un altro PC) richiede su Windows un URL ACL registrato, o un
+        // processo elevato: senza uno dei due HttpListener.Start() nega l'accesso a prescindere
+        // da permessi di firewall/rete. Un'eccezione non gestita qui terminava il processo senza
+        // spiegare perché — vedi anche docs/serve-mode.md.
+        UI.Error($"Impossibile ascoltare su '{server.Prefix}': accesso negato da Windows " +
+                 $"(normale per un indirizzo diverso da 127.0.0.1/localhost senza i permessi giusti).");
+        UI.Dim($"  Da un prompt come Amministratore, UNA volta:");
+        UI.Dim($"    netsh http add urlacl url={server.Prefix} user={Environment.UserDomainName}\\{Environment.UserName}");
+        UI.Dim($"  (per rimuoverlo in futuro: netsh http delete urlacl url={server.Prefix})");
+    }
 }
 
 if (isServeMode)
