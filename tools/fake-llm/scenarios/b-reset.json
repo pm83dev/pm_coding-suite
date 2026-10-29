@@ -1,0 +1,6 @@
+{
+  "responses": [
+    { "type": "text", "content": "Primo turno completato." },
+    { "type": "text", "content": "Secondo turno dopo /reset completato." }
+  ]
+}

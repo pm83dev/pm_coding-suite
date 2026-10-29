@@ -1,0 +1,20 @@
+{
+  "name": "@pm-ui/mock-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mock server WebSocket dell'agente pm-code (protocollo v1) con scenari scriptati",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "node --test \"dist/tests/*.test.js\""
+  },
+  "dependencies": {
+    "@pm-ui/protocol": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "3f2c1a4e-0012-4b7d-9c8a-1a2b3c4d5e6f",
+  "ts": "2025-01-15T10:00:17.000Z",
+  "sessionId": "sess-abc-123",
+  "type": "assistant_delta",
+  "payload": {
+    "turnId": "turn-777",
+    "messageId": "msg-010",
+    "text": "Il README"
+  }
+}

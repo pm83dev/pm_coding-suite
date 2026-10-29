@@ -1,0 +1,5 @@
+{
+  "responses": [
+    { "type": "text", "content": "Ciao, sono il fake llm." }
+  ]
+}

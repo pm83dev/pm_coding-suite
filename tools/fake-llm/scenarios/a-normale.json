@@ -1,0 +1,7 @@
+{
+  "responses": [
+    { "type": "text", "content": "Ciao! Sono pronto, cosa devo fare?" },
+    { "type": "tool_call", "tool": "read_file", "arguments": { "path": "hello.txt" } },
+    { "type": "text", "content": "Il file hello.txt contiene: ciao mondo. Fatto." }
+  ]
+}

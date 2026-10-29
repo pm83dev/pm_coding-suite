@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>supervisor-lab</AssemblyName>
+    <RootNamespace>SupervisorLab</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- Nessun ProjectReference verso pm-code: questo strumento legge solo il file di
+       trace testuale prodotto da pm-code (pm-code-trace.log), non i suoi tipi interni.
+       pm-code/pm-mcp/extension/ui restano sola lettura, come richiesto. -->
+
+</Project>

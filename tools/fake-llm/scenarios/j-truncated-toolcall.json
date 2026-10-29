@@ -1,0 +1,7 @@
+{
+  "responses": [
+    { "type": "truncated_toolcall", "tool": "write_file" },
+    { "type": "truncated_toolcall", "tool": "write_file" },
+    { "type": "text", "content": "Non dovrebbe mai arrivare qui in questo scenario." }
+  ]
+}

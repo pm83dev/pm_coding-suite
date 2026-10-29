@@ -1,0 +1,12 @@
+{
+  "responses": [
+    {
+      "type": "tool_call",
+      "tool": "write_file",
+      "finishReason": "length",
+      "promptTokens": 2000,
+      "rawArguments": "{\"path\":\"out.txt\",\"content\":\"testo molto lungo tagliato a meta"
+    },
+    { "type": "text", "content": "Non dovrebbe mai arrivare qui: length non prevede retry." }
+  ]
+}

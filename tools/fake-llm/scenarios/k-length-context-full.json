@@ -1,0 +1,11 @@
+{
+  "responses": [
+    {
+      "type": "text",
+      "content": "Risposta tagliata perche' il contesto e' quasi pieno",
+      "finishReason": "length",
+      "promptTokens": 75000
+    },
+    { "type": "text", "content": "Non dovrebbe mai arrivare qui: length non prevede retry." }
+  ]
+}

@@ -1,0 +1,3 @@
+Dimmi che sei pronto, senza usare tool.
+Leggi hello.txt e dimmi cosa contiene.
+quit

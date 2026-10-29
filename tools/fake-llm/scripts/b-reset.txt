@@ -1,0 +1,4 @@
+Primo messaggio prima del reset.
+/reset
+Secondo messaggio dopo il reset.
+quit

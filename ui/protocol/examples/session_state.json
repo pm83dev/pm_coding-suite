@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "id": "3f2c1a4e-000e-4b7d-9c8a-1a2b3c4d5e6f",
+  "ts": "2025-01-15T10:00:13.000Z",
+  "sessionId": "sess-abc-123",
+  "type": "session_state",
+  "payload": {
+    "session": {
+      "id": "sess-abc-123",
+      "title": "Refactoring modulo login",
+      "workspace": "C:\\DevAgentPM\\pm_coding-suite",
+      "updatedAt": "2025-01-15T09:58:00.000Z",
+      "status": "idle"
+    },
+    "messages": [
+      {
+        "id": "msg-001",
+        "role": "user",
+        "text": "leggi il file README.md e riassumilo",
+        "ts": "2025-01-15T09:57:00.000Z"
+      },
+      {
+        "id": "msg-002",
+        "role": "assistant",
+        "text": "Il README descrive il progetto pm-code, un agente di sviluppo in C#.",
+        "ts": "2025-01-15T09:57:30.000Z"
+      }
+    ],
+    "model": "llama-3.1-70b",
+    "permission": "ask"
+  }
+}

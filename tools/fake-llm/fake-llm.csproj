@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>fake-llm</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <!-- Nessun riferimento a pm-code: finto server HTTP indipendente, parla solo il
+       protocollo OpenAI-compatibile che agent/pm-code/LlamaClient.cs usa davvero
+       (verificato leggendo quel file, non supposto - vedi README.md). -->
+
+  <ItemGroup>
+    <!-- driver/ è un progetto .csproj separato (il suo stesso top-level statement e il
+         suo AssemblyInfo generato): senza questa esclusione il glob implicito di questo
+         progetto lo includerebbe comunque, con attributi di assembly duplicati. -->
+    <Compile Remove="driver\**" />
+    <Content Remove="driver\**" />
+    <None Remove="driver\**" />
+  </ItemGroup>
+</Project>

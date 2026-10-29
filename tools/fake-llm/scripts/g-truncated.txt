@@ -1,0 +1,2 @@
+Prova un messaggio qualsiasi.
+quit

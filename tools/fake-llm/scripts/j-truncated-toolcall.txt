@@ -1,0 +1,2 @@
+Scrivi un file.
+quit

@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "id": "3f2c1a4e-0016-4b7d-9c8a-1a2b3c4d5e6f",
+  "ts": "2025-01-15T10:00:21.000Z",
+  "sessionId": "sess-abc-123",
+  "type": "approval_request",
+  "payload": {
+    "turnId": "turn-778",
+    "approvalId": "appr-xyz-789",
+    "kind": "write",
+    "path": "agent/pm-code/Program.cs",
+    "title": "Modifica Program.cs: aggiungi gestione flag --verbose",
+    "unifiedDiff": "--- a/agent/pm-code/Program.cs\n+++ b/agent/pm-code/Program.cs\n@@ -10,6 +10,9 @@\n static async Task<int> Main(string[] args)\n {\n+    bool verbose = args.Contains(\"--verbose\");\n+    if (verbose) Console.WriteLine(\"[verbose] avvio agente\");\n     var agent = new Agent();\n     return await agent.RunAsync(args);\n }\n",
+    "expiresAt": "2025-01-15T10:02:21.000Z"
+  }
+}

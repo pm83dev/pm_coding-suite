@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "id": "3f2c1a4e-0008-4b7d-9c8a-1a2b3c4d5e6f",
+  "ts": "2025-01-15T10:00:07.000Z",
+  "sessionId": "sess-abc-123",
+  "type": "reject",
+  "payload": {
+    "approvalId": "appr-xyz-789",
+    "reason": "il diff tocca file non richiesti"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "responses": [
+    { "type": "text", "content": "Questa risposta arriva lentamente apposta.", "delayMs": 6000 }
+  ]
+}

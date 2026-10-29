@@ -1,0 +1,6 @@
+# Un compito per riga (righe vuote o che iniziano con # ignorate).
+# Da compilare con i 3 compiti da confrontare (passo 6 del README) prima di eseguire:
+#   dotnet run -- plans --tasks data/tasks.txt
+#
+# Esempio (NON un compito reale, solo per mostrare il formato):
+# Aggiungi un comando /stats a pm-code che stampa il numero di tool call del turno corrente.

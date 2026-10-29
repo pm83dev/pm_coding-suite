@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "id": "3f2c1a4e-0010-4b7d-9c8a-1a2b3c4d5e6f",
+  "ts": "2025-01-15T10:00:15.000Z",
+  "sessionId": "sess-abc-123",
+  "type": "permission_state",
+  "payload": {
+    "mode": "ask",
+    "rules": []
+  }
+}

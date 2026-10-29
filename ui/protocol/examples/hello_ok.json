@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "id": "3f2c1a4e-000b-4b7d-9c8a-1a2b3c4d5e6f",
+  "ts": "2025-01-15T10:00:10.000Z",
+  "sessionId": null,
+  "type": "hello_ok",
+  "payload": {
+    "serverVersion": "mock-0.1.0",
+    "protocol": 1
+  }
+}

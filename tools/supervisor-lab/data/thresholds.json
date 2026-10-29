@@ -1,0 +1,9 @@
+{
+  "RepeatCallMin": 3,
+  "RepeatErrorMin": 2,
+  "NoFileChangeTurns": 5,
+  "ContextPctMax": 0.9,
+  "MaxContextTokens": 81920,
+  "DurationMinutesMax": 20.0,
+  "LengthContextFullPct": 0.85
+}

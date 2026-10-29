@@ -1,0 +1,8 @@
+{
+  "responses": [
+    { "type": "tool_call", "tool": "read_file", "arguments": { "path": "hello.txt" } },
+    { "type": "tool_call", "tool": "read_file", "arguments": { "path": "hello.txt" } },
+    { "type": "tool_call", "tool": "read_file", "arguments": { "path": "hello.txt" } },
+    { "type": "tool_call", "tool": "read_file", "arguments": { "path": "hello.txt" } }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@pm-ui/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Protocollo v1 pm-code: tipi TypeScript condivisi + validazione runtime",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "examples"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test \"dist/tests/*.test.js\""
+  }
+}
