@@ -8,6 +8,37 @@ Stato di questa fase: `hello`, `new_session`, `send_message` con un turno alla v
 e comandi shell sono sempre bloccati (nessuna esecuzione silenziosa). Approvazioni, `cancel`,
 multi-sessione reale, `list_sessions`/`models_list`/`set_permission` sono fasi successive.
 
+## 0. Avvio rapido per sviluppare (core + UI insieme)
+
+Per lavorare senza VS Code, da una qualunque cartella di progetto: `scripts/dev-serve.ps1`
+avvia core (`--serve`) e UI (`ng serve`) insieme, aggiungendo automaticamente la cartella
+corrente ad `AllowedWorkspaceRoots` se non c'è già.
+
+```powershell
+C:\DevAgentPM\pm_coding-suite\scripts\dev-serve.ps1 -Workspace C:\progetti\mio-progetto
+```
+
+Per usare semplicemente `pm-code` (senza percorso) da qualunque cartella: aggiungi al tuo
+`$PROFILE` (una volta sola)
+
+```powershell
+Add-Content $PROFILE "`n. `"C:\DevAgentPM\pm_coding-suite\scripts\pm-code-profile.ps1`""
+```
+
+poi, in una nuova finestra PowerShell, da dentro la cartella del progetto:
+
+```powershell
+cd C:\progetti\mio-progetto
+pm-code
+```
+
+(una funzione di PowerShell con lo stesso nome di un `.exe` ha la precedenza quando lo chiami
+senza estensione: `pm-code.exe`, con estensione, continua a funzionare come sempre). Il token
+viene preso da `ServeSettings:Token` in appsettings.json se l'hai fissato lì (consigliato, così
+non cambia a ogni avvio); altrimenti ne genera uno nuovo per quella sola sessione e lo stampa a
+schermo. Default: usa `C:\pm-code\pm-code.exe` (l'installazione pubblicata); passa `-ExePath`
+per puntare invece al build del repo.
+
 ## 1. Configurazione (prima del primo avvio)
 
 In `agent/pm-code/appsettings.json`:
