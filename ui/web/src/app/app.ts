@@ -20,7 +20,7 @@ import { Settings } from "./settings/settings";
         <app-settings />
         <section class="sessions" aria-label="Sessioni">
           <h2>Sessioni</h2>
-          <button type="button" class="new-session-btn" (click)="protocol.newSession('C:\\DevAgentPM\\pm_coding-suite')">+ Nuova sessione</button>
+          <button type="button" class="new-session-btn" (click)="newSession()">+ Nuova sessione</button>
           @if (protocol.sessions().length === 0) {
             <p class="muted">Nessuna sessione.</p>
           } @else {
@@ -214,6 +214,11 @@ export class App {
   constructor() {
     // Avvio esplicito della connessione (il servizio non si connette da solo).
     this.protocol.connect();
+  }
+
+  protected newSession(): void {
+    // Usa la cartella corrente (dove è lanciato pm-code) come workspace
+    this.protocol.newSession('.');
   }
 
   protected send(): void {

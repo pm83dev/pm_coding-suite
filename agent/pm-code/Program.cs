@@ -1969,7 +1969,9 @@ async Task RunServeModeAsync()
 
     bool IsWorkspaceAllowed(string requested, out string fullPath)
     {
-        fullPath = Path.GetFullPath(requested);
+        // Se il workspace è ".", usa la cartella corrente
+        var resolved = requested == "." ? Directory.GetCurrentDirectory() : requested;
+        fullPath = Path.GetFullPath(resolved);
         var normalized = fullPath.TrimEnd(Path.DirectorySeparatorChar);
         return allowedRoots.Any(root =>
             string.Equals(normalized, root, StringComparison.OrdinalIgnoreCase) ||
@@ -2048,13 +2050,16 @@ async Task RunServeModeAsync()
                         conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = "new_session.payload.workspace mancante o vuoto" }, currentSessionId));
                         break;
                     }
+                    Trace($"[new_session] workspace richiesto: '{requested}' (len={requested.Length})");
                     if (!IsWorkspaceAllowed(requested, out var fullWs))
                     {
+                        Trace($"[new_session] workspace '{requested}' NON consentito. Roots consentiti: {string.Join(", ", allowedRoots)}");
                         conn.Send(ServeProtocol.Envelope("error",
                             new { code = "bad_request", message = $"workspace non consentito: '{requested}' non è sotto nessuna delle AgentSettings:AllowedWorkspaceRoots configurate" },
                             currentSessionId));
                         break;
                     }
+                    Trace($"[new_session] workspace '{fullWs}' consentito");
 
                     // Stessa identica sequenza di /cd in REPL (vedi HandleSpecialCommandAsync):
                     // cambia la root, scarta piano/cache/cwd della sessione precedente, ricarica
@@ -2604,3 +2609,4 @@ static class ConsoleInput
         }
     }
 }
+

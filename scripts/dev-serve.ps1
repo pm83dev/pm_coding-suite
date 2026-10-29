@@ -108,7 +108,7 @@ $env:PM_SERVE_TOKEN = $Token
 Write-Host "[dev-serve] avvio pm-code --serve --port $Port ($ExePath)"
 $coreProcess = Start-Process -FilePath $ExePath `
     -ArgumentList @("--serve", "--port", $Port) `
-    -WorkingDirectory (Split-Path $ExePath -Parent) `
+    -WorkingDirectory $Workspace `
     -PassThru
 
 # ── Avvia la UI (ng serve) in una finestra separata ─────────────────────────────────────────

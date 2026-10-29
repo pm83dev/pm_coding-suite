@@ -52,6 +52,10 @@ public sealed class ServeServer
 
                 if (!httpCtx.Request.IsWebSocketRequest)
                 {
+                    // Servi file statico dalla cartella wwwroot se presente
+                    if (TryServeStaticFile(httpCtx))
+                        continue;
+
                     httpCtx.Response.StatusCode = 400;
                     httpCtx.Response.Close();
                     continue;
@@ -66,6 +70,76 @@ public sealed class ServeServer
             }
         }
         finally { _listener.Stop(); }
+    }
+
+    /// <summary>
+    /// Servi file statico dalla cartella wwwroot accanto all'eseguibile.
+    /// Restituisce true se il file è stato servito, false se il file non esiste.
+    /// </summary>
+    private bool TryServeStaticFile(HttpListenerContext ctx)
+    {
+        try
+        {
+            // Costruisci il percorso del file: wwwroot + URL path
+            var exeDir = Path.GetDirectoryName(AppContext.BaseDirectory) ?? AppContext.BaseDirectory;
+            var wwwroot = Path.Combine(exeDir, "wwwroot");
+
+            // Normalizza il path richiesto (es. "/index.html" → "index.html")
+            var requestedPath = ctx.Request.Url?.AbsolutePath.TrimStart('/');
+            if (string.IsNullOrWhiteSpace(requestedPath))
+                requestedPath = "index.html";
+
+            // Previene directory traversal (es. "../../etc/passwd")
+            requestedPath = Path.GetRelativePath(".", requestedPath);
+            if (requestedPath.StartsWith("..") || requestedPath.Contains("..\\") || requestedPath.Contains("../"))
+                return false;
+
+            var filePath = Path.Combine(wwwroot, requestedPath);
+
+            // Se è una directory, cerca index.html
+            if (Directory.Exists(filePath) && !File.Exists(filePath))
+            {
+                var indexFile = Path.Combine(filePath, "index.html");
+                if (File.Exists(indexFile))
+                    filePath = indexFile;
+                else
+                    return false;
+            }
+
+            if (!File.Exists(filePath))
+                return false;
+
+            // Determina il content-type in base all'estensione
+            string contentType = Path.GetExtension(filePath)?.ToLowerInvariant() switch
+            {
+                ".html" => "text/html; charset=utf-8",
+                ".js" => "application/javascript; charset=utf-8",
+                ".css" => "text/css; charset=utf-8",
+                ".json" => "application/json; charset=utf-8",
+                ".png" => "image/png",
+                ".jpg" => "image/jpeg",
+                ".jpeg" => "image/jpeg",
+                ".gif" => "image/gif",
+                ".svg" => "image/svg+xml",
+                ".ico" => "image/x-icon",
+                ".woff" => "font/woff",
+                ".woff2" => "font/woff2",
+                ".ttf" => "font/ttf",
+                _ => "application/octet-stream"
+            };
+
+            ctx.Response.ContentType = contentType;
+            ctx.Response.StatusCode = 200;
+
+            var fileBytes = File.ReadAllBytes(filePath);
+            ctx.Response.OutputStream.Write(fileBytes, 0, fileBytes.Length);
+            ctx.Response.Close();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
 

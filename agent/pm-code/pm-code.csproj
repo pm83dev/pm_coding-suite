@@ -39,6 +39,17 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
+
+  <!-- Copia il build del frontend nella cartella wwwroot durante il publish -->
+  <Target Name="CopyFrontend" AfterTargets="Publish">
+    <Message Text="Copia del frontend Angular nella cartella wwwroot..." Importance="High" />
+    <MakeDir Directories="$(PublishDir)wwwroot" />
+    <ItemGroup>
+      <FrontendFiles Include="$(MSBuildProjectDirectory)\..\..\ui\web\dist\web\browser\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(FrontendFiles)" DestinationFolder="$(PublishDir)wwwroot\%(RecursiveDir)" />
+  </Target>
+
   <ItemGroup>
     <!-- Esclude completamente la cartella del test dalla compilazione dell'agente -->
     <Compile Remove="AgentWorkspace\**" />
