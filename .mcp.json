@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "pm-mcp": {
+      "command": "dotnet",
+      "args": ["run", "--project", "agent/pm-mcp", "--no-launch-profile"],
+      "env": {
+        "PM_MCP_WRITE_MODE": "readonly",
+        "PM_MCP_ENABLE_RUN_TASK": "false"
+      }
+    }
+  }
+}

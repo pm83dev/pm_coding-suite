@@ -14,6 +14,9 @@ extension/node_modules/
 extension/out/
 extension/*.vsix
 
+# Node / UI
+ui/**/node_modules/
+
 # Editor
 .vs/
 .idea/

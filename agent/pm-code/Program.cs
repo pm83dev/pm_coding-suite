@@ -2004,14 +2004,24 @@ static class ConsoleInput
         try { startLeft = Console.CursorLeft; startTop = Console.CursorTop; }
         catch { return Console.ReadLine(); }
 
-        // Righe di schermo occupate da un input lungo `len` caratteri a partire da startLeft:
-        // un input più lungo della larghezza del terminale va a capo automaticamente (wrap).
-        int RowsFor(int len)
+        // Posizione (riga, colonna) del cursore dopo aver scritto i primi `uptoIndex` caratteri
+        // a partire da startLeft/startTop: tiene conto sia del wrap automatico a fine riga sia
+        // dei newline letterali che un paste multi-riga inserisce nel buffer. Indici oltre la
+        // fine del buffer (usati per il padding di cancellazione) sono trattati come spazi.
+        (int row, int col) ComputeCursor(int uptoIndex)
         {
             var width = Math.Max(1, Console.BufferWidth);
-            var totalCells = startLeft + len;
-            return totalCells <= 0 ? 1 : (totalCells - 1) / width + 1;
+            int col = startLeft, row = startTop;
+            for (var i = 0; i < uptoIndex; i++)
+            {
+                var c = i < buffer.Count ? buffer[i] : ' ';
+                if (c == '\n') { col = 0; row++; }
+                else { col++; if (col >= width) { col = 0; row++; } }
+            }
+            return (row, col);
         }
+
+        int RowsFor(int uptoIndex) => ComputeCursor(uptoIndex).row - startTop + 1;
 
         void Redraw()
         {
@@ -2038,9 +2048,7 @@ static class ConsoleInput
 
                 prevLen = buffer.Count;
 
-                var targetTotal = startLeft + position;
-                var targetTop = startTop + targetTotal / width;
-                var targetLeft = targetTotal % width;
+                var (targetTop, targetLeft) = ComputeCursor(position);
                 Console.SetCursorPosition(Math.Min(targetLeft, width - 1), Math.Min(Math.Max(targetTop, 0), height - 1));
             }
             catch { }
@@ -2050,11 +2058,9 @@ static class ConsoleInput
         {
             try
             {
-                var width = Math.Max(1, Console.BufferWidth);
-                var total = startLeft + pos;
-                var top = startTop + total / width;
-                var left = total % width;
-                Console.SetCursorPosition(Math.Min(left, width - 1), Math.Min(Math.Max(top, 0), Console.BufferHeight - 1));
+                var height = Console.BufferHeight;
+                var (top, left) = ComputeCursor(pos);
+                Console.SetCursorPosition(Math.Min(left, Console.BufferWidth - 1), Math.Min(Math.Max(top, 0), height - 1));
             }
             catch { }
         }
@@ -2068,6 +2074,16 @@ static class ConsoleInput
             switch (key.Key)
             {
                 case ConsoleKey.Enter:
+                    // Un paste multi-riga arriva come tasti in rapida sequenza: se subito dopo
+                    // l'Enter c'è già altro input in coda, non è una vera pressione di invio
+                    // dell'utente ma un a-capo dentro il testo incollato. Lo trattiamo come
+                    // newline letterale, altrimenti il paste verrebbe troncato alla prima riga.
+                    if (Console.KeyAvailable)
+                    {
+                        buffer.Insert(position, '\n');
+                        position++; Redraw();
+                        break;
+                    }
                     MoveTo(buffer.Count);
                     Console.WriteLine();
                     var result = new string([.. buffer]);

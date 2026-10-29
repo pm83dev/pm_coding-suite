@@ -1,0 +1,25 @@
+// Esempio di configurazione utente per l'Agent Host di VS Code (NON verificato in questa
+// sessione che venga letto davvero da ~/.copilot/mcp-config.json — è un'ipotesi dell'utente
+// da confermare con la documentazione ufficiale/comportamento reale dell'IDE).
+// Copiare il contenuto (senza questo commento, il JSON non supporta commenti) in:
+//   Windows: %USERPROFILE%\.copilot\mcp-config.json
+//   Linux/macOS: ~/.copilot/mcp-config.json
+//
+// A differenza di .mcp.json (nella root del repo, usato quando l'host avvia il processo con
+// cwd = cartella del workspace), questo file vive nella home dell'utente e può essere aperto
+// con qualunque workspace attivo: PM_MCP_WORKSPACE qui va quindi impostata esplicitamente con
+// il percorso reale del/dei progetti su cui si vuole far lavorare pm-mcp — sostituisci il
+// placeholder sotto con il tuo percorso (o rimuovi la riga per usare la cwd del processo).
+{
+  "mcpServers": {
+    "pm-mcp": {
+      "command": "dotnet",
+      "args": ["run", "--project", "<percorso-assoluto-al-repo>/agent/pm-mcp", "--no-launch-profile"],
+      "env": {
+        "PM_MCP_WORKSPACE": "<percorso-assoluto-al-workspace-da-far-usare-a-pm-mcp>",
+        "PM_MCP_WRITE_MODE": "readonly",
+        "PM_MCP_ENABLE_RUN_TASK": "false"
+      }
+    }
+  }
+}

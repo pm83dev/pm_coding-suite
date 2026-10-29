@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>pm-mcp</AssemblyName>
+    <RootNamespace>pm_mcp</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Riuso vero del codice esistente: WorkspaceContext, ToolDispatcher e i singoli tool
+         restano SOLO in pm-code; pm-mcp li referenzia come libreria, non li duplica. -->
+    <ProjectReference Include="..\pm-code\pm-code.csproj" />
+  </ItemGroup>
+
+</Project>
