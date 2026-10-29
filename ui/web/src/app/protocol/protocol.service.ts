@@ -123,7 +123,10 @@ export class ProtocolService {
   }
 
   newSession(workspace: string): void {
+    console.log('[ProtocolService] newSession chiamato, workspace:', workspace);
+    console.log('[ProtocolService] WebSocket state:', this.ws?.readyState);
     this.send("new_session", { workspace });
+    console.log('[ProtocolService] new_session inviato');
   }
 
   openSession(sessionId: string): void {
@@ -217,13 +220,18 @@ export class ProtocolService {
     }
 
     this.setState(applyServerMessage(this.state(), msg));
+    console.log('[ProtocolService] messaggio server ricevuto:', msg.type, JSON.stringify(msg.payload).substring(0, 200));
   }
 
   private send(type: string, payload: unknown): void {
     const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn('[ProtocolService] send IGNORED - WebSocket non aperto. readyState:', ws?.readyState, 'type:', type);
+      return;
+    }
     // makeMessage aggiunge la busta (v, id, ts, sessionId) al tipo+payload.
     const envelope = makeMessage(type, payload, this.currentSessionId());
+    console.log('[ProtocolService] send INVIO:', type, JSON.stringify(envelope));
     ws.send(JSON.stringify(envelope));
   }
 

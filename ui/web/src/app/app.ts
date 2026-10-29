@@ -20,6 +20,7 @@ import { Settings } from "./settings/settings";
         <app-settings />
         <section class="sessions" aria-label="Sessioni">
           <h2>Sessioni</h2>
+          <button type="button" class="new-session-btn" (click)="protocol.newSession('C:\\DevAgentPM\\pm_coding-suite')">+ Nuova sessione</button>
           @if (protocol.sessions().length === 0) {
             <p class="muted">Nessuna sessione.</p>
           } @else {
@@ -124,6 +125,17 @@ import { Settings } from "./settings/settings";
     .sessions li.active { font-weight: bold; }
     .sessions button { background: none; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px; }
     .sessions button:hover { background: var(--hover, #eee); }
+    .sessions .new-session-btn {
+      width: 100%;
+      text-align: left;
+      background: var(--accent, #1976d2);
+      color: white;
+      padding: 0.4rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      margin-bottom: 0.5rem;
+    }
+    .sessions .new-session-btn:hover { background: var(--accent-hover, #1565c0); }
     .status { font-size: 0.75rem; opacity: 0.6; }
     .muted { opacity: 0.6; font-size: 0.9rem; }
 

@@ -4,6 +4,8 @@ export interface ConnectionSettings {
   serverUrl: string;
   /** Token di autenticazione inviato nel messaggio hello. */
   token: string;
+  /** Workspace di default per le nuove sessioni. */
+  workspace?: string;
 }
 
 const SETTINGS_KEY = "pm-ui.settings";
@@ -22,6 +24,7 @@ export function loadSettings(): ConnectionSettings {
     return {
       serverUrl: typeof parsed.serverUrl === "string" && parsed.serverUrl.length > 0 ? parsed.serverUrl : DEFAULT_SETTINGS.serverUrl,
       token: typeof parsed.token === "string" ? parsed.token : "",
+      workspace: typeof parsed.workspace === "string" && parsed.workspace.length > 0 ? parsed.workspace : undefined,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

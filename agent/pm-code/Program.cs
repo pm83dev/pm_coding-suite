@@ -1983,6 +1983,9 @@ async Task RunServeModeAsync()
     var turnInProgress = false;
     var turnLock = new object();
 
+    // Registro sessioni create (id -> info) per supportare list_sessions e open_session.
+    var sessions = new Dictionary<string, (string title, string workspace, string updatedAt, string model)>();
+
     // Default 127.0.0.1 (invariato): un indirizzo diverso è una scelta esplicita in
     // appsettings.json (es. l'IP di un'interfaccia Tailscale, per raggiungerlo da un altro PC
     // della stessa rete) — vedi il commento di sicurezza su ServeServer e docs/serve-mode.md.
@@ -2063,6 +2066,12 @@ async Task RunServeModeAsync()
                     dispatcher.ResetCwd();
 
                     currentSessionId = ServeProtocol.MakeId();
+                    sessions[currentSessionId] = (
+                        title: Path.GetFileName(fullWs.TrimEnd(Path.DirectorySeparatorChar)),
+                        workspace: fullWs,
+                        updatedAt: ServeProtocol.NowIso(),
+                        model: llm.Model
+                    );
                     conn.Send(ServeProtocol.Envelope("session_state", new
                     {
                         session = new
@@ -2132,9 +2141,51 @@ async Task RunServeModeAsync()
                     conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = "'hello' già ricevuto su questa connessione" }, currentSessionId));
                     break;
 
-                // list_sessions/open_session/cancel/approve/reject/set_model/set_permission sono
-                // tipi validi del protocollo v1 ma non ancora implementati in questa fase: un
-                // client che li manda riceve un errore esplicito, non viene ignorato in silenzio.
+                case "list_sessions":
+                {
+                    conn.Send(ServeProtocol.Envelope("sessions_list", new
+                    {
+                        sessions = sessions.Select(kv => new
+                        {
+                            id = kv.Key,
+                            title = kv.Value.title,
+                            workspace = kv.Value.workspace,
+                            updatedAt = kv.Value.updatedAt,
+                            status = "idle"
+                        }).ToArray()
+                    }, null));
+                    break;
+                }
+
+                case "open_session":
+                {
+                    var sessionId = msg.Payload.TryGetProperty("sessionId", out var sidEl) ? sidEl.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(sessionId) || !sessions.TryGetValue(sessionId, out var sessInfo))
+                    {
+                        conn.Send(ServeProtocol.Envelope("error", new { code = "not_found", message = $"sessione '{sessionId}' non trovata" }, sessionId));
+                        break;
+                    }
+                    // Ri-emette lo stato della sessione (senza storico: in questa fase non lo salviamo ancora).
+                    currentSessionId = sessionId;
+                    conn.Send(ServeProtocol.Envelope("session_state", new
+                    {
+                        session = new
+                        {
+                            id = sessionId,
+                            title = sessInfo.title,
+                            workspace = sessInfo.workspace,
+                            updatedAt = sessInfo.updatedAt,
+                            status = "idle"
+                        },
+                        messages = Array.Empty<object>(),
+                        model = sessInfo.model,
+                        permission = "readonly"
+                    }, sessionId));
+                    break;
+                }
+
+                // cancel/approve/reject/set_model/set_permission sono tipi validi del protocollo v1
+                // ma non ancora implementati: un client che li manda riceve un errore esplicito.
                 default:
                     conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = $"comando '{msg.Type}' non ancora supportato in questa fase" }, currentSessionId));
                     break;

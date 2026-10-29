@@ -119,22 +119,47 @@ if (-not (Test-Path (Join-Path $webDir "node_modules"))) {
     npm install
     Pop-Location
 }
+# Il core espone ServeSettings:BindAddress diverso da 127.0.0.1 solo quando è stata una scelta
+# esplicita (es. un IP Tailscale, per raggiungerlo da un'altra macchina — vedi docs/serve-mode.md
+# §2b): in quel caso la UI deve essere raggiungibile dallo stesso posto, altrimenti "un comando
+# avvia tutto" non sarebbe vero per chi lavora da remoto (SSH/Tailscale) senza un browser locale
+# sulla macchina del core. --host 0.0.0.0 (non l'IP specifico: ng serve/Vite etichettano comunque
+# l'interfaccia Tailscale da soli nell'output) espande anche la UI; altrimenti resta solo locale,
+# stesso perimetro di sicurezza di prima.
+$coreBindAddress = "127.0.0.1"
+if ($settings.PSObject.Properties.Name -contains "ServeSettings" -and
+    -not [string]::IsNullOrWhiteSpace($settings.ServeSettings.BindAddress)) {
+    $coreBindAddress = $settings.ServeSettings.BindAddress
+}
+$uiArgs = @("ng", "serve", "--port", $UiPort)
+$uiDisplayHost = "localhost"
+if ($coreBindAddress -ne "127.0.0.1" -and $coreBindAddress -ne "localhost") {
+    $uiArgs += @("--host", "0.0.0.0")
+    $uiDisplayHost = $coreBindAddress
+    Write-Host "[dev-serve] core esposto su '$coreBindAddress': avvio anche la UI con --host 0.0.0.0 (raggiungibile dalla stessa rete)."
+    Write-Host "[dev-serve] ricorda il firewall di Windows per la porta $UiPort, oltre a quella del core."
+}
+
 Write-Host "[dev-serve] avvio ng serve --port $UiPort"
-$uiProcess = Start-Process -FilePath "npx" `
-    -ArgumentList @("ng", "serve", "--port", $UiPort) `
+# "npx" (senza estensione) fa aprire Notepad invece di eseguirlo: su Windows npm installa sia lo
+# shim POSIX senza estensione sia "npx.cmd" nella stessa cartella, e Start-Process risolve senza
+# estensione al primo che trova — che ShellExecute poi tratta come testo, non come comando.
+# "npx.cmd" esplicito evita l'ambiguità.
+$uiProcess = Start-Process -FilePath "npx.cmd" `
+    -ArgumentList $uiArgs `
     -WorkingDirectory $webDir `
     -PassThru
 
 Start-Sleep -Seconds 2
-try { Start-Process "http://localhost:$UiPort/" } catch { }
+if ($uiDisplayHost -eq "localhost") { try { Start-Process "http://localhost:$UiPort/" } catch { } }
 
 Write-Host ""
 Write-Host "========================================================================"
-Write-Host " Core (PID $($coreProcess.Id)):  ws://127.0.0.1:$Port/"
-Write-Host " UI   (PID $($uiProcess.Id)):    http://localhost:$UiPort/"
+Write-Host " Core (PID $($coreProcess.Id)):  ws://${coreBindAddress}:$Port/"
+Write-Host " UI   (PID $($uiProcess.Id)):    http://${uiDisplayHost}:$UiPort/"
 Write-Host ""
 Write-Host " Nella UI, in Settings, incolla:"
-Write-Host "   serverUrl = ws://127.0.0.1:$Port/"
+Write-Host "   serverUrl = ws://${coreBindAddress}:$Port/"
 Write-Host "   token     = $Token"
 Write-Host ""
 Write-Host " Poi 'Nuova sessione' con workspace = $Workspace"

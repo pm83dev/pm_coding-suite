@@ -39,6 +39,13 @@ non cambia a ogni avvio); altrimenti ne genera uno nuovo per quella sola session
 schermo. Default: usa `C:\pm-code\pm-code.exe` (l'installazione pubblicata); passa `-ExePath`
 per puntare invece al build del repo.
 
+Se lavori da remoto (es. VS Code via SSH su un server raggiunto con Tailscale) e vuoi usare la
+UI dal browser del tuo PC, non da quello del server: imposta `ServeSettings:BindAddress`
+sull'IP dell'interfaccia giusta (vedi §2b) **prima** di lanciare `pm-code`/`dev-serve.ps1` — lo
+script rileva da solo che il core è esposto oltre il loopback e avvia anche `ng serve --host
+0.0.0.0`, così la UI è raggiungibile dallo stesso posto. Con il default (`127.0.0.1`), la UI
+resta raggiungibile solo dalla stessa macchina, coerente con lo stesso perimetro del core.
+
 ## 1. Configurazione (prima del primo avvio)
 
 In `agent/pm-code/appsettings.json`:
