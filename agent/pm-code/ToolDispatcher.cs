@@ -156,7 +156,10 @@ public class ToolDispatcher
 
     public string? LessonsSummary() => _lessons.PromptSummary();
 
-    public string Execute(string toolName, string argumentsJson)
+    // ct: CancellationToken del turno corrente (vedi Program.cs/RunAgentLoopAsync). Oggi nessun
+    // tool lo usa per annullarsi davvero (nessun chiamante lo annulla mai) — plumbing per un
+    // futuro comando "cancel" lato UI/estensione, non cambia alcun comportamento osservabile.
+    public string Execute(string toolName, string argumentsJson, CancellationToken ct = default)
     {
         if (toolName == "manage_todo")
             return _todo.Execute(argumentsJson);
@@ -221,7 +224,7 @@ public class ToolDispatcher
             return _fs.Execute(toolName, argumentsJson);
 
         if (_terminal.Definitions.Any(t => t.Function.Name == toolName))
-            return _terminal.Execute(toolName, argumentsJson);
+            return _terminal.Execute(toolName, argumentsJson, ct);
 
         if (_git.Definitions.Any(t => t.Function.Name == toolName))
             return _git.Execute(toolName, argumentsJson);
@@ -234,7 +237,7 @@ public class ToolDispatcher
         }
 
         if (_web.Definitions.Any(t => t.Function.Name == toolName))
-            return _web.Execute(toolName, argumentsJson);
+            return _web.Execute(toolName, argumentsJson, ct);
 
         return $"Tool '{toolName}' non registrato nel dispatcher.";
     }

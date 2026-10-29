@@ -48,7 +48,10 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         }
     };
 
-    public async Task<string> RunAsync(string argumentsJson, Action<string>? onStatus = null)
+    // ct: CancellationToken del turno corrente (vedi Program.cs/RunAgentLoopAsync) — oggi non
+    // annulla nessuna richiesta LLM/tool in corso (nessun chiamante lo annulla mai): plumbing
+    // per un futuro comando "cancel" lato UI/estensione, non cambia alcun comportamento.
+    public async Task<string> RunAsync(string argumentsJson, Action<string>? onStatus = null, CancellationToken ct = default)
     {
         string question;
         try
@@ -71,7 +74,7 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
             for (var step = 1; step <= MaxSteps; step++)
             {
                 onStatus?.Invoke($"explore: step {step}/{MaxSteps}…");
-                var message = await AskAsync(history, tools);
+                var message = await AskAsync(history, tools, ct);
                 history.Add(message);
 
                 if (message.ToolCalls is not { Count: > 0 })
@@ -80,14 +83,14 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
                 foreach (var tc in message.ToolCalls)
                 {
                     onStatus?.Invoke($"explore → {tc.Function.Name} {Short(tc.Function.Arguments, 80)}");
-                    history.Add(ChatMessage.ToolResult(tc.Id, Execute(tc.Function.Name, tc.Function.Arguments, seenCalls)));
+                    history.Add(ChatMessage.ToolResult(tc.Id, Execute(tc.Function.Name, tc.Function.Arguments, seenCalls, ct)));
                 }
             }
 
             // Step finiti: si chiede la conclusione senza tool, invece di restituire il nulla.
             history.Add(ChatMessage.User("Limite di step raggiunto: non puoi più usare tool. Rispondi ORA con quello che hai " +
                                          "trovato, nel formato richiesto, indicando cosa non sei riuscito a verificare."));
-            return Finish((await AskAsync(history, null)).Content);
+            return Finish((await AskAsync(history, null, ct)).Content);
         }
         catch (Exception ex)
         {
@@ -95,7 +98,7 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         }
     }
 
-    private async Task<ChatMessage> AskAsync(List<ChatMessage> history, List<ToolDefinition>? tools)
+    private async Task<ChatMessage> AskAsync(List<ChatMessage> history, List<ToolDefinition>? tools, CancellationToken ct = default)
     {
         var request = new ChatRequest
         {
@@ -106,7 +109,7 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         };
         applySampling(request);
 
-        var response = await llm.ChatAsync(request);
+        var response = await llm.ChatAsync(request, ct);
         var message = response?.Choices.FirstOrDefault()?.Message ?? new ChatMessage { Role = "assistant" };
         message.TryExtractFallbackToolCalls();
         // Come nel loop principale: un assistant senza content né tool_calls viene rifiutato
@@ -116,14 +119,14 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         return message;
     }
 
-    private string Execute(string name, string argsJson, HashSet<string> seenCalls)
+    private string Execute(string name, string argsJson, HashSet<string> seenCalls, CancellationToken ct = default)
     {
         if (!AllowedTools.Contains(name))
             return $"ERRORE: '{name}' non disponibile — sei in sola lettura. Usa solo: {string.Join(", ", AllowedTools)}.";
         if (!seenCalls.Add($"{name}|{argsJson}"))
             return "ERRORE: chiamata identica già eseguita, il risultato è più sopra. Cerca altrove o concludi.";
 
-        var result = dispatcher.Execute(name, argsJson);
+        var result = dispatcher.Execute(name, argsJson, ct);
         return result.Length <= MaxToolResultChars
             ? result
             : result[..MaxToolResultChars] + $"\n…(troncato: {result.Length - MaxToolResultChars} caratteri omessi — restringi la ricerca o il range)";

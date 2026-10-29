@@ -1,0 +1,8 @@
+{
+  "responses": [
+    { "type": "text", "content": "Pronto, nessun tool." },
+    { "type": "tool_call", "tool": "read_file", "arguments": { "path": "hello.txt" } },
+    { "type": "text", "content": "Il file hello.txt contiene: ciao mondo." },
+    { "type": "text", "content": "Quarto turno, quello che vince la gara con la busy." }
+  ]
+}

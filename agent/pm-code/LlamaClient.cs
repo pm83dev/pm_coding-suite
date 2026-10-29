@@ -25,6 +25,38 @@ public sealed class ToolCallTooLargeException(string toolName, int length) : Exc
     public bool Degenerate { get; } = !LlamaClient.IsCodeTool(toolName);
 }
 
+/// <summary>
+/// Sollevata quando lo stream SSE finisce senza che la risposta sia davvero completa:
+/// <list type="bullet">
+/// <item><c>stream_truncated</c>: la connessione si è chiusa prima di "data: [DONE]" e senza
+/// che nessun chunk portasse un <c>finish_reason</c> — la firma di una disconnessione a metà
+/// streaming (crash/riavvio del server, rete), non di una risposta conclusa normalmente.</item>
+/// <item><c>length</c>: il server ha chiuso la generazione con <c>finish_reason="length"</c>
+/// (limite di token raggiunto). Trattato SEMPRE come risposta incompleta, anche quando il JSON
+/// di un'eventuale tool call risulta per caso sintatticamente valido: il limite di lunghezza
+/// può aver tagliato testo o argomenti in un punto qualunque, e non c'è modo di distinguere da
+/// qui una troncatura "innocua" da una che ha mozzato contenuto significativo. Per questo il
+/// chiamante non esegue MAI una tool call proveniente da una risposta con questo esito.</item>
+/// </list>
+/// In entrambi i casi il chiamante (Program.cs) non deve eseguire nessuna tool call parziale:
+/// questa eccezione viene sollevata PRIMA di ricostruire il ChatMessage, quindi non ne esiste
+/// nessuna istanza parziale da poter usare per errore.
+/// </summary>
+public sealed class IncompleteLlmResponseException(string kind, string message, Usage? usage) : Exception(message)
+{
+    /// <summary>"stream_truncated" oppure "length" — usato come errorKind nel trace strutturato.</summary>
+    public string Kind { get; } = kind;
+
+    /// <summary>
+    /// Usage dell'ultimo chunk ricevuto PRIMA della troncatura, se il server l'ha mandato (non
+    /// garantito: per "stream_truncated" la connessione può cadere prima che arrivi). Serve al
+    /// chiamante (Program.cs) per capire, con finish_reason="length", se il contesto era quasi
+    /// pieno (PromptTokens vicino al massimo configurato) o se è solo il budget di risposta ad
+    /// essere stato raggiunto — null se non noto, mai supposto.
+    /// </summary>
+    public Usage? Usage { get; } = usage;
+}
+
 public class LlamaClient
 {
     // Soglia di sicurezza per interrompere in anticipo una tool call che sta accumulando
@@ -87,14 +119,14 @@ public class LlamaClient
 
     // ── Standard (non-streaming) ───────────────────────────────────────────────
 
-    public async Task<ChatResponse?> ChatAsync(ChatRequest request)
+    public async Task<ChatResponse?> ChatAsync(ChatRequest request, CancellationToken ct = default)
     {
         request.Model  = Model;
         request.Stream = false;
-        var resp = await _http.PostAsJsonAsync(EndpointOverride ?? "/v1/chat/completions", request, _json);
+        var resp = await _http.PostAsJsonAsync(EndpointOverride ?? "/v1/chat/completions", request, _json, ct);
         resp.EnsureSuccessStatusCode();
         return JsonSerializer.Deserialize<ChatResponse>(
-            await resp.Content.ReadAsStringAsync(), _json);
+            await resp.Content.ReadAsStringAsync(ct), _json);
     }
 
     // ── Streaming ─────────────────────────────────────────────────────────────
@@ -116,9 +148,13 @@ public class LlamaClient
     /// 20-90+ secondi di silenzio totale dopo aver accettato/rifiutato una proposta, indistinguibile da
     /// un blocco). Restituisce il messaggio completo accumulato e i token usati.
     /// </summary>
-    public async Task<(ChatMessage Message, Usage? Usage)> StreamChatAsync(
+    // ct: CancellationToken del turno corrente (vedi Program.cs/RunAgentLoopAsync). Oggi nessun
+    // chiamante lo annulla mai (CancellationToken.None/default a ogni call site): è plumbing per
+    // un futuro comando "cancel" lato UI/estensione, non cambia alcun comportamento osservabile.
+    public async Task<(ChatMessage Message, Usage? Usage, string? FinishReason)> StreamChatAsync(
         ChatRequest request,
         Action<string> onToken,
+        CancellationToken ct = default,
         Action<string>? onHeartbeat = null)
     {
         request.Model  = Model;
@@ -129,30 +165,32 @@ public class LlamaClient
         httpReq.Content = JsonContent.Create(request, options: _json);
         httpReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-        using var resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead);
+        using var resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct);
         if (!resp.IsSuccessStatusCode)
         {
             // Legge il body per includere il dettaglio dell'errore (es. "Failed to parse tool call arguments as JSON")
-            var errBody = await resp.Content.ReadAsStringAsync();
+            var errBody = await resp.Content.ReadAsStringAsync(ct);
             throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {errBody}", null, resp.StatusCode);
         }
 
-        using var stream = await resp.Content.ReadAsStreamAsync();
+        using var stream = await resp.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
         var contentSb = new StringBuilder();
         var toolBuilders = new Dictionary<int, ToolCallBuilder>();
         Usage? usage = null;
+        string? finishReason = null;
+        var sawDone = false; // vero solo se "data: [DONE]" è arrivato prima che lo stream finisse
         var lastHeartbeat = DateTime.UtcNow;
 
         while (!reader.EndOfStream)
         {
-            var line = await reader.ReadLineAsync();
+            var line = await reader.ReadLineAsync(ct);
             if (string.IsNullOrEmpty(line)) continue;
             if (!line.StartsWith("data: ", StringComparison.Ordinal)) continue;
 
             var data = line[6..];
-            if (data == "[DONE]") break;
+            if (data == "[DONE]") { sawDone = true; break; }
 
             StreamChunk? chunk;
             try { chunk = JsonSerializer.Deserialize<StreamChunk>(data, _json); }
@@ -160,6 +198,7 @@ public class LlamaClient
 
             if (chunk?.Choices is not { Count: > 0 }) { usage ??= chunk?.Usage; continue; }
             if (chunk.Usage != null) usage = chunk.Usage;
+            if (chunk.Choices[0].FinishReason != null) finishReason = chunk.Choices[0].FinishReason;
 
             var delta = chunk.Choices[0].Delta;
 
@@ -205,6 +244,32 @@ public class LlamaClient
             }
         }
 
+        // finish_reason="length" è sempre trattato come risposta incompleta (vedi
+        // IncompleteLlmResponseException): controlliamo comunque se c'era una tool call con
+        // JSON non valido solo per rendere il messaggio d'errore più preciso, non per decidere
+        // SE è un errore — lo è in ogni caso.
+        if (finishReason == "length")
+        {
+            var brokenToolCall = toolBuilders.Values.FirstOrDefault(b =>
+            {
+                try { JsonDocument.Parse(b.Args.Length == 0 ? "{}" : b.Args.ToString()); return false; }
+                catch { return true; }
+            });
+            var detail = brokenToolCall != null
+                ? $" (tool call '{brokenToolCall.Name}' con argomenti JSON incompleti/non validi)"
+                : "";
+            throw new IncompleteLlmResponseException("length",
+                $"Generazione interrotta dal server per limite di lunghezza (finish_reason=\"length\"){detail}: " +
+                "risposta incompleta, nessuna tool call verrà eseguita.", usage);
+        }
+
+        // Nessun finish_reason e connessione finita senza [DONE]: disconnessione a metà
+        // streaming, non una risposta conclusa (vedi IncompleteLlmResponseException).
+        if (!sawDone && finishReason == null)
+            throw new IncompleteLlmResponseException("stream_truncated",
+                "Lo stream si è interrotto prima di \"data: [DONE]\" e senza alcun finish_reason: " +
+                "connessione terminata in anticipo (probabile crash/riavvio del server o rete).", usage);
+
         // Reconstruct full ChatMessage
         var message = new ChatMessage { Role = "assistant" };
 
@@ -228,7 +293,7 @@ public class LlamaClient
                 .ToList();
         }
 
-        return (message, usage);
+        return (message, usage, finishReason);
     }
 
     private sealed class ToolCallBuilder

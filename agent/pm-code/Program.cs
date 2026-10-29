@@ -10,9 +10,42 @@ using Microsoft.Extensions.Configuration;
 // padre (VS Code) e non dobbiamo mai allocare/agganciare una finestra console.
 var isStdinProtocol = args.Contains("--stdin-protocol");
 
+// Modalità server WebSocket (ui/protocol v1) — vedi ServeServer.cs/ServeSink.cs. Mutuamente
+// esclusiva con --stdin-protocol: chi avvia il processo scegliere UNA modalità.
+var isServeMode = args.Contains("--serve");
+
+// Vero in entrambe le modalità "macchina" (--stdin-protocol, --serve): in nessuna delle due si
+// deve stampare la formattazione REPL (prefisso "Agent ›", step indicator, righe vuote di
+// cortesia) sulla console del processo — in --stdin-protocol perché romperebbe il parsing NDJSON
+// su stdout, in --serve perché quella console non è protocollo, è solo log dell'operatore.
+var isMachineMode = isStdinProtocol || isServeMode;
+
+// Tool bloccati del tutto in modalità --serve (scritture e comandi shell): vedi il gate in
+// ExecuteToolGuarded più sotto. git_add/git_commit/git_checkout sono scritture sul repository,
+// non sul filesystem del workspace, ma rientrano nello stesso principio ("nessuna azione che
+// cambi stato senza un'approvazione esplicita, non ancora implementata in questa fase").
+var serveBlockedTools = new HashSet<string>(StringComparer.Ordinal)
+{
+    "write_file", "edit_file", "delete_file", "move_file", "create_directory",
+    "run_command", "run_dotnet", "sol_analyze", "stop_background_job",
+    "git_add", "git_commit", "git_checkout",
+};
+
+// Unico punto da cui il loop (RunAgentLoopAsync) emette testo/tool-call/errori/notice, sia in
+// REPL sia in --stdin-protocol/--serve: vedi IAgentSink.cs. Il valore reale per --serve (un
+// ServeSink per connessione, invece di questo ConsoleSink) viene assegnato più sotto da
+// RunServeModeAsync() per ogni turno — sink è una normale variabile locale (non readonly),
+// quindi RunAgentLoopAsync (chiusura) vede sempre il valore più recente.
+IAgentSink sink = new ConsoleSink(isStdinProtocol);
+
 // Lo Stop in chat termina questo processo con TerminateProcess: senza job i processi avviati
 // dall'agente (dev server, app di prova, pwsh in attesa) restavano vivi senza più nessun padre.
 ProcessJob.KillChildrenOnExit();
+
+// Trace NDJSON strutturato (additivo, vedi StructuredTrace.cs): attivo di default in TUTTE le
+// modalità, PM_TRACE=off per disattivarlo. Va inizializzato prima di qualunque ResetHistory()
+// (il primo avviene poche righe più sotto) perché quella chiamata apre già la prima sessione.
+StructuredTrace.Init();
 
 // L'extension scrive su stdin in UTF-8, ma su Windows Console.In decodifica con la codepage OEM
 // (437): "già" arrivava al modello come "gi├á". Non si usa Console.InputEncoding perché con stdin
@@ -55,9 +88,9 @@ void Trace(string line)
 // cronaca dell'estensione. Le estensioni precedenti ignorano i tipi di evento sconosciuti.
 void Notice(string text)
 {
-    if (!isStdinProtocol) return;
+    if (!isMachineMode) return;
     Trace($"  !! {text}");
-    EmitEvent(new { type = "notice", text });
+    sink.Notice(text);
 }
 static string OneLine(string s, int max)
 {
@@ -90,6 +123,13 @@ var workspacePath = (workspaceArgIndex >= 0 && workspaceArgIndex + 1 < args.Leng
 var maxStepsRaw = GetRequiredSetting("AgentSettings:MaxSteps");
 if (!int.TryParse(maxStepsRaw, out var maxSteps))
     throw new InvalidOperationException("Valore non valido per 'AgentSettings:MaxSteps': deve essere un intero.");
+
+// --port <n>: porta del server WebSocket in modalità --serve. Se assente, ricade su
+// ServeSettings:Port in appsettings.json, poi su 8765. Ignorato in REPL/--stdin-protocol.
+var portArgIndex = Array.IndexOf(args, "--port");
+var servePort = (portArgIndex >= 0 && portArgIndex + 1 < args.Length && int.TryParse(args[portArgIndex + 1], out var portArg))
+    ? portArg
+    : (int.TryParse(config["ServeSettings:Port"], out var portCfg) ? portCfg : 8765);
 
 var fullWorkspacePath = Path.GetFullPath(workspacePath);
 if (!Directory.Exists(fullWorkspacePath))
@@ -247,7 +287,7 @@ var exploreAgent = new ExploreSubAgent(llm, new ToolDispatcher(workspace, braveA
     r.RepeatLastN = repeatLastN;
 });
 
-if (!isStdinProtocol)
+if (!isMachineMode)
 {
     // ── Banner ───────────────────────────────────────────────────────────────
     try { Console.Clear(); } catch { }
@@ -265,7 +305,7 @@ if (!await llm.HealthCheckAsync())
 }
 UI.Ok($"Server online — modello: {model}");
 UI.Dim($"Workspace: {workspace.Root}");
-if (!isStdinProtocol) Console.WriteLine();
+if (!isMachineMode) Console.WriteLine();
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 string BuildSystemPrompt()
@@ -415,7 +455,18 @@ var rolloverTokens = GetIntSetting("AgentSettings:RolloverTokens") ?? 40000;
 var sessionManager = new SessionManager(llm, maxContextTokens, rolloverTokens, BuildSystemPrompt);
 
 var history = new List<ChatMessage>();
-void ResetHistory() => history = [ChatMessage.System(BuildSystemPrompt())];
+
+// Solo per l'evento session_start del trace strutturato: nessuna versione esplicita in
+// pm-code.csproj, quindi è la versione di assembly di default assegnata dal SDK .NET.
+var coreVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "unknown";
+
+void ResetHistory()
+{
+    history = [ChatMessage.System(BuildSystemPrompt())];
+    // ResetHistory() è chiamata solo quando inizia davvero una NUOVA conversazione (avvio
+    // processo, /reset, /cd): ogni chiamata apre una nuova sessione nel trace strutturato.
+    StructuredTrace.StartSession(workspace.Root, llm.Model, llm.EndpointOverride ?? serverUrl, coreVersion);
+}
 ResetHistory();
 
 // ── Rescue tool call dal testo ────────────────────────────────────────────────
@@ -506,16 +557,24 @@ bool IsFunctionalCheck(string cmd) =>
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
 // Restituisce true se il LLM ha risposto (anche senza tool call), false su errore HTTP.
-// I tre delegate opzionali permettono di riusare lo STESSO loop (retry LLM, anti-loop,
-// riflessione interna, rollover history) sia in modalità REPL (default: null → stampa su
-// Console/UI come sempre) sia in modalità --stdin-protocol (emettono eventi NDJSON).
+// Riusa lo STESSO loop (retry LLM, anti-loop, riflessione interna, rollover history) sia in
+// modalità REPL sia in modalità --stdin-protocol: tutto il testo/tool-call/errore/notice che il
+// loop produce passa SOLO da `sink` (IAgentSink, catturato dalla chiusura — vedi `consoleSink`
+// più sopra), che riproduce esattamente l'output di prima per ciascuna modalità (vedi
+// ConsoleSink.cs). onStatus resta un parametro separato (heartbeat di avanzamento turno: non fa
+// parte degli 8 eventi dell'interfaccia). `ct` è il CancellationToken del turno corrente: oggi
+// non annulla nulla (nessun trigger collegato, il Ctrl+C del REPL resta quello di sempre — kill
+// di processo), è plumbing per un futuro comando "cancel" lato UI/estensione.
 async Task<bool> RunAgentLoopAsync(
     int maxTokens = 32768,
-    Action<string>? onToken = null,
-    Action<string, string>? onToolCall = null,
-    Action<string, string>? onToolResult = null,
-    Action<string>? onStatus = null)
+    Action<string>? onStatus = null,
+    CancellationToken ct = default)
 {
+    // Un turno = una chiamata a questa funzione (vedi commento su StructuredTrace.BeginTurn()
+    // più sotto): id breve per IAgentSink, non persistito altrove.
+    var turnId = Guid.NewGuid().ToString("N")[..8];
+    sink.TurnStarted(turnId, workspace.Root);
+
     // Guard anti-loop: blocca chiamate identiche (stesso tool + stessi argomenti)
     // ripetute troppe volte — i modelli locali a volte ignorano il soft-block testuale
     // e ricontinuano a richiamare lo stesso tool all'infinito fino a maxSteps.
@@ -730,15 +789,18 @@ async Task<bool> RunAgentLoopAsync(
 
     // I messaggi di errore/rinuncia finivano SOLO nei log dell'agente (UI.Error scrive
     // su stderr — vedi commento sulla classe UI) e mai in chat: in modalità --stdin-protocol
-    // (onToken != null) il processo terminava il turno "in silenzio", senza alcun evento
-    // token per l'utente — la chat sembrava fermarsi nel nulla dopo le ultime tool call,
-    // indistinguibile da un crash. Usa questo per rendere visibile in chat qualunque uscita
-    // anticipata dal loop (retry esauriti, limite di step raggiunto).
+    // il processo terminava il turno "in silenzio", senza alcun evento token per l'utente —
+    // la chat sembrava fermarsi nel nulla dopo le ultime tool call, indistinguibile da un
+    // crash. Usa questo per rendere visibile in chat qualunque uscita anticipata dal loop
+    // (retry esauriti, limite di step raggiunto).
+    // NOTA: non passa da sink.AssistantDelta perché in REPL la formattazione è diversa (testo
+    // semplice su stdout, senza il prefisso "Agent › " e circondato da righe vuote) — vedi il
+    // limite documentato nel report finale di questa modifica.
     void EmitFinalNotice(string text)
     {
-        if (isStdinProtocol) Trace($"  !! {OneLine(text, 200)}");
+        if (isMachineMode) Trace($"  !! {OneLine(text, 200)}");
         history.Add(new ChatMessage { Role = "assistant", Content = text });
-        if (onToken != null) onToken(text);
+        if (isMachineMode) sink.AssistantDelta(turnId, text);
         else { Console.WriteLine(); Console.Write(text); Console.WriteLine(); }
     }
 
@@ -843,8 +905,16 @@ async Task<bool> RunAgentLoopAsync(
 
     string ExecuteToolGuarded(string name, string argsJson)
     {
+        // In --serve nessuna scrittura né comando shell viene eseguita: niente write/edit/delete
+        // su disco, niente processi avviati, a prescindere da autoApprove (che qui non esiste
+        // nemmeno — proposeWrite resta null in questa modalità, vedi sopra). Le approvazioni
+        // (conferma esplicita via il protocollo, write come diff) sono una fase successiva: per
+        // ora il modello riceve sempre un rifiuto esplicito, mai un'esecuzione silenziosa.
+        if (isServeMode && serveBlockedTools.Contains(name))
+            return "ERRORE: scrittura non disponibile in modalità serve";
+
         if (pollableTools.Contains(name))
-            return dispatcher.Execute(name, argsJson);
+            return dispatcher.Execute(name, argsJson, ct);
 
         var key = $"{name}|{argsJson}";
 
@@ -980,8 +1050,8 @@ async Task<bool> RunAgentLoopAsync(
         // explore conta come UNA lettura (è in readOnlyTools): le sue letture interne non
         // passano dai guard del turno, che riguardano la history principale.
         var execResult = name == ExploreSubAgent.ToolName
-            ? exploreAgent.RunAsync(argsJson, onStatus ?? (s => UI.Dim("  " + s))).GetAwaiter().GetResult()
-            : dispatcher.Execute(name, argsJson);
+            ? exploreAgent.RunAsync(argsJson, onStatus ?? (s => UI.Dim("  " + s)), ct).GetAwaiter().GetResult()
+            : dispatcher.Execute(name, argsJson, ct);
         if (similarWarning != null) execResult += similarWarning;
 
         var hash = HashCode.Combine(execResult.Length, execResult);
@@ -1036,8 +1106,47 @@ async Task<bool> RunAgentLoopAsync(
         return execResult;
     }
 
+    // Wrapper additivo di tracing attorno a ExecuteToolGuarded: stesso risultato, stesso
+    // comportamento, misura solo durata ed esito. I prefissi di rifiuto (letture bloccate,
+    // verifica mancante, loop) sono già stringhe note definite sopra: li si riusa qui per
+    // smistare l'evento come guard_triggered invece che come tool_call, senza duplicare
+    // la logica dei guard.
+    // Durata inclusa nel valore di ritorno (non solo passata a StructuredTrace): serve anche a
+    // sink.ToolCallFinished (IAgentSink), che la riceve come parametro esplicito.
+    (string Result, long DurationMs) ExecuteToolGuardedTraced(string name, string argsJson)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = ExecuteToolGuarded(name, argsJson);
+        sw.Stop();
+
+        var guard = result.StartsWith("[LOOP-BLOCK]", StringComparison.Ordinal) ? "anti-loop"
+            : result.StartsWith(readBlockedPrefix, StringComparison.Ordinal) ? "max-consecutive-readonly"
+            : result.StartsWith(verifyMissingPrefix, StringComparison.Ordinal) ? "verify-missing"
+            : result.StartsWith(functionalMissingPrefix, StringComparison.Ordinal) ? "functional-verify-missing"
+            : null;
+
+        if (guard != null)
+            StructuredTrace.GuardTriggered(guard, OneLine(result, 200));
+        else
+        {
+            var isError = result.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase);
+            var errorKind = !isError ? null
+                : result.StartsWith("ERRORE sicurezza", StringComparison.OrdinalIgnoreCase) ? "security"
+                : "tool_error";
+            StructuredTrace.ToolCall(name, argsJson, !isError, errorKind, sw.ElapsedMilliseconds,
+                System.Text.Encoding.UTF8.GetByteCount(result));
+        }
+
+        return (result, sw.ElapsedMilliseconds);
+    }
+
     // La richiesta dell'utente di questo turno: il rollover la conserva per intero.
     var turnRequest = history.LastOrDefault(m => m.Role == "user")?.Content;
+
+    // Trace strutturato: un turno = una chiamata a RunAgentLoopAsync, qualunque sia la modalità
+    // o il chiamante (REPL, --stdin-protocol, /init, /paste) — unico punto di ingresso comune.
+    StructuredTrace.BeginTurn();
+    StructuredTrace.UserMessage(turnRequest ?? "");
 
     // Set di tool fisso per tutto il turno, scelto sulla richiesta dell'utente. Prima veniva
     // ricalcolato a ogni step sull'ULTIMO messaggio user, che a metà turno è quasi sempre un
@@ -1061,8 +1170,8 @@ async Task<bool> RunAgentLoopAsync(
         var beforeRollover = history;
         history = await sessionManager.MaybeRolloverAsync(history, atTurnStart: step == 1, dispatcher.HasPendingPlan, turnRequest,
             dispatcher.PlanSummary(), workspace.Root,
-            onNotice: text => { if (isStdinProtocol) Notice(text); else UI.Dim(text); },
-            onSummary: text => { if (isStdinProtocol) Trace("  [rollover] " + text.Replace("\n", "\n  [rollover] ")); });
+            onNotice: text => { if (isMachineMode) Notice(text); else UI.Dim(text); },
+            onSummary: text => { if (isMachineMode) Trace("  [rollover] " + text.Replace("\n", "\n  [rollover] ")); });
         // Il contenuto dei file letti è uscito dal contesto: prima di modificarli vanno riletti.
         // Per questo riparte anche il budget di letture: altrimenti il guard delle letture
         // rifiutava la rilettura e RequireRead la modifica (osservato: stallo dopo un rollover).
@@ -1078,6 +1187,12 @@ async Task<bool> RunAgentLoopAsync(
         // ── Call LLM (streaming) ──────────────────────────────────────────────
         ChatMessage message;
         Usage? usage;
+        string? finishReason;
+
+        // null se promptTokens non è noto (server che non manda usage, o eccezione prima che
+        // arrivi): mai calcolato su un valore mancante, vedi StructuredTrace.LlmRequest.
+        double? ContextPercentOf(Usage? u) =>
+            u != null && maxContextTokens > 0 ? 100.0 * u.PromptTokens / maxContextTokens : null;
 
         const int maxLlmRetries = 3;
         var llmAttempt = 0;
@@ -1086,6 +1201,9 @@ async Task<bool> RunAgentLoopAsync(
         {
             llmAttempt++;
             var streamedContent = false;
+            // Dichiarato fuori dal try: serve anche nei catch sotto per misurare la durata
+            // della chiamata fallita (trace strutturato), non solo di quella riuscita.
+            var llmSw = System.Diagnostics.Stopwatch.StartNew();
 
             try
             {
@@ -1113,7 +1231,7 @@ async Task<bool> RunAgentLoopAsync(
 
                 // Print step indicator (solo REPL: in stdin-protocol andrebbe su stdout e
                 // romperebbe il parsing NDJSON lato extension)
-                if (onToken == null) Console.WriteLine();
+                if (!isMachineMode) Console.WriteLine();
                 UI.StepIndicator(step);
 
                 // Ping immediato appena si inizia a generare: senza questo, dopo un
@@ -1122,24 +1240,25 @@ async Task<bool> RunAgentLoopAsync(
                 // heartbeat sotto), indistinguibile da un blocco per chi guarda la chat.
                 onStatus?.Invoke("Elaborazione in corso…");
 
-                (message, usage) = await llm.StreamChatAsync(request, token =>
+                (message, usage, finishReason) = await llm.StreamChatAsync(request, token =>
                 {
-                    if (!streamedContent)
-                    {
-                        if (onToken == null)
-                        {
-                            // First token: print "Agent ›" prefix (solo REPL, mai in stdin-protocol)
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.Write("Agent › ");
-                            Console.ResetColor();
-                        }
-                        streamedContent = true;
-                    }
-                    if (onToken != null) onToken(token);
-                    else Console.Write(token);
-                }, onHeartbeat: onStatus);
+                    streamedContent = true;
+                    // Il prefisso "Agent › " e il Console.Write(token) in REPL, o l'evento
+                    // {type:"token"} in --stdin-protocol, sono interamente dentro ConsoleSink —
+                    // stesso output di prima, vedi ConsoleSink.AssistantDelta.
+                    sink.AssistantDelta(turnId, token);
+                }, ct, onHeartbeat: onStatus);
+                llmSw.Stop();
+                StructuredTrace.LlmRequest(usage?.PromptTokens, llmSw.ElapsedMilliseconds, finishReason,
+                    contextPercent: ContextPercentOf(usage), maxTokens: maxTokens);
+                StructuredTrace.ContextSize(usage?.PromptTokens ?? 0, maxContextTokens);
 
-                if (onToken == null && streamedContent) Console.WriteLine();
+                // Riga vuota di chiusura SOLO se questa risposta ha streammato testo (stessa
+                // condizione di prima: "onToken == null && streamedContent"), e reset del
+                // prefisso per la prossima risposta di questo turno (tool-call seguita da testo,
+                // o un nuovo tentativo dopo un retry) — vedi ConsoleSink.AssistantDone.
+                if (streamedContent)
+                    sink.AssistantDone(turnId, usage?.PromptTokens ?? 0, usage?.CompletionTokens ?? 0);
                 break; // risposta ricevuta con successo
             }
             catch (ToolCallTooLargeException ex)
@@ -1161,6 +1280,8 @@ async Task<bool> RunAgentLoopAsync(
                         continue;
                     }
                     EmitFinalNotice($"⚠️ Il modello ha generato più volte argomenti in loop per '{ex.ToolName}'. Mi fermo: scrivi \"prosegui\" per riprendere dal piano salvato.");
+                    StructuredTrace.EndTurn("error");
+                    sink.TurnFinished(turnId, "error");
                     return false;
                 }
                 UI.Dim("  → Il modello ha tentato di scrivere un intero file/blocco di codice in una sola tool call.");
@@ -1184,6 +1305,72 @@ async Task<bool> RunAgentLoopAsync(
                     "supera sempre la soglia di sicurezza per una singola tool call (probabile tentativo di scrivere un intero " +
                     "file/componente in un colpo solo). Mi fermo qui — riprova chiedendomi esplicitamente di procedere " +
                     "\"un pezzo alla volta\" (scheletro minimo, poi singoli metodi/blocchi con edit_file).");
+                StructuredTrace.EndTurn("error");
+                sink.TurnFinished(turnId, "error");
+                return false;
+            }
+            catch (IncompleteLlmResponseException ex)
+            {
+                // Risposta incompleta (stream troncato o finish_reason="length"): mai nessuna
+                // tool call da questa risposta (l'eccezione viene sollevata in LlamaClient
+                // PRIMA di ricostruire il ChatMessage — non ne esiste un'istanza parziale usabile
+                // qui, e questo catch non fa mai history.Add: il frammento troncato non entra
+                // MAI nella cronologia, nemmeno quando si ritenta la stessa richiesta sotto).
+                llmSw.Stop();
+                var contextPercent = ContextPercentOf(ex.Usage);
+                StructuredTrace.LlmRequest(ex.Usage?.PromptTokens, llmSw.ElapsedMilliseconds, null,
+                    ok: false, errorKind: ex.Kind, contextPercent: contextPercent, maxTokens: maxTokens);
+
+                if (ex.Kind == "length")
+                {
+                    // finish_reason="length": NESSUN retry (a differenza di stream_truncated) —
+                    // è un limite deterministico del server/modello per QUESTA richiesta, non un
+                    // guasto transitorio: ripetere la stessa richiesta darebbe lo stesso esito.
+                    // SOGLIA e TESTI facili da trovare: cercare "LengthContextFullThreshold".
+                    const double LengthContextFullThreshold = 0.85; // % di maxContextTokens oltre cui "length" è probabilmente il contesto, non il budget di risposta
+                    const string LengthContextFullMessage =
+                        "⚠️ Contesto quasi pieno: avvia una nuova sessione (/reset) o lascia comprimere la conversazione " +
+                        "(rollover automatico) prima di continuare — la risposta si è interrotta per limite di lunghezza " +
+                        "e il contesto occupato è oltre l'85% del massimo configurato.";
+                    const string LengthResponseLimitMessage =
+                        "⚠️ Limite di token della risposta raggiunto (finish_reason=\"length\"): il turno si è interrotto " +
+                        "prima di finire. Non ho eseguito nessuna tool call da quella risposta (poteva essere tagliata a " +
+                        "metà). Riprova con una richiesta più piccola o scomponi il task in passi più piccoli.";
+
+                    UI.Error($"Risposta LLM incompleta (length): {ex.Message}");
+                    EmitFinalNotice(contextPercent is double p && p / 100.0 > LengthContextFullThreshold
+                        ? LengthContextFullMessage
+                        : LengthResponseLimitMessage);
+                    StructuredTrace.EndTurn("error");
+                    sink.TurnFinished(turnId, "error");
+                    return false;
+                }
+
+                // stream_truncated: 1 tentativo iniziale + 1 retry (STESSA richiesta, history
+                // invariata), backoff fisso 1500ms — qui sì che vale la pena ritentare: è
+                // tipicamente un guasto di rete/server transitorio, non un limite deterministico.
+                const int maxIncompleteAttempts = 2;
+                const int incompleteRetryDelayMs = 1500;
+                if (llmAttempt < maxIncompleteAttempts)
+                {
+                    // Separatore richiesto esplicitamente: senza, il testo del tentativo
+                    // successivo si attaccherebbe visivamente al frammento troncato in chat,
+                    // sembrando la continuazione della stessa risposta invece di una nuova.
+                    if (isMachineMode) sink.AssistantDelta(turnId, "\n\n[risposta interrotta, nuovo tentativo]\n\n");
+                    else { sink.AssistantDone(turnId, 0, 0); UI.Dim("[risposta interrotta, nuovo tentativo]"); }
+                    UI.Dim($"  [stream troncato — retry {llmAttempt}/{maxIncompleteAttempts - 1} tra {incompleteRetryDelayMs}ms]");
+                    StructuredTrace.LlmRetry(llmAttempt, maxIncompleteAttempts, ex.Kind, incompleteRetryDelayMs);
+                    await Task.Delay(incompleteRetryDelayMs);
+                    continue;
+                }
+
+                UI.Error($"Risposta LLM incompleta (stream_truncated): {ex.Message}");
+                EmitFinalNotice(
+                    $"⚠️ La connessione con il server LLM si è interrotta a metà di una risposta in streaming " +
+                    $"{maxIncompleteAttempts} volte di seguito. Non ho eseguito nessuna azione parziale. " +
+                    "Riprova scrivendo di nuovo, oppure verifica che il server LLM sia stabile.");
+                StructuredTrace.EndTurn("error");
+                sink.TurnFinished(turnId, "error");
                 return false;
             }
             catch (HttpRequestException ex)
@@ -1216,6 +1403,8 @@ async Task<bool> RunAgentLoopAsync(
                         $"⚠️ Ho provato {maxRecoverableErrorRetries + 1} volte ma il server continua a rifiutare il JSON generato " +
                         "(virgolette/backtick non escapati nel contenuto del file). Mi fermo qui — riprova chiedendomi " +
                         "esplicitamente di usare edit_file con blocchi piccoli (max 5-8 righe) invece di riscrivere l'intero file.");
+                    StructuredTrace.EndTurn("error");
+                    sink.TurnFinished(turnId, "error");
                     return false;
                 }
 
@@ -1225,20 +1414,28 @@ async Task<bool> RunAgentLoopAsync(
                 // non cambierebbe nulla (stessa richiesta, stesso esito); un fallimento di trasporto invece
                 // è spesso transitorio (server locale sotto carico) e vale la pena ritentare — ma SOLO se
                 // non abbiamo già stampato token parziali, altrimenti un retry duplicherebbe l'output.
+                llmSw.Stop();
+                StructuredTrace.LlmRequest(null, llmSw.ElapsedMilliseconds, null, ok: false, errorKind: "http_error", maxTokens: maxTokens);
+
                 if (ex.StatusCode is null && !streamedContent && llmAttempt < maxLlmRetries)
                 {
                     var delayMs = 1000 * (int)Math.Pow(2, llmAttempt - 1);
                     UI.Dim($"  [connessione al server LLM persa — retry {llmAttempt}/{maxLlmRetries - 1} tra {delayMs / 1000}s]");
+                    StructuredTrace.LlmRetry(llmAttempt, maxLlmRetries, "http_error", delayMs);
                     await Task.Delay(delayMs);
                     continue;
                 }
 
                 UI.Error($"Errore LLM: {ex.Message}");
+                StructuredTrace.EndTurn("error");
+                sink.TurnFinished(turnId, "error");
                 return false;
             }
             catch (Exception ex)
             {
                 UI.Error($"Errore: {ex.Message}");
+                StructuredTrace.EndTurn("error");
+                sink.TurnFinished(turnId, "error");
                 return false;
             }
         }
@@ -1266,7 +1463,7 @@ async Task<bool> RunAgentLoopAsync(
 
         history.Add(message);
 
-        if (isStdinProtocol)
+        if (isMachineMode)
             Trace($" [step {step}/{maxSteps}] tool_calls={message.ToolCalls?.Count ?? 0} " +
                   $"prompt_tokens={usage?.PromptTokens ?? 0} testo: {OneLine(message.Content ?? "", 200)}");
 
@@ -1279,16 +1476,11 @@ async Task<bool> RunAgentLoopAsync(
 
             foreach (var tc in message.ToolCalls)
             {
-                if (onToolCall != null) onToolCall(tc.Function.Name, tc.Function.Arguments);
-                else UI.ToolCall(tc.Function.Name, tc.Function.Arguments);
+                if (isMachineMode) Trace($"  -> {tc.Function.Name}({OneLine(tc.Function.Arguments, 300)})");
+                sink.ToolCallStarted(turnId, tc.Function.Name, tc.Function.Arguments);
 
-                var result = ExecuteToolGuarded(tc.Function.Name, tc.Function.Arguments);
+                var (result, toolDurationMs) = ExecuteToolGuardedTraced(tc.Function.Name, tc.Function.Arguments);
                 TrackBuildState(tc.Function.Name, tc.Function.Arguments, result);
-
-                if (onToolResult != null) onToolResult(tc.Function.Name, result);
-                else UI.ToolResult(result);
-
-                history.Add(ChatMessage.ToolResult(tc.Id, result));
 
                 // --- LOGICA DI RIFLESSIONE POTENZIATA ---
                 // Se il risultato contiene parole chiave di errore, iniettiamo un comando di sistema
@@ -1309,6 +1501,11 @@ async Task<bool> RunAgentLoopAsync(
                                result.Contains("fallito", StringComparison.OrdinalIgnoreCase) ||
                                result.Contains("ambigua") ||
                                result.Contains("[ESITO: FALLITO", StringComparison.OrdinalIgnoreCase);
+
+                if (isMachineMode) Trace($"  <- {tc.Function.Name}: {OneLine(result, 300)}");
+                sink.ToolCallFinished(turnId, tc.Function.Name, !isError, result, toolDurationMs);
+
+                history.Add(ChatMessage.ToolResult(tc.Id, result));
 
                 if (result.StartsWith(readBlockedPrefix, StringComparison.Ordinal) ||
                     result.StartsWith(verifyMissingPrefix, StringComparison.Ordinal) ||
@@ -1362,6 +1559,8 @@ async Task<bool> RunAgentLoopAsync(
                 EmitFinalNotice(stopReason ??
                     "⚠️ Mi fermo: ho ripetuto più volte la stessa chiamata ottenendo lo stesso risultato. " +
                     "Dimmi come proseguire o indicami un approccio diverso.");
+                StructuredTrace.EndTurn("completed");
+                sink.TurnFinished(turnId, "completed");
                 return true;
             }
 
@@ -1379,14 +1578,15 @@ async Task<bool> RunAgentLoopAsync(
                 UI.Dim("  [recupero tool call dal testo]");
                 foreach (var (name, argsJson) in rescued)
                 {
-                    if (onToolCall != null) onToolCall(name, argsJson);
-                    else UI.ToolCall(name, argsJson);
+                    if (isMachineMode) Trace($"  -> {name}({OneLine(argsJson, 300)})");
+                    sink.ToolCallStarted(turnId, name, argsJson);
 
-                    var result = ExecuteToolGuarded(name, argsJson);
+                    var (result, rescuedDurationMs) = ExecuteToolGuardedTraced(name, argsJson);
                     TrackBuildState(name, argsJson, result);
 
-                    if (onToolResult != null) onToolResult(name, result);
-                    else UI.ToolResult(result);
+                    var rescuedIsError = result.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase);
+                    if (isMachineMode) Trace($"  <- {name}: {OneLine(result, 300)}");
+                    sink.ToolCallFinished(turnId, name, !rescuedIsError, result, rescuedDurationMs);
 
                     history.Add(ChatMessage.ToolResult($"rescued-{step}", result));
                 }
@@ -1397,6 +1597,8 @@ async Task<bool> RunAgentLoopAsync(
                     EmitFinalNotice(stopReason ??
                         "⚠️ Mi fermo: ho ripetuto più volte la stessa chiamata ottenendo lo stesso risultato. " +
                         "Dimmi come proseguire o indicami un approccio diverso.");
+                    StructuredTrace.EndTurn("completed");
+                    sink.TurnFinished(turnId, "completed");
                     return true;
                 }
                 continue;
@@ -1430,6 +1632,8 @@ async Task<bool> RunAgentLoopAsync(
                     $"⚠️ Ho corretto {maxAnnouncementRetries} volte un annuncio senza esecuzione (\"procedo con...\" " +
                     "senza chiamare il tool), ma il modello ha ripetuto lo stesso testo. Mi fermo qui — riprova scrivendo " +
                     "di nuovo, magari indicando esplicitamente il primo file/tool da usare.");
+                StructuredTrace.EndTurn("completed");
+                sink.TurnFinished(turnId, "completed");
                 return true;
             }
 
@@ -1446,14 +1650,19 @@ async Task<bool> RunAgentLoopAsync(
                 const string autoArgs = "{}";
                 UI.Dim("  [auto-check] modifiche a file .cs non verificate — eseguo sol_analyze...");
 
-                if (onToolCall != null) onToolCall("sol_analyze", autoArgs);
-                else UI.ToolCall("sol_analyze", autoArgs);
+                if (isMachineMode) Trace($"  -> sol_analyze({autoArgs})");
+                sink.ToolCallStarted(turnId, "sol_analyze", autoArgs);
 
-                var buildResult = dispatcher.Execute("sol_analyze", autoArgs);
+                var autoBuildSw = System.Diagnostics.Stopwatch.StartNew();
+                var buildResult = dispatcher.Execute("sol_analyze", autoArgs, ct);
+                autoBuildSw.Stop();
+                var autoBuildIsError = buildResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase);
+                StructuredTrace.ToolCall("sol_analyze", autoArgs, !autoBuildIsError, autoBuildIsError ? "tool_error" : null,
+                    autoBuildSw.ElapsedMilliseconds, System.Text.Encoding.UTF8.GetByteCount(buildResult));
                 TrackBuildState("sol_analyze", autoArgs, buildResult);
 
-                if (onToolResult != null) onToolResult("sol_analyze", buildResult);
-                else UI.ToolResult(buildResult);
+                if (isMachineMode) Trace($"  <- sol_analyze: {OneLine(buildResult, 300)}");
+                sink.ToolCallFinished(turnId, "sol_analyze", !autoBuildIsError, buildResult, autoBuildSw.ElapsedMilliseconds);
 
                 history.Add(ChatMessage.ToolResult($"auto-build-{step}", buildResult));
                 history.Add(new ChatMessage
@@ -1554,10 +1763,14 @@ async Task<bool> RunAgentLoopAsync(
 
             if (usage is { } u)
                 UI.Dim($"[tokens: prompt={u.PromptTokens} completion={u.CompletionTokens} | step={step}]");
-            if (onToken == null) Console.WriteLine();
+            if (!isMachineMode) Console.WriteLine();
+            StructuredTrace.EndTurn("completed");
+            sink.TurnFinished(turnId, "completed");
             return true;
         }
 
+        StructuredTrace.EndTurn("completed");
+        sink.TurnFinished(turnId, "completed");
         return true;
     }
 
@@ -1579,6 +1792,8 @@ async Task<bool> RunAgentLoopAsync(
             "Scrivi \"continua\" per proseguire da dove ho lasciato.");
     }
 
+    StructuredTrace.EndTurn(step >= maxSteps ? "max_turns" : "completed");
+    sink.TurnFinished(turnId, step >= maxSteps ? "max_turns" : "completed");
     return true;
 }
 
@@ -1685,6 +1900,9 @@ async Task RunStdinProtocolAsync()
                 history = [ChatMessage.System(BuildSystemPrompt()), ChatMessage.User(prompt)];
                 dispatcher.ClearCache();
                 dispatcher.ResetCwd();
+                // Non passa da ResetHistory() (qui l'history riparte già col primo messaggio
+                // utente incluso): stessa apertura di sessione del trace, inline.
+                StructuredTrace.StartSession(workspace.Root, llm.Model, llm.EndpointOverride ?? serverUrl, coreVersion);
             }
             else
             {
@@ -1696,26 +1914,12 @@ async Task RunStdinProtocolAsync()
 
             Trace($"=== Turno {DateTime.Now:yyyy-MM-dd HH:mm:ss} | modello '{llm.Model}' | history={history.Count} msg | prompt: {OneLine(prompt, 200)}");
 
+            // Token/tool_call/tool_result/notice passano tutti da `sink` (IAgentSink) ora — stesso
+            // identico formato NDJSON di prima, vedi ConsoleSink.cs. I rispettivi Trace() (log
+            // diagnostico su stderr/file, non parte del protocollo) restano nel loop stesso,
+            // accanto a ogni chiamata a sink.ToolCallStarted/ToolCallFinished.
             await RunAgentLoopAsync(
                 maxTokens: 32768,
-                onToken: text => EmitEvent(new { type = "token", text }),
-                onToolCall: (tool, argsJson) =>
-                {
-                    Trace($"  -> {tool}({OneLine(argsJson, 300)})");
-                    object args;
-                    try { args = JsonSerializer.Deserialize<JsonElement>(argsJson); }
-                    catch { args = argsJson; }
-                    EmitEvent(new { type = "tool_call", tool, args });
-                },
-                onToolResult: (tool, result) =>
-                {
-                    Trace($"  <- {tool}: {OneLine(result, 300)}");
-                    // La parte [PER L'AGENTE] di manage_todo (id, prossimo passo) serve al modello,
-                    // che la riceve comunque in history: in chat si mostra solo il piano.
-                    var hintAt = tool == "manage_todo" ? result.IndexOf(LocalCodeAgent.Tools.TodoTools.AgentHintMarker, StringComparison.Ordinal) : -1;
-                    if (hintAt >= 0) result = result[..hintAt];
-                    EmitEvent(new { type = "tool_result", tool, result });
-                },
                 onStatus: text => EmitEvent(new { type = "status", text }));
 
             Trace("=== Fine turno");
@@ -1728,6 +1932,214 @@ async Task RunStdinProtocolAsync()
 if (isStdinProtocol)
 {
     await RunStdinProtocolAsync();
+    return;
+}
+
+// ── Modalità --serve ─────────────────────────────────────────────────────────────
+// Server WebSocket che parla il protocollo v1 di ui/protocol (busta v/id/ts/sessionId/type/
+// payload). Un solo processo = un solo workspace/history/piano alla volta, esattamente come in
+// REPL e --stdin-protocol (vedi WorkspaceContext.SetRoot, già usato da /cd): new_session non apre
+// una sessione IN PIÙ, sostituisce quella corrente. "Un turno alla volta" (richiesto
+// esplicitamente) è quindi anche l'unico modo sensato di usare questo stato condiviso: un
+// send_message mentre un turno precedente è ancora in corso riceve "busy", mai una race su
+// history/workspace.
+async Task RunServeModeAsync()
+{
+    var token = Environment.GetEnvironmentVariable("PM_SERVE_TOKEN");
+    if (string.IsNullOrEmpty(token)) token = config["ServeSettings:Token"];
+    if (string.IsNullOrEmpty(token))
+    {
+        UI.Error("PM_SERVE_TOKEN non impostato e 'ServeSettings:Token' assente/vuoto in appsettings.json: " +
+                 "--serve richiede un token (altrimenti chiunque raggiunga 127.0.0.1 potrebbe pilotare l'agente). " +
+                 "Imposta la variabile d'ambiente PM_SERVE_TOKEN, oppure 'ServeSettings:Token' in appsettings.json.");
+        return;
+    }
+
+    // Allow-list obbligatoria: new_session rifiuta qualunque workspace che non sia, o non sia
+    // sotto, una di queste radici. Vuota di default (vedi appsettings.json) — "vuota" significa
+    // "nessun workspace consentito", non "tutti consentiti": un allow-list che fallisce aperta
+    // per assenza di configurazione sarebbe un buco di sicurezza silenzioso.
+    var allowedRoots = config.GetSection("AgentSettings:AllowedWorkspaceRoots").GetChildren()
+        .Select(c => c.Value)
+        .Where(v => !string.IsNullOrWhiteSpace(v))
+        .Select(p => Path.GetFullPath(p!).TrimEnd(Path.DirectorySeparatorChar))
+        .ToList();
+    if (allowedRoots.Count == 0)
+        UI.Dim("[serve] AgentSettings:AllowedWorkspaceRoots è vuoto in appsettings.json: new_session rifiuterà qualunque workspace finché non lo configuri.");
+
+    bool IsWorkspaceAllowed(string requested, out string fullPath)
+    {
+        fullPath = Path.GetFullPath(requested);
+        var normalized = fullPath.TrimEnd(Path.DirectorySeparatorChar);
+        return allowedRoots.Any(root =>
+            string.Equals(normalized, root, StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // Stato dell'UNICA sessione/turno alla volta (vedi commento sulla funzione). currentSessionId
+    // è null finché non arriva un new_session riuscito: send_message prima di allora è
+    // "unknown_session", non "busy".
+    string? currentSessionId = null;
+    var turnInProgress = false;
+    var turnLock = new object();
+
+    var server = new ServeServer(servePort);
+    UI.Ok($"[serve] in ascolto su ws://127.0.0.1:{servePort}/ (token richiesto in 'hello')");
+
+    await server.RunAsync(async (conn, connCt) =>
+    {
+        // ── hello: deve essere il PRIMO messaggio della connessione ─────────────────
+        var first = await conn.ReceiveAsync(connCt);
+        if (first == null) { await conn.CloseAsync(); return; }
+
+        var (helloEnv, helloParseErr) = ServeProtocol.ParseEnvelope(first);
+        if (helloEnv == null)
+        {
+            conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = helloParseErr }, null));
+            await conn.CloseAsync();
+            return;
+        }
+        if (helloEnv.Type != "hello")
+        {
+            conn.Send(ServeProtocol.Envelope("error", new { code = "unauthorized", message = "il primo messaggio della connessione deve essere 'hello'" }, null));
+            await conn.CloseAsync();
+            return;
+        }
+        var helloToken = helloEnv.Payload.TryGetProperty("token", out var tokEl) ? tokEl.GetString() : null;
+        if (string.IsNullOrEmpty(helloToken) || helloToken != token)
+        {
+            conn.Send(ServeProtocol.Envelope("error", new { code = "unauthorized", message = "token non valido" }, null));
+            await conn.CloseAsync();
+            return;
+        }
+        conn.Send(ServeProtocol.Envelope("hello_ok", new { serverVersion = coreVersion, protocol = ServeProtocol.Version }, null));
+
+        // ── comandi successivi ──────────────────────────────────────────────────────
+        while (true)
+        {
+            var raw = await conn.ReceiveAsync(connCt);
+            if (raw == null) break; // client ha chiuso la connessione
+
+            var (msg, parseErr) = ServeProtocol.ParseEnvelope(raw);
+            if (msg == null)
+            {
+                conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = parseErr }, currentSessionId));
+                continue;
+            }
+
+            switch (msg.Type)
+            {
+                case "new_session":
+                {
+                    var requested = msg.Payload.TryGetProperty("workspace", out var wsEl) ? wsEl.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(requested))
+                    {
+                        conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = "new_session.payload.workspace mancante o vuoto" }, currentSessionId));
+                        break;
+                    }
+                    if (!IsWorkspaceAllowed(requested, out var fullWs))
+                    {
+                        conn.Send(ServeProtocol.Envelope("error",
+                            new { code = "bad_request", message = $"workspace non consentito: '{requested}' non è sotto nessuna delle AgentSettings:AllowedWorkspaceRoots configurate" },
+                            currentSessionId));
+                        break;
+                    }
+
+                    // Stessa identica sequenza di /cd in REPL (vedi HandleSpecialCommandAsync):
+                    // cambia la root, scarta piano/cache/cwd della sessione precedente, ricarica
+                    // il piano della nuova cartella (se c'è) e riparte la history dal system prompt.
+                    workspace.SetRoot(fullWs);
+                    dispatcher.ResetTodo();
+                    ResetHistory();
+                    dispatcher.ClearCache();
+                    dispatcher.ResetCwd();
+
+                    currentSessionId = ServeProtocol.MakeId();
+                    conn.Send(ServeProtocol.Envelope("session_state", new
+                    {
+                        session = new
+                        {
+                            id = currentSessionId,
+                            title = Path.GetFileName(fullWs.TrimEnd(Path.DirectorySeparatorChar)),
+                            workspace = fullWs,
+                            updatedAt = ServeProtocol.NowIso(),
+                            status = "idle"
+                        },
+                        messages = Array.Empty<object>(),
+                        model = llm.Model,
+                        // "readonly": in questa fase write/comandi shell sono sempre bloccati
+                        // (vedi serveBlockedTools), nessuna modalità "ask"/"auto" ancora possibile.
+                        permission = "readonly"
+                    }, currentSessionId));
+                    break;
+                }
+
+                case "send_message":
+                {
+                    if (currentSessionId == null)
+                    {
+                        conn.Send(ServeProtocol.Envelope("error", new { code = "unknown_session", message = "nessuna sessione attiva: manda prima new_session" }, currentSessionId));
+                        break;
+                    }
+                    var text = msg.Payload.TryGetProperty("text", out var txtEl) ? txtEl.GetString() ?? "" : "";
+
+                    bool accepted;
+                    lock (turnLock)
+                    {
+                        accepted = !turnInProgress;
+                        if (accepted) turnInProgress = true;
+                    }
+                    if (!accepted)
+                    {
+                        conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = "busy" }, currentSessionId));
+                        break;
+                    }
+
+                    // Turno eseguito in background: il ciclo di lettura di QUESTA connessione
+                    // deve restare libero di leggere il prossimo frame (es. un altro send_message,
+                    // che a questo punto troverà turnInProgress=true e riceverà "busy" subito,
+                    // invece di restare bloccato dietro al turno in corso).
+                    var sess = currentSessionId;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            sink = new ServeSink(conn.Send, sess);
+                            history.Add(ChatMessage.User(text));
+                            await RunAgentLoopAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = $"errore interno del turno: {ex.Message}" }, sess));
+                        }
+                        finally
+                        {
+                            lock (turnLock) { turnInProgress = false; }
+                        }
+                    });
+                    break;
+                }
+
+                case "hello":
+                    conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = "'hello' già ricevuto su questa connessione" }, currentSessionId));
+                    break;
+
+                // list_sessions/open_session/cancel/approve/reject/set_model/set_permission sono
+                // tipi validi del protocollo v1 ma non ancora implementati in questa fase: un
+                // client che li manda riceve un errore esplicito, non viene ignorato in silenzio.
+                default:
+                    conn.Send(ServeProtocol.Envelope("error", new { code = "bad_request", message = $"comando '{msg.Type}' non ancora supportato in questa fase" }, currentSessionId));
+                    break;
+            }
+        }
+
+        await conn.CloseAsync();
+    }, CancellationToken.None);
+}
+
+if (isServeMode)
+{
+    await RunServeModeAsync();
     return;
 }
 
@@ -1936,22 +2348,8 @@ static class UI
         Console.ResetColor();
     }
 
-    public static void ToolCall(string name, string args)
-    {
-        Console.WriteLine();
-        Write("  ⚙ ", ConsoleColor.Yellow, nl: false);
-        Write(name, ConsoleColor.Cyan, nl: false);
-        Write($"({Truncate(args.Replace('\n', ' '), 100)})", ConsoleColor.DarkGray);
-    }
-
-    public static void ToolResult(string result)
-    {
-        var lines = result.Split('\n');
-        var preview = lines.Length <= 3
-            ? result.Replace('\n', ' ')
-            : string.Join(' ', lines.Take(3)) + $" …(+{lines.Length - 3} righe)";
-        Write($"    → {Truncate(preview, 150)}", ConsoleColor.DarkGray);
-    }
+    // ToolCall/ToolResult sono migrati in ConsoleSink (vedi IAgentSink.ToolCallStarted/
+    // ToolCallFinished): il loop non li chiama più direttamente.
 
     // Tutto il logging/UI passa da stderr, non da stdout: in modalità --stdin-protocol
     // stdout è riservato esclusivamente alle righe NDJSON di EmitEvent — se un banner o un
@@ -1964,9 +2362,6 @@ static class UI
         if (nl) Console.Error.WriteLine(msg); else Console.Error.Write(msg);
         Console.ResetColor();
     }
-
-    private static string Truncate(string s, int max) =>
-        s.Length <= max ? s : s[..max] + "…";
 }
 
 // ── Console input con history ─────────────────────────────────────────────────

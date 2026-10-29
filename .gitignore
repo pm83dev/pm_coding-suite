@@ -8,6 +8,8 @@ agent/.pm_workspace_index.json
 .pm_workspace_index.json
 .pm_context_summary.json
 .pm_todo_state.json
+tools/**/bin/
+tools/**/obj/
 
 # Node / VS Code extension
 extension/node_modules/

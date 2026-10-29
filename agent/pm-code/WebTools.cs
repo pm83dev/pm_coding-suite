@@ -39,7 +39,10 @@ public class WebTools
         }}
     ];
 
-    public string Execute(string toolName, string argumentsJson)
+    // ct: CancellationToken del turno corrente (vedi Program.cs/RunAgentLoopAsync) — oggi non
+    // annulla nessuna richiesta in corso (nessun chiamante lo annulla mai): plumbing per un
+    // futuro comando "cancel" lato UI/estensione, non cambia alcun comportamento osservabile.
+    public string Execute(string toolName, string argumentsJson, CancellationToken ct = default)
     {
         try
         {
