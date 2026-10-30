@@ -1,24 +1,24 @@
-/** Impostazioni di connessione, salvate in sessionStorage (mai nell'URL). */
+﻿/** Impostazioni di connessione, salvate in localStorage (persistono dopo la chiusura del browser). */
 export interface ConnectionSettings {
-  /** URL del server WebSocket, es. ws://127.0.0.1:8765 */
+  /** URL del server backend (HTTP/HTTPS), es. http://127.0.0.1:8765 */
   serverUrl: string;
-  /** Token di autenticazione inviato nel messaggio hello. */
+  /** Token di autenticazione inviato come query param o header Bearer. */
   token: string;
   /** Workspace di default per le nuove sessioni. */
   workspace?: string;
 }
 
-const SETTINGS_KEY = "pm-ui.settings";
+const SETTINGS_KEY = "pm-coding-suite.settings";
 
 export const DEFAULT_SETTINGS: ConnectionSettings = {
-  serverUrl: "ws://127.0.0.1:8765",
+  serverUrl: "http://127.0.0.1:8765",
   token: "",
 };
 
-/** Legge le impostazioni da sessionStorage; se assenti restituisce i default. */
+/** Legge le impostazioni da localStorage; se assenti restituisce i default. */
 export function loadSettings(): ConnectionSettings {
   try {
-    const raw = sessionStorage.getItem(SETTINGS_KEY);
+    const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
     const parsed = JSON.parse(raw) as Partial<ConnectionSettings>;
     return {
@@ -31,11 +31,11 @@ export function loadSettings(): ConnectionSettings {
   }
 }
 
-/** Salva le impostazioni in sessionStorage. */
+/** Salva le impostazioni in localStorage. */
 export function saveSettings(settings: ConnectionSettings): void {
   try {
-    sessionStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch {
-    // sessionStorage non disponibile (es. test): ignora.
+    // localStorage non disponibile (es. test): ignora.
   }
 }

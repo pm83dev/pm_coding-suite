@@ -1,0 +1,13 @@
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\bin\Release\net8.0\pm-code-core.deps.json
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\bin\Release\net8.0\pm-code-core.dll
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\bin\Release\net8.0\pm-code-core.pdb
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.csproj.AssemblyReference.cache
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.GeneratedMSBuildEditorConfig.editorconfig
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.AssemblyInfoInputs.cache
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.AssemblyInfo.cs
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.csproj.CoreCompileInputs.cache
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.sourcelink.json
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.dll
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\refint\pm-code-core.dll
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\pm-code-core.pdb
+C:\DevAgentPM\pm_coding-suite\packages\pm-code-core\obj\Release\net8.0\ref\pm-code-core.dll

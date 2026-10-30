@@ -1,59 +1,115 @@
-# Web
+# @pm-ui/web — Angular SPA per pm-coding-suite
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 22.0.4.
+## Panoramica
 
-## Development server
+Applicazione Angular (v22) che funge da interfaccia web per l'agente pm-coding-suite.
+Utilizza **SignalR** per la comunicazione real-time con il backend `agent-backend`
+(e non più WebSocket raw come nella versione precedente).
 
-To start a local development server, run:
+## Architettura
 
-```bash
-ng serve
+```
+app/
+├── app.ts                        # Componente root
+├── app.component.html            # Template dell'app (chat, sidebar, input)
+├── app.component.css             # Stili specifici del componente
+├── app.config.ts                 # Configurazione Angular (router)
+├── app.routes.ts                 # Route (vuote — single-page)
+├── app.spec.ts                   # Test unitari del componente root
+├── protocol/
+│   ├── signalr-protocol.service.ts  # Servizio SignalR (collegamento al backend)
+│   ├── protocol.service.ts          # Wrapper backward-compatible
+│   ├── state.ts                     # Stato dell'app + reducer puro
+│   ├── settings.ts                  # Impostazioni di connessione (localStorage)
+│   └── protocol.service.spec.ts     # Test del wrapper
+└── settings/
+    └── settings.ts                  # Componente Impostazioni (URL + token)
 ```
 
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
+## Protocollo SignalR
 
-## Code scaffolding
+Il backend espone un Hub SignalR (`AgentHub`) con i seguenti metodi/eventi:
 
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
+### Metodi client → server (invoke)
+| Metodo | Parametri | Descrizione |
+|--------|-----------|-------------|
+| `hello` | `clientName`, `clientVersion` | Handshake iniziale |
+| `listSessions` | — | Elenco sessioni |
+| `newSession` | `{ workspace: string }` | Crea nuova sessione |
+| `sendMessage` | `sessionId`, `text` | Invia messaggio |
+| `cancel` | `sessionId` | Annulla turno corrente |
 
-```bash
-ng generate component component-name
+### Eventi server → client (on)
+| Evento | Payload | Descrizione |
+|--------|---------|-------------|
+| `HelloResponse` | `{ ok, serverVersion, protocol }` | Risposta handshake |
+| `SessionsList` | `SessionInfo[]` | Elenco sessioni |
+| `SessionState` | `{ session, messages, model, permission }` | Stato sessione |
+| `AgentEvent` | `{ type, payload }` | Evento agente (streaming) |
+| `Error` | `{ code, message }` | Errore |
+
+### Mappatura eventi AgentEvent
+
+| type SignalR | type Protocollo |
+|--------------|-----------------|
+| `turn_started` | `turn_started` |
+| `assistant_delta` | `assistant_delta` |
+| `assistant_done` | `assistant_done` |
+| `tool_call_started` | `tool_call_started` |
+| `tool_call_finished` | `tool_call_finished` |
+| `turn_finished` | `turn_finished` |
+
+## Configurazione
+
+### Impostazioni di connessione
+
+Salvate in `localStorage` (`pm-coding-suite.settings`):
+
+```json
+{
+  "serverUrl": "http://127.0.0.1:8765",
+  "token": "dev-token",
+  "workspace": "."
+}
 ```
 
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
+### Avvio sviluppo
 
 ```bash
-ng generate --help
+cd ui/web
+npm start          # ng serve --configuration development
 ```
 
-## Building
+L'app si avvia su `http://localhost:4200` e si riconnette automaticamente al backend.
 
-To build the project run:
+### Build
 
 ```bash
-ng build
+npm run build      # ng build --configuration production
 ```
 
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
+Output: `dist/web/`
 
-## Running unit tests
-
-To execute unit tests with the [Vitest](https://vitest.dev/) test runner, use the following command:
+## Test
 
 ```bash
-ng test
+npm run test       # ng test --no-watch
 ```
 
-## Running end-to-end tests
+18 test totali: 14 sul reducer di stato, 2 sul wrapper SignalR, 2 sul componente root.
 
-For end-to-end (e2e) testing, run:
+## Dipendenze
 
-```bash
-ng e2e
-```
+| Pacchetto | Versione | Scopo |
+|-----------|----------|-------|
+| `@angular/*` | 22.2.x | Framework UI |
+| `@microsoft/signalr` | latest | Comunicazione real-time |
+| `@pm-ui/protocol` | file:../protocol | Tipi e utility protocollo |
+| `rxjs` | 7.8.1 | Reattivo |
 
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
+## Aggiornamento da WebSocket a SignalR
 
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+La migrazione da WebSocket a SignalR è trasparente per i componenti UI:
+- `ProtocolService` è un wrapper che delega a `SignalRProtocolService`
+- L'API pubblica di `ProtocolService` è identica alla versione precedente
+- I componenti esistenti (`app.component.html`, `settings.ts`) non richiedono modifiche

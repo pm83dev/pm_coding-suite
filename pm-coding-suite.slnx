@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/packages/">
+    <Project Path="packages/agent-backend/agent-backend.csproj" />
+    <Project Path="packages/pm-code-core/pm-code-core.csproj" />
+  </Folder>
+</Solution>

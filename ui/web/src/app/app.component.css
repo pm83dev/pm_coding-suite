@@ -1,0 +1,24 @@
+/* Component-specific styles for app.component */
+.muted-text {
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.typing-dot {
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.tool-calls-section {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
+}

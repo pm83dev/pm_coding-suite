@@ -1,0 +1,146 @@
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1><i class="bi bi-robot"></i> pm-coding-suite</h1>
+    </div>
+
+    <!-- Impostazioni -->
+    <div class="sidebar-section">
+      <app-settings />
+    </div>
+
+    <!-- Sessioni -->
+    <div class="sidebar-section">
+      <h2><i class="bi bi-chat-dots"></i> Sessioni</h2>
+      <button type="button" class="btn-new-session" (click)="newSession()">
+        <i class="bi bi-plus-circle"></i> Nuova sessione
+      </button>
+      @if (protocol.sessions().length === 0) {
+        <p class="muted-text mt-2">Nessuna sessione attiva.</p>
+      } @else {
+        <ul class="session-list mt-2">
+          @for (s of protocol.sessions(); track s.id) {
+            <li class="session-item" [class.active]="s.id === protocol.currentSessionId()">
+              <button type="button" (click)="protocol.openSession(s.id)">
+                <i class="bi bi-chat-left-text me-1"></i> {{ s.title }}
+              </button>
+              <span class="session-status connected">{{ s.status }}</span>
+            </li>
+          }
+        </ul>
+      }
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="main">
+    <!-- Status bar -->
+    <div class="status-bar">
+      <div class="connection-status">
+        <span class="status-indicator"
+              [class.connected]="protocol.connection() === 'open'"
+              [class.connecting]="protocol.connection() === 'connecting'"
+              [class.disconnected]="protocol.connection() === 'closed'">
+        </span>
+        <span>{{ protocol.connection() === 'open' ? 'Connesso' : protocol.connection() === 'connecting' ? 'Connessione...' : 'Disconnesso' }}</span>
+      </div>
+      @if (protocol.error()) {
+        <span class="error-badge badge bg-danger"><i class="bi bi-exclamation-triangle"></i> {{ protocol.error() }}</span>
+      }
+      @if (protocol.lastUsage()) {
+        <span class="badge bg-light text-dark" style="font-size: 0.75rem;">
+          <i class="bi bi-bar-chart"></i> {{ (protocol.lastUsage()?.promptTokens ?? 0) + (protocol.lastUsage()?.completionTokens ?? 0) }} token
+        </span>
+      }
+    </div>
+
+    <!-- Chat area -->
+    <div class="chat-area">
+      @if (protocol.currentSessionId()) {
+        <div class="messages-container">
+          @for (m of protocol.messages(); track m.id) {
+            <div class="message" [class.user]="m.role === 'user'" [class.assistant]="m.role === 'assistant'">
+              <div class="message-avatar">{{ m.role === 'user' ? 'U' : 'A' }}</div>
+              <div class="message-content">
+                <div class="message-role">{{ m.role === 'user' ? 'Utente' : 'Assistente' }}</div>
+                <p class="mb-0">{{ m.text }}</p>
+              </div>
+            </div>
+          }
+          @if (protocol.streamingText()) {
+            <div class="message assistant streaming">
+              <div class="message-avatar">A</div>
+              <div class="message-content">
+                <div class="message-role">Assistente</div>
+                <p class="mb-0">{{ protocol.streamingText() }}<span class="typing-dot">...</span></p>
+              </div>
+            </div>
+          }
+
+          <!-- Tool calls -->
+          @if (protocol.toolCalls().length > 0) {
+            <div class="tool-calls-section">
+              @for (tc of protocol.toolCalls(); track tc.callId) {
+                <div class="tool-call-item" [class.finished]="tc.finished" [class.failed]="!tc.finished && tc.ok === false">
+                  <i class="bi" [class.bi-gear-wide-connected]="!tc.finished" [class.bi-check-circle]="tc.finished && tc.ok" [class.bi-x-circle]="!tc.finished && tc.ok === false"></i>
+                  <span>{{ tc.name }}</span>
+                  @if (tc.finished && tc.summary) {
+                    <span class="text-muted ms-auto">{{ tc.summary }}</span>
+                  }
+                </div>
+              }
+            </div>
+          }
+
+          <!-- Approvazioni -->
+          @for (appr of protocol.approvals(); track appr.approvalId) {
+            @if (!appr.outcome) {
+              <div class="approval-card">
+                <div class="approval-header">
+                  <strong><i class="bi bi-shield-lock"></i> Richiesta di Approvazione</strong>
+                  <span class="approval-badge">{{ appr.kind }}</span>
+                </div>
+                <div class="approval-body">
+                  <p><strong>{{ appr.title }}</strong></p>
+                  @if (appr.kind === 'write') {
+                    <pre class="diff-block">{{ appr.unifiedDiff }}</pre>
+                  } @else if (appr.kind === 'command') {
+                    <code class="command-block">{{ appr.command }}</code>
+                  }
+                </div>
+                <div class="approval-actions">
+                  <button type="button" class="btn btn-success btn-sm" (click)="protocol.approve(appr.approvalId)">
+                    <i class="bi bi-check-lg"></i> Approva
+                  </button>
+                  <button type="button" class="btn btn-danger btn-sm" (click)="protocol.reject(appr.approvalId)">
+                    <i class="bi bi-x-lg"></i> Rifiuta
+                  </button>
+                </div>
+              </div>
+            }
+          }
+        </div>
+      } @else {
+        <div class="chat-empty">
+          <i class="bi bi-chat-square-text"></i>
+          <h2>Benvenuto in pm-coding-suite</h2>
+          <p class="text-muted">Configura la connessione nella sidebar e crea una nuova sessione.</p>
+        </div>
+      }
+    </div>
+
+    <!-- Input bar -->
+    <form class="input-bar" (ngSubmit)="send()">
+      <input type="text" name="draft" [ngModel]="draft()" (ngModelChange)="draft.set($event)"
+             placeholder="Scrivi un messaggio... (Ctrl+Invio per inviare)"
+             aria-label="Messaggio" [disabled]="!protocol.currentSessionId()" />
+      <button type="submit" class="btn btn-primary" [disabled]="!protocol.currentSessionId() || !draft().trim()">
+        <i class="bi bi-send"></i> Invia
+      </button>
+      <button type="button" class="btn btn-outline-secondary" (click)="protocol.cancel()" [disabled]="!protocol.currentTurnId()">
+        <i class="bi bi-x-circle"></i> Annulla
+      </button>
+    </form>
+  </main>
+</div>
