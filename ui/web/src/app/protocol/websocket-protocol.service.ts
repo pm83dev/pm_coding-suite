@@ -81,6 +81,8 @@ export class WebSocketProtocolService implements OnDestroy {
   private readonly destroy$ = new Subject<void>();
   private messageBuffer: string[] = [];
   private pendingHello = false;
+  /** Impedisce connessioni multiple in parallelo. */
+  private connecting = false;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -89,9 +91,8 @@ export class WebSocketProtocolService implements OnDestroy {
   constructor() {
     // Auto-connect if settings indicate we should
     const s = this.settings();
-    // Connect even if serverUrl is empty (use relative URL when served from same backend)
     const url = this.buildWebSocketUrl(s.serverUrl);
-    setTimeout(() => this.doConnect(url, s.token), 0);
+    setTimeout(() => this.doConnect(url), 0);
   }
 
   // ---------------------------------------------------------------------------
@@ -99,20 +100,12 @@ export class WebSocketProtocolService implements OnDestroy {
   // ---------------------------------------------------------------------------
 
   /**
-   * Costruisce l'URL WebSocket. Usa un URL relativo quando il frontend è servito
-   * dallo stesso backend (rilevato dal fatto che serverUrl punta a localhost/127.0.0.1
-   * o è vuoto), altrimenti usa un URL assoluto.
+   * Costruisce l'URL WebSocket a partire dall'URL HTTP del backend.
+   * Trasforma sempre http:// -> ws:// e https:// -> wss://, mantenendo host e porta.
    */
   private buildWebSocketUrl(serverUrl: string): string {
-    // Se il serverUrl è vuoto o punta a localhost/127.0.0.1, usa un URL relativo
-    if (
-      !serverUrl ||
-      serverUrl.includes('localhost') ||
-      serverUrl.includes('127.0.0.1') ||
-      serverUrl === ''
-    ) {
-      // URL relativo: funziona quando il frontend è servito dallo stesso backend
-      return `/ws`;
+    if (!serverUrl) {
+      serverUrl = "http://127.0.0.1:8765";
     }
     // URL assoluto: trasforma http:// -> ws://, https:// -> wss://
     const wsProtocol = serverUrl.startsWith('https://') ? 'wss://' : 'ws://';
@@ -127,41 +120,60 @@ export class WebSocketProtocolService implements OnDestroy {
 
     const s = this.settings();
     const url = this.buildWebSocketUrl(s.serverUrl);
-    this.doConnect(url, s.token);
+    this.doConnect(url);
   }
 
-  private doConnect(url: string, token: string): void {
+  private doConnect(url: string): void {
+    // Evita connessioni multiple in parallelo
+    if (this.connecting) {
+      return;
+    }
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+    this.connecting = true;
     this.setState((prev) => ({ ...prev, connection: 'connecting', error: null }));
 
     try {
       this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
+        console.log('[WS] onopen — connection established');
         this.reconnectDelay = 1000; // reset reconnect delay
         this.pendingHello = true;
 
-        // Send hello message
-        this.ws!.send(
-          JSON.stringify(
-            makeMessage('hello', {
-              token,
-              clientName: 'pm-coding-suite-web',
-              clientVersion: '0.1.0',
-            }),
-          ),
-        );
+        // Send hello message with optional token for backend auth
+        const s = this.settings();
+        const helloPayload: Record<string, unknown> = {
+          clientName: 'pm-coding-suite-web',
+          clientVersion: '0.1.0',
+        };
+        if (s.token) {
+          helloPayload['token'] = s.token;
+        }
+
+        setTimeout(() => {
+          console.log('[WS] sending hello, readyState:', this.ws?.readyState);
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(makeMessage('hello', helloPayload)));
+            console.log('[WS] hello sent');
+          }
+        }, 50);
       };
 
       this.ws.onmessage = (event: MessageEvent) => {
+        console.log('[WS] onmessage:', event.data);
         const raw = typeof event.data === 'string' ? event.data : event.data.text();
         this.handleRaw(raw);
       };
 
       this.ws.onerror = (event) => {
-        // Error event doesn't give details; handled in onclose
+        console.log('[WS] onerror');
       };
 
       this.ws.onclose = (event: CloseEvent) => {
+        console.log('[WS] onclose:', event.code, event.reason, event.wasClean);
+        this.connecting = false;
         this.pendingHello = false;
         this.ws = null;
         this.setState((prev) => ({ ...prev, connection: 'closed' }));
@@ -172,6 +184,7 @@ export class WebSocketProtocolService implements OnDestroy {
         }
       };
     } catch (err) {
+      this.connecting = false;
       this.setState((prev) => ({
         ...prev,
         connection: 'closed',
@@ -188,7 +201,7 @@ export class WebSocketProtocolService implements OnDestroy {
       this.reconnectTimer = null;
       const s = this.settings();
       const url = this.buildWebSocketUrl(s.serverUrl);
-      this.doConnect(url, s.token);
+      this.doConnect(url);
     }, this.reconnectDelay);
 
     // Exponential backoff
@@ -200,6 +213,7 @@ export class WebSocketProtocolService implements OnDestroy {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.connecting = false;
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
       this.ws = null;
@@ -234,6 +248,9 @@ export class WebSocketProtocolService implements OnDestroy {
     // Handle hello_ok specially
     if (msg.type === 'hello_ok') {
       this.pendingHello = false;
+      this.connecting = false;
+      // Imposta la connessione come 'open' — il protocollo è stato completato
+      this.setState((prev) => ({ ...prev, connection: 'open', error: null }));
       // Flush buffered messages
       const buffered = this.messageBuffer.splice(0);
       if (buffered.length > 0) {
@@ -296,7 +313,7 @@ export class WebSocketProtocolService implements OnDestroy {
     this.send('reject', { approvalId, reason });
   }
 
-  private send(type: string, payload: Record<string, unknown>): void {
+  private send(type: string, payload: Record<string, unknown>, sessionId?: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       this.setState((prev) => ({
         ...prev,
@@ -304,7 +321,8 @@ export class WebSocketProtocolService implements OnDestroy {
       }));
       return;
     }
-    this.ws.send(JSON.stringify(makeMessage(type, payload)));
+    const sid = sessionId ?? this.stateSubject.value.currentSessionId ?? null;
+    this.ws.send(JSON.stringify(makeMessage(type, payload, sid)));
   }
 
   // ---------------------------------------------------------------------------

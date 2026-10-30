@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("pm-code-core")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+dbd3a735565591614144b548efd190354c2884b2")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d89cfddadafe37a6e1f26e1cc089f7c858b75f7a")]
 [assembly: System.Reflection.AssemblyProductAttribute("pm-code-core")]
 [assembly: System.Reflection.AssemblyTitleAttribute("pm-code-core")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

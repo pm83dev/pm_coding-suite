@@ -40,3 +40,4 @@ C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\agent-backend.runtimeconfig.json
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\agent-backend.staticwebassets.endpoints.json
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\appsettings.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\agent-backend.staticwebassets.runtime.json

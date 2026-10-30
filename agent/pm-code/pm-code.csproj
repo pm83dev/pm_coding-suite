@@ -47,6 +47,8 @@
   <!-- Copia il build del frontend nella cartella wwwroot durante il publish -->
   <Target Name="CopyFrontend" AfterTargets="Publish">
     <Message Text="Copia del frontend Angular nella cartella wwwroot..." Importance="High" />
+    <!-- Rimuove il contenuto esistente di wwwroot per evitare file obsoleti -->
+    <RemoveDir Directories="$(PublishDir)wwwroot" />
     <MakeDir Directories="$(PublishDir)wwwroot" />
     <ItemGroup>
       <FrontendFiles Include="$(MSBuildProjectDirectory)\..\..\ui\web\dist\web\browser\**\*" />

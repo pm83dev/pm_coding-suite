@@ -101,7 +101,11 @@ public class WebSocketHub
         switch (type)
         {
             case "hello":
-                var token = payload?.GetProperty("token").GetString() ?? "";
+                // Token field is optional — no authentication for local app
+                if (payload?.TryGetProperty("token", out var _tokenProp) == true)
+                {
+                    // Token present but not validated (local-only app)
+                }
                 await SendAll("hello_ok", new { serverVersion = "2.0.0", protocol = 1 });
                 break;
 

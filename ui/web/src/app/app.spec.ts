@@ -16,7 +16,7 @@ function createMockProtocolService() {
     messages: () => [],
     streamingText: () => "",
     currentTurnId: () => "",
-    settings: () => ({ serverUrl: "", token: "" }),
+    settings: () => ({ serverUrl: "" }),
     send: () => {}, connect: () => {}, disconnect: () => {}, saveSettings: () => {},
   };
 }

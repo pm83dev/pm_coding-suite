@@ -25,8 +25,9 @@ export class App {
   }
 
   protected newSession(): void {
-    // Usa la cartella corrente (dove e` lanciato pm-code) come workspace
-    this.protocol.newSession(".");
+    // Usa il workspace salvato nelle impostazioni (default: ".")
+    const workspace = this.protocol.settings().workspace || ".";
+    this.protocol.newSession(workspace);
   }
 
   protected send(): void {

@@ -79,6 +79,10 @@
               "version": "[8.0.31, 8.0.31]"
             },
             {
+              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
+              "version": "[8.0.31, 8.0.31]"
+            },
+            {
               "name": "Microsoft.NETCore.App.Host.win-x64",
               "version": "[8.0.31, 8.0.31]"
             },
@@ -87,7 +91,15 @@
               "version": "[8.0.31, 8.0.31]"
             },
             {
+              "name": "Microsoft.NETCore.App.Runtime.win-x64",
+              "version": "[8.0.31, 8.0.31]"
+            },
+            {
               "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.31, 8.0.31]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
               "version": "[8.0.31, 8.0.31]"
             }
           ],
@@ -100,6 +112,11 @@
             }
           },
           "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.401/PortableRuntimeIdentifierGraph.json"
+        }
+      },
+      "runtimes": {
+        "win-x64": {
+          "#import": []
         }
       }
     },
@@ -174,11 +191,23 @@
               "version": "[8.0.31, 8.0.31]"
             },
             {
+              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
+              "version": "[8.0.31, 8.0.31]"
+            },
+            {
               "name": "Microsoft.NETCore.App.Ref",
               "version": "[8.0.31, 8.0.31]"
             },
             {
+              "name": "Microsoft.NETCore.App.Runtime.win-x64",
+              "version": "[8.0.31, 8.0.31]"
+            },
+            {
               "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.31, 8.0.31]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
               "version": "[8.0.31, 8.0.31]"
             }
           ],
@@ -188,6 +217,11 @@
             }
           },
           "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.401/PortableRuntimeIdentifierGraph.json"
+        }
+      },
+      "runtimes": {
+        "win-x64": {
+          "#import": []
         }
       }
     }

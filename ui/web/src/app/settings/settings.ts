@@ -1,10 +1,13 @@
-﻿import { Component, inject, signal } from "@angular/core";
+import { Component, inject, signal, computed } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 
 import { ProtocolService } from "../protocol/protocol.service";
+import type { ConnectionSettings } from "../protocol/settings";
 
 /**
- * Finestra Impostazioni: URL del server e token, salvati in localStorage.
+ * Finestra Impostazioni: URL del server, token di autenticazione e workspace, salvati in localStorage.
+ * Il workspace è selezionabile da una combobox con ricerca: il backend fornisce una lista di
+ * path candidati (recenti + driver + home) filtrati per query.
  */
 @Component({
   selector: "app-settings",
@@ -19,8 +22,33 @@ import { ProtocolService } from "../protocol/protocol.service";
         <input type="text" [ngModel]="url()" (ngModelChange)="url.set($event)" placeholder="http://127.0.0.1:8765" />
       </label>
       <label>
-        Token
-        <input type="password" [ngModel]="token()" (ngModelChange)="token.set($event)" placeholder="dev-token" />
+        Token (opzionale)
+        <input type="password" [ngModel]="token()" (ngModelChange)="token.set($event)" placeholder="Token di autenticazione" />
+      </label>
+      <label class="workspace-label">
+        Workspace (cartella)
+        <div class="workspace-combo">
+          <input
+            type="text"
+            [ngModel]="workspace()"
+            (ngModelChange)="onWorkspaceInput($event)"
+            (focus)="onWorkspaceFocus()"
+            (blur)="onWorkspaceBlur()"
+            placeholder="C:\\projects\\my-app"
+            class="workspace-input"
+          />
+          @if (showDropdown()) {
+            <div class="workspace-dropdown">
+              @for (w of filteredWorkspaces(); track w) {
+                <button type="button" class="workspace-option" (mousedown)="selectWorkspace(w)">
+                  <i class="bi bi-folder2 me-1"></i> {{ w }}
+                </button>
+              } @empty {
+                <div class="workspace-empty">Nessun risultato</div>
+              }
+            </div>
+          }
+        </div>
       </label>
       <div class="settings-actions">
         <button type="button" class="btn btn-primary btn-sm" (click)="save()">
@@ -45,16 +73,110 @@ import { ProtocolService } from "../protocol/protocol.service";
     input::placeholder { color: #6b7280; }
     .settings-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
     .btn { font-size: 0.8rem; padding: 0.4rem 0.75rem; }
+    .workspace-label { position: relative; }
+    .workspace-combo { position: relative; }
+    .workspace-input { width: 100%; }
+    .workspace-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      max-height: 200px;
+      overflow-y: auto;
+      background: #1e2128;
+      border: 1px solid #3d424a;
+      border-radius: 6px;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      margin-top: 2px;
+    }
+    .workspace-option {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      background: none;
+      border: none;
+      color: #c0c5cb;
+      font-size: 0.8rem;
+      text-align: left;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .workspace-option:hover {
+      background: #0d6efd;
+      color: #fff;
+    }
+    .workspace-empty {
+      padding: 0.5rem 0.75rem;
+      color: #6b7280;
+      font-size: 0.8rem;
+      font-style: italic;
+    }
   `],
 })
 export class Settings {
   private readonly protocol = inject(ProtocolService);
 
   protected readonly url = signal(this.protocol.settings().serverUrl);
-  protected readonly token = signal(this.protocol.settings().token);
+  protected readonly token = signal(this.protocol.settings().token ?? "");
+  protected readonly workspace = signal(this.protocol.settings().workspace ?? ".");
+
+  // Combobox state
+  private readonly allWorkspaces = signal<string[]>([]);
+  private readonly dropdownOpen = signal(false);
+  protected readonly showDropdown = this.dropdownOpen;
+
+  protected readonly filteredWorkspaces = computed(() => {
+    const query = this.workspace().trim().toLowerCase();
+    const all = this.allWorkspaces();
+    if (!query) return all.slice(0, 20);
+    return all.filter(w => w.toLowerCase().includes(query)).slice(0, 20);
+  });
+
+  protected onWorkspaceInput(value: string): void {
+    this.workspace.set(value);
+    this.dropdownOpen.set(true);
+    this.fetchWorkspaces(value);
+  }
+
+  protected onWorkspaceFocus(): void {
+    this.dropdownOpen.set(true);
+    this.fetchWorkspaces(this.workspace());
+  }
+
+  protected onWorkspaceBlur(): void {
+    setTimeout(() => this.dropdownOpen.set(false), 200);
+  }
+
+  protected selectWorkspace(path: string): void {
+    this.workspace.set(path);
+    this.dropdownOpen.set(false);
+  }
+
+  private async fetchWorkspaces(query: string): Promise<void> {
+    try {
+      const baseUrl = this.url().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      const url = `http://${baseUrl}/api/workspaces?query=${encodeURIComponent(query)}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data: { workspaces: string[] } = await res.json();
+        this.allWorkspaces.set(data.workspaces ?? []);
+      }
+    } catch {
+      // Backend not reachable
+    }
+  }
 
   protected save(): void {
-    this.protocol.saveSettings({ serverUrl: this.url().trim(), token: this.token() });
+    const s: Partial<ConnectionSettings> = { serverUrl: this.url().trim() };
+    const t = this.token().trim();
+    if (t) s.token = t;
+    const w = this.workspace().trim();
+    if (w) s.workspace = w;
+    this.protocol.saveSettings(s);
   }
 
   protected disconnect(): void {
@@ -62,10 +184,12 @@ export class Settings {
   }
 
   protected resetSettings(): void {
-    if (confirm("Sei sicuro di voler resettare le impostazioni? URL e token verranno eliminati.")) {
+    if (confirm("Sei sicuro di voler resettare le impostazioni? URL, token e workspace verranno eliminati.")) {
       localStorage.removeItem("pm-coding-suite.settings");
       this.url.set("http://127.0.0.1:8765");
       this.token.set("");
+      this.workspace.set(".");
+      this.allWorkspaces.set([]);
       this.protocol.disconnect();
     }
   }

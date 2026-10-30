@@ -28,6 +28,44 @@ public class ToolExecutionService
 
         if (llm == null || dispatcher == null || sessionManager == null) return false;
 
+        // Build system prompt (stesso formato di pm-code)
+        var workspace = _session.Workspace!;
+        var agentsMdPath = Path.Combine(workspace.Root, "AGENTS.md");
+        var agentsContext = File.Exists(agentsMdPath)
+            ? $"\nCONTESTO DEL PROGETTO (da AGENTS.md):\n{File.ReadAllText(agentsMdPath)}\n"
+            : "\nNessun AGENTS.md trovato. Usa /init per generarlo.\n";
+
+        var plan = dispatcher.PlanSummary();
+        var planContext = plan == null ? "" : $"\nPIANO IN CORSO (gestito con manage_todo):\n{plan}\nSe la richiesta riguarda questo piano: riparti dal passo [IN CORSO]. Se è un task diverso: crea un nuovo piano.\n";
+
+        var lessons = dispatcher.LessonsSummary();
+        var lessonsContext = lessons == null ? "" : $"\nLEZIONI APPRESE (gestite con lessons; rispettale):\n{lessons}\n";
+
+        var notes = dispatcher.ProjectNotesSummary();
+        var notesContext = notes == null
+            ? "\nMEMORIA DEL PROGETTO: vuota. Salva con project_notes quando scopri come avviare/testare.\n"
+            : $"\nMEMORIA DEL PROGETTO (gestite con project_notes — usale):\n{notes}\n";
+
+        var tree = workspace.GetTreeSnapshot();
+
+        var systemPrompt = $"Sei un agente di sviluppo software autonomo. Workspace: {workspace.Root}{agentsContext}{lessonsContext}{notesContext}{planContext}" +
+            $"\nSTRUTTURA DEL WORKSPACE:\n{tree}\n" +
+            "METODO DI LAVORO — PICCOLI PASSI:\n" +
+            "1. Crea il piano con manage_todo action=\"create\": passi piccoli e verificabili.\n" +
+            "2. manage_todo update → in_progress per il passo corrente.\n" +
+            "3. Leggi SOLO il codice necessario: search_in_files/sym_search + read_file_range.\n" +
+            "4. Esegui la modifica con edit_file (blocchi piccoli).\n" +
+            "5. Verifica: sol_analyze per .NET, oppure build/test del progetto.\n" +
+            "6. manage_todo update → completed con note breve.\n" +
+            "7. Passa al passo successivo senza rispondere all'utente.\n" +
+            "Rispondi solo quando tutti i passi sono completi o ti serve una decisione.\n" +
+            "\nVALIDAZIONE FUNZIONALE:\n" +
+            "- La build dice solo che compila. Esegui il programma e controlla l'esito reale.\n" +
+            "- Ultimo passo del piano: \"Test funzionale: <comando> → atteso: <risultato>\".\n" +
+            "- Se il test fallisce: correggi e riesegui. Fermati dopo 3 tentativi.\n" +
+            "- Salva con project_notes come si avvia/testa il progetto.\n";
+        history.Insert(0, new ChatMessage { Role = "system", Content = systemPrompt });
+
         history.Add(new ChatMessage { Role = "user", Content = userMessage });
         _onEvent(new AgentEventDto { Type = "turn_started", TurnId = turnId });
 
@@ -36,68 +74,35 @@ public class ToolExecutionService
             var request = new ChatRequest
             {
                 Messages = history.ToList(),
-                Temperature = _config.LlmSettings.Temperature,
-                FrequencyPenalty = _config.LlmSettings.FrequencyPenalty,
-                MaxTokens = 4096
+                Tools = dispatcher.AllDefinitions,
+                ToolChoice = "auto"
             };
-            if (_config.LlmSettings.PresencePenalty.HasValue) request.PresencePenalty = _config.LlmSettings.PresencePenalty.Value;
-            if (_config.LlmSettings.TopP.HasValue) request.TopP = _config.LlmSettings.TopP.Value;
-            if (_config.LlmSettings.TopK.HasValue) request.TopK = _config.LlmSettings.TopK.Value;
-            if (_config.LlmSettings.MinP.HasValue) request.MinP = _config.LlmSettings.MinP.Value;
-            if (_config.LlmSettings.RepeatPenalty.HasValue) request.RepeatPenalty = _config.LlmSettings.RepeatPenalty.Value;
-            if (_config.LlmSettings.RepeatLastN.HasValue) request.RepeatLastN = _config.LlmSettings.RepeatLastN.Value;
 
-            var llmAttempt = 0;
-            while (llmAttempt < 3)
+            var (response, usage, _) = await llm.StreamChatAsync(request, token =>
             {
-                llmAttempt++;
-                try
-                {
-                    var response = await llm.ChatAsync(request);
-                    if (response?.Choices.Count == 0) break;
-                    var message = response.Choices[0].Message;
-                    var usage = response.Usage;
+                _onEvent(new AgentEventDto { Type = "assistant_delta", TurnId = turnId, Text = token });
+            }, ct: CancellationToken.None);
+            history.Add(response);
 
-                    if (!string.IsNullOrEmpty(message.Content))
-                        _onEvent(new AgentEventDto { Type = "assistant_delta", TurnId = turnId, Text = message.Content });
+            if (response.ToolCalls == null || response.ToolCalls.Count == 0)
+            {
+                _onEvent(new AgentEventDto { Type = "turn_finished", TurnId = turnId, Reason = "completed" });
+                return true;
+            }
 
-                    sessionManager.RecordRealUsage(usage?.PromptTokens ?? 0, history);
-                    history.Add(new ChatMessage { Role = message.Role, Content = message.Content, ToolCalls = message.ToolCalls });
+            foreach (var tc in response.ToolCalls)
+            {
+                _onEvent(new AgentEventDto { Type = "tool_call_start", TurnId = turnId, CallId = tc.Id, ToolName = tc.Function.Name });
 
-                    if (message.ToolCalls?.Count > 0)
-                    {
-                        foreach (var tc in message.ToolCalls)
-                        {
-                            _onEvent(new AgentEventDto { Type = "tool_call_started", TurnId = turnId, ToolName = tc.Function.Name, Args = tc.Function.Arguments });
-                            var sw = System.Diagnostics.Stopwatch.StartNew();
-                            var result = dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, default);
-                            var dur = sw.ElapsedMilliseconds;
-                            var success = !result.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase);
-                            _onEvent(new AgentEventDto { Type = "tool_call_finished", TurnId = turnId, Success = success, Summary = result, DurationMs = dur });
-                            history.Add(new ChatMessage { Role = "tool", Content = result });
-                        }
-                        continue;
-                    }
+                var result = dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, CancellationToken.None);
 
-                    _onEvent(new AgentEventDto { Type = "assistant_done", TurnId = turnId, MessageId = Guid.NewGuid().ToString("N"),
-                        Usage = new UsageInfoDto { PromptTokens = usage?.PromptTokens ?? 0, CompletionTokens = usage?.CompletionTokens ?? 0 } });
-                    _onEvent(new AgentEventDto { Type = "turn_finished", TurnId = turnId, Reason = "completed" });
-                    return true;
-                }
-                catch (Exception ex) when (llmAttempt < 3)
-                {
-                    var delayMs = 1000 * (int)Math.Pow(2, llmAttempt - 1);
-                    _onEvent(new AgentEventDto { Type = "assistant_delta", TurnId = turnId, Text = $"[Retry {llmAttempt}/3 in {delayMs/1000}s]" });
-                    await Task.Delay(delayMs);
-                }
-                catch
-                {
-                    _onEvent(new AgentEventDto { Type = "turn_finished", TurnId = turnId, Reason = "error" });
-                    return false;
-                }
+                _onEvent(new AgentEventDto { Type = "tool_call_done", TurnId = turnId, CallId = tc.Id, ToolName = tc.Function.Name, Summary = result.Length > 200 ? result[..200] + "..." : result });
+
+                history.Add(new ChatMessage { Role = "tool", Content = result, ToolCallId = tc.Id });
             }
         }
-        _onEvent(new AgentEventDto { Type = "turn_finished", TurnId = turnId, Reason = "completed" });
-        return true;
+
+        _onEvent(new AgentEventDto { Type = "turn_finished", TurnId = turnId, Reason = "max_steps" });
+        return false;
     }
 }
