@@ -1,7 +1,7 @@
 ﻿import { ChangeDetectionStrategy, Component, inject, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 
-import { SignalRProtocolService } from "./protocol/signalr-protocol.service";
+import { WebSocketProtocolService } from "./protocol/websocket-protocol.service";
 import { Settings } from "./settings/settings";
 
 /**
@@ -16,7 +16,7 @@ import { Settings } from "./settings/settings";
   styleUrls: ["./app.component.css"],
 })
 export class App {
-  protected readonly protocol = inject(SignalRProtocolService);
+  protected readonly protocol = inject(WebSocketProtocolService);
   protected readonly draft = signal("");
 
   constructor() {

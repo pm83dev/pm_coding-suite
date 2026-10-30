@@ -1,6 +1,6 @@
 # agent-backend
 
-Servizio backend ASP.NET Core 8.0 con SignalR per l'agente AI pm-coding-suite.
+Servizio backend ASP.NET Core 8.0 con WebSocket per l'agente AI pm-coding-suite.
 
 ## Architettura
 
@@ -9,7 +9,7 @@ agent-backend/
 ├── Controllers/
 │   └── SessionsController.cs    # REST API per CRUD sessioni + config
 ├── Hubs/
-│   └── AgentHub.cs              # Hub SignalR per comunicazione real-time
+│   └── WebSocketHub.cs        # WebSocket handler per comunicazione real-time
 ├── Middleware/
 │   └── AuthMiddleware.cs        # Validazione token API
 ├── Models/Dto/
@@ -24,7 +24,7 @@ agent-backend/
 └── agent-backend.csproj         # Progetto .NET 8
 ```
 
-## Protocollo SignalR
+## Protocollo WebSocket v1
 
 L'hub `AgentHub` espone questi metodi client-callable:
 
@@ -100,5 +100,5 @@ Il servizio si avvia sull'indirizzo e porta configurati in `ServeSettings`.
 ## Dipendenze
 
 - **pm-code-core**: Libreria core con LlamaClient, ToolDispatcher, SessionManager, WorkspaceContext
-- **Microsoft.AspNetCore.SignalR**: Comunicazione real-time bidirezionale
+- **Microsoft.AspNetCore.WebSockets**: Comunicazione real-time bidirezionale
 - **Swashbuckle.AspNetCore**: Documentazione API (Swagger)

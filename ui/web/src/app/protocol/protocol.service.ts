@@ -1,48 +1,48 @@
 import { Injectable, inject, OnDestroy } from "@angular/core";
 
-import { SignalRProtocolService } from "./signalr-protocol.service";
+import { WebSocketProtocolService } from "./websocket-protocol.service";
 import type { ProtocolState } from "./state";
 import type { ServerMessage } from "@pm-ui/protocol";
 
 /**
- * Wrapper backward-compatible che delega a SignalRProtocolService.
+ * Wrapper backward-compatible che delega a WebSocketProtocolService.
  * Mantiene la stessa API di ProtocolService per compatibilità con app.ts.
  */
 @Injectable({ providedIn: "root" })
 export class ProtocolService implements OnDestroy {
-  private readonly signalr = inject(SignalRProtocolService);
+  private readonly websocket = inject(WebSocketProtocolService);
 
-  readonly protocolState = this.signalr.protocolState;
-  readonly connection = this.signalr.connection;
-  readonly error = this.signalr.error;
-  readonly sessions = this.signalr.sessions;
-  readonly currentSessionId = this.signalr.currentSessionId;
-  readonly messages = this.signalr.messages;
-  readonly models = this.signalr.models;
-  readonly activeModelId = this.signalr.activeModelId;
-  readonly permissionMode = this.signalr.permissionMode;
-  readonly currentTurnId = this.signalr.currentTurnId;
-  readonly streamingText = this.signalr.streamingText;
-  readonly toolCalls = this.signalr.toolCalls;
-  readonly approvals = this.signalr.approvals;
-  readonly lastUsage = this.signalr.lastUsage;
-  readonly settings = this.signalr.settings;
-  readonly serverUrl = this.signalr.serverUrl;
+  readonly protocolState = this.websocket.protocolState;
+  readonly connection = this.websocket.connection;
+  readonly error = this.websocket.error;
+  readonly sessions = this.websocket.sessions;
+  readonly currentSessionId = this.websocket.currentSessionId;
+  readonly messages = this.websocket.messages;
+  readonly models = this.websocket.models;
+  readonly activeModelId = this.websocket.activeModelId;
+  readonly permissionMode = this.websocket.permissionMode;
+  readonly currentTurnId = this.websocket.currentTurnId;
+  readonly streamingText = this.websocket.streamingText;
+  readonly toolCalls = this.websocket.toolCalls;
+  readonly approvals = this.websocket.approvals;
+  readonly lastUsage = this.websocket.lastUsage;
+  readonly settings = this.websocket.settings;
+  readonly serverUrl = this.websocket.serverUrl;
 
-  connect(): void { this.signalr.connect(); }
-  saveSettings(s: Parameters<SignalRProtocolService["saveSettings"]>[0]): void { this.signalr.saveSettings(s); }
-  disconnect(): void { this.signalr.disconnect(); }
-  listSessions(): void { this.signalr.listSessions(); }
-  newSession(workspace: string): void { this.signalr.newSession(workspace); }
-  openSession(sessionId: string): void { this.signalr.openSession(sessionId); }
-  sendMessage(text: string): void { this.signalr.sendMessage(text); }
-  cancel(): void { this.signalr.cancel(); }
-  approve(approvalId: string): void { this.signalr.approve(approvalId); }
-  reject(approvalId: string): void { this.signalr.reject(approvalId); }
+  connect(): void { this.websocket.connect(); }
+  saveSettings(s: Parameters<WebSocketProtocolService["saveSettings"]>[0]): void { this.websocket.saveSettings(s); }
+  disconnect(): void { this.websocket.disconnect(); }
+  listSessions(): void { this.websocket.listSessions(); }
+  newSession(workspace: string): void { this.websocket.newSession(workspace); }
+  openSession(sessionId: string): void { this.websocket.openSession(sessionId); }
+  sendMessage(text: string): void { this.websocket.sendMessage(text); }
+  cancel(): void { this.websocket.cancel(); }
+  approve(approvalId: string): void { this.websocket.approve(approvalId); }
+  reject(approvalId: string): void { this.websocket.reject(approvalId); }
 
-  _setStateForTest(st: ProtocolState): void { this.signalr._setStateForTest(st); }
-  _applyForTest(msg: ServerMessage): void { this.signalr._applyForTest(msg); }
-  _handleRawForTest(raw: string): void { this.signalr._handleRawForTest(raw); }
+  _setStateForTest(st: ProtocolState): void { this.websocket._setStateForTest(st); }
+  _applyForTest(msg: ServerMessage): void { this.websocket._applyForTest(msg); }
+  _handleRawForTest(raw: string): void { this.websocket._handleRawForTest(raw); }
 
-  ngOnDestroy(): void { this.signalr.ngOnDestroy(); }
+  ngOnDestroy(): void { this.websocket.ngOnDestroy(); }
 }

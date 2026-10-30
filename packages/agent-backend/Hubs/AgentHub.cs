@@ -18,6 +18,11 @@ public class AgentHub : Hub
         _braveApiKey = braveApiKey;
     }
 
+    public async Task<string> Ping()
+    {
+        return "pong";
+    }
+
     public async Task Hello(string clientName, string clientVersion)
     {
         await Clients.Caller.SendAsync("hello_ok", new

@@ -1,0 +1,343 @@
+import { computed, Injectable, OnDestroy, Signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { BehaviorSubject, Subject } from 'rxjs';
+
+import {
+  makeMessage,
+  parseServerMessage,
+  type ModelInfo,
+  type PermissionMode,
+  type ServerMessage,
+  type SessionInfo,
+  type UsageInfo,
+} from '@pm-ui/protocol';
+import { loadSettings, saveSettings, type ConnectionSettings } from './settings';
+import {
+  applyServerMessage,
+  initialProtocolState,
+  type ApprovalState,
+  type ConnectionState,
+  type ProtocolState,
+  type ToolCallState,
+} from './state';
+
+/**
+ * Servizio che gestisce la connessione WebSocket al backend pm-code.
+ * Supporta URL WebSocket relativo (quando il frontend è servito dallo stesso backend)
+ * e URL assoluto (quando il frontend è servito separatamente).
+ */
+@Injectable({ providedIn: 'root' })
+export class WebSocketProtocolService implements OnDestroy {
+  // ---------------------------------------------------------------------------
+  // Settings
+  // ---------------------------------------------------------------------------
+
+  private readonly settingsSubject = new BehaviorSubject<ConnectionSettings>(loadSettings());
+  readonly settings: Signal<ConnectionSettings> = toSignal(this.settingsSubject, {
+    initialValue: loadSettings(),
+  });
+
+  readonly serverUrl = computed(() => this.settings().serverUrl);
+
+  // ---------------------------------------------------------------------------
+  // Reactive state (signals)
+  // ---------------------------------------------------------------------------
+
+  private readonly stateSubject = new BehaviorSubject<ProtocolState>(initialProtocolState);
+  readonly protocolState: Signal<ProtocolState> = toSignal(this.stateSubject, {
+    initialValue: initialProtocolState,
+  });
+
+  readonly connection: Signal<ConnectionState> = computed(() => this.protocolState().connection);
+  readonly error: Signal<string | null> = computed(() => this.protocolState().error);
+  readonly sessions: Signal<SessionInfo[]> = computed(() => this.protocolState().sessions);
+  readonly currentSessionId: Signal<string | null> = computed(
+    () => this.protocolState().currentSessionId,
+  );
+  readonly messages: Signal<any[]> = computed(() => this.protocolState().messages);
+  readonly models: Signal<ModelInfo[]> = computed(() => this.protocolState().models);
+  readonly activeModelId: Signal<string | null> = computed(
+    () => this.protocolState().activeModelId,
+  );
+  readonly permissionMode: Signal<PermissionMode | null> = computed(
+    () => this.protocolState().permissionMode,
+  );
+  readonly currentTurnId: Signal<string | null> = computed(
+    () => this.protocolState().currentTurnId,
+  );
+  readonly streamingText: Signal<string> = computed(() => this.protocolState().streamingText);
+  readonly toolCalls: Signal<ToolCallState[]> = computed(() => this.protocolState().toolCalls);
+  readonly approvals: Signal<ApprovalState[]> = computed(() => this.protocolState().approvals);
+  readonly lastUsage: Signal<UsageInfo | null> = computed(() => this.protocolState().lastUsage);
+
+  // ---------------------------------------------------------------------------
+  // Internal
+  // ---------------------------------------------------------------------------
+
+  private ws: WebSocket | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelay = 1000;
+  private readonly maxReconnectDelay = 30000;
+  private readonly destroy$ = new Subject<void>();
+  private messageBuffer: string[] = [];
+  private pendingHello = false;
+
+  // ---------------------------------------------------------------------------
+  // Constructor
+  // ---------------------------------------------------------------------------
+
+  constructor() {
+    // Auto-connect if settings indicate we should
+    const s = this.settings();
+    // Connect even if serverUrl is empty (use relative URL when served from same backend)
+    const url = this.buildWebSocketUrl(s.serverUrl);
+    setTimeout(() => this.doConnect(url, s.token), 0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection management
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Costruisce l'URL WebSocket. Usa un URL relativo quando il frontend è servito
+   * dallo stesso backend (rilevato dal fatto che serverUrl punta a localhost/127.0.0.1
+   * o è vuoto), altrimenti usa un URL assoluto.
+   */
+  private buildWebSocketUrl(serverUrl: string): string {
+    // Se il serverUrl è vuoto o punta a localhost/127.0.0.1, usa un URL relativo
+    if (
+      !serverUrl ||
+      serverUrl.includes('localhost') ||
+      serverUrl.includes('127.0.0.1') ||
+      serverUrl === ''
+    ) {
+      // URL relativo: funziona quando il frontend è servito dallo stesso backend
+      return `/ws`;
+    }
+    // URL assoluto: trasforma http:// -> ws://, https:// -> wss://
+    const wsProtocol = serverUrl.startsWith('https://') ? 'wss://' : 'ws://';
+    const path = serverUrl.replace(/^https?:\/\//, '');
+    return `${wsProtocol}${path}/ws`;
+  }
+
+  connect(): void {
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+      return; // già connesso o in connessione
+    }
+
+    const s = this.settings();
+    const url = this.buildWebSocketUrl(s.serverUrl);
+    this.doConnect(url, s.token);
+  }
+
+  private doConnect(url: string, token: string): void {
+    this.setState((prev) => ({ ...prev, connection: 'connecting', error: null }));
+
+    try {
+      this.ws = new WebSocket(url);
+
+      this.ws.onopen = () => {
+        this.reconnectDelay = 1000; // reset reconnect delay
+        this.pendingHello = true;
+
+        // Send hello message
+        this.ws!.send(
+          JSON.stringify(
+            makeMessage('hello', {
+              token,
+              clientName: 'pm-coding-suite-web',
+              clientVersion: '0.1.0',
+            }),
+          ),
+        );
+      };
+
+      this.ws.onmessage = (event: MessageEvent) => {
+        const raw = typeof event.data === 'string' ? event.data : event.data.text();
+        this.handleRaw(raw);
+      };
+
+      this.ws.onerror = (event) => {
+        // Error event doesn't give details; handled in onclose
+      };
+
+      this.ws.onclose = (event: CloseEvent) => {
+        this.pendingHello = false;
+        this.ws = null;
+        this.setState((prev) => ({ ...prev, connection: 'closed' }));
+
+        // Reconnect if not intentionally closed and hello wasn't successful
+        if (!event.wasClean && !(event.code === 1000)) {
+          this.scheduleReconnect();
+        }
+      };
+    } catch (err) {
+      this.setState((prev) => ({
+        ...prev,
+        connection: 'closed',
+        error: `Connection error: ${err instanceof Error ? err.message : String(err)}`,
+      }));
+      this.scheduleReconnect();
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      const s = this.settings();
+      const url = this.buildWebSocketUrl(s.serverUrl);
+      this.doConnect(url, s.token);
+    }, this.reconnectDelay);
+
+    // Exponential backoff
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+  }
+
+  disconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      this.ws.close(1000, 'Client disconnect');
+      this.ws = null;
+    }
+    this.setState((prev) => ({ ...prev, connection: 'closed' }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Message handling
+  // ---------------------------------------------------------------------------
+
+  handleRaw(raw: string): void {
+    try {
+      const result = parseServerMessage(raw);
+      if (!result.ok) {
+        this.setState((prev) => ({
+          ...prev,
+          error: `Invalid message: ${result.error}`,
+        }));
+        return;
+      }
+      this.applyServerMessage(result.value);
+    } catch (err) {
+      this.setState((prev) => ({
+        ...prev,
+        error: `Parse error: ${err instanceof Error ? err.message : String(err)}`,
+      }));
+    }
+  }
+
+  private applyServerMessage(msg: ServerMessage): void {
+    // Handle hello_ok specially
+    if (msg.type === 'hello_ok') {
+      this.pendingHello = false;
+      // Flush buffered messages
+      const buffered = this.messageBuffer.splice(0);
+      if (buffered.length > 0) {
+        buffered.forEach((raw) => this.handleRaw(raw));
+      }
+      return;
+    }
+
+    // Buffer messages until hello_ok is received
+    if (this.pendingHello) {
+      this.messageBuffer.push(JSON.stringify(msg));
+      return;
+    }
+
+    this.setState((prev) => applyServerMessage(prev, msg));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API (mimics original ProtocolService)
+  // ---------------------------------------------------------------------------
+
+  saveSettings(s: Partial<ConnectionSettings>): void {
+    const current = this.settings();
+    const updated = { ...current, ...s };
+    this.settingsSubject.next(updated);
+    saveSettings(updated);
+
+    // Reconnect if serverUrl changed
+    if (s.serverUrl && s.serverUrl !== current.serverUrl) {
+      this.disconnect();
+      setTimeout(() => this.connect(), 100);
+    }
+  }
+
+  listSessions(): void {
+    this.send('list_sessions', {});
+  }
+
+  newSession(workspace: string): void {
+    this.send('new_session', { workspace });
+  }
+
+  openSession(sessionId: string): void {
+    this.send('open_session', { sessionId });
+  }
+
+  sendMessage(text: string): void {
+    this.send('send_message', { text });
+  }
+
+  cancel(): void {
+    this.send('cancel', {});
+  }
+
+  approve(approvalId: string): void {
+    this.send('approve', { approvalId });
+  }
+
+  reject(approvalId: string, reason?: string): void {
+    this.send('reject', { approvalId, reason });
+  }
+
+  private send(type: string, payload: Record<string, unknown>): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      this.setState((prev) => ({
+        ...prev,
+        error: 'Not connected',
+      }));
+      return;
+    }
+    this.ws.send(JSON.stringify(makeMessage(type, payload)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test helpers
+  // ---------------------------------------------------------------------------
+
+  _setStateForTest(st: ProtocolState): void {
+    this.stateSubject.next(st);
+  }
+
+  _applyForTest(msg: ServerMessage): void {
+    this.setState((prev) => applyServerMessage(prev, msg));
+  }
+
+  _handleRawForTest(raw: string): void {
+    this.handleRaw(raw);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal state management
+  // ---------------------------------------------------------------------------
+
+  private setState(updater: (prev: ProtocolState) => ProtocolState): void {
+    this.stateSubject.next(updater(this.stateSubject.value));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+    this.disconnect();
+  }
+}

@@ -6,11 +6,9 @@ C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\agent-backend.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\agent-backend.pdb
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Microsoft.OpenApi.dll
-C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Newtonsoft.Json.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Swashbuckle.AspNetCore.Swagger.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Swashbuckle.AspNetCore.SwaggerGen.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Swashbuckle.AspNetCore.SwaggerUI.dll
-C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\System.Net.WebSockets.WebSocketProtocol.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Microsoft.CSharp.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Microsoft.VisualBasic.Core.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\Microsoft.VisualBasic.dll
@@ -360,3 +358,9 @@ C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\win-x64\
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\win-x64\agent-backend.pdb
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\win-x64\agent-backend.genruntimeconfig.cache
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\win-x64\ref\agent-backend.dll
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\publish\web.config
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\publish\agent-backend.deps.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\publish\agent-backend.runtimeconfig.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\publish\agent-backend.staticwebassets.endpoints.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\publish\appsettings.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\win-x64\agent-backend.staticwebassets.runtime.json

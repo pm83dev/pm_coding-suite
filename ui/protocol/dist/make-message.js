@@ -1,7 +1,9 @@
 /** uuid v4 portabile (browser/node): usa crypto.randomUUID se disponibile. */
 function newId() {
-    const c = globalThis.crypto;
-    if (c && typeof c.randomUUID === "function")
+    const c = globalThis["crypto"];
+    if (c &&
+        typeof c === "object" &&
+        typeof c.randomUUID === "function")
         return c.randomUUID();
     // Fallback: uuid v4 da Math.random (solo se crypto.randomUUID non esiste).
     const bytes = new Uint8Array(16);

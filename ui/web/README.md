@@ -3,8 +3,8 @@
 ## Panoramica
 
 Applicazione Angular (v22) che funge da interfaccia web per l'agente pm-coding-suite.
-Utilizza **SignalR** per la comunicazione real-time con il backend `agent-backend`
-(e non più WebSocket raw come nella versione precedente).
+Utilizza **WebSocket standard** (protocollo v1) per la comunicazione real-time con il backend.
+I messaggi seguono la busta `{v, id, ts, sessionId, type, payload}` definita in `@pm-ui/protocol`.
 
 ## Architettura
 
@@ -17,7 +17,7 @@ app/
 ├── app.routes.ts                 # Route (vuote — single-page)
 ├── app.spec.ts                   # Test unitari del componente root
 ├── protocol/
-│   ├── signalr-protocol.service.ts  # Servizio SignalR (collegamento al backend)
+│   ├── websocket-protocol.service.ts  # Servizio WebSocket (collegamento al backend)
 │   ├── protocol.service.ts          # Wrapper backward-compatible
 │   ├── state.ts                     # Stato dell'app + reducer puro
 │   ├── settings.ts                  # Impostazioni di connessione (localStorage)
@@ -26,38 +26,44 @@ app/
     └── settings.ts                  # Componente Impostazioni (URL + token)
 ```
 
-## Protocollo SignalR
+## Protocollo WebSocket v1
 
-Il backend espone un Hub SignalR (`AgentHub`) con i seguenti metodi/eventi:
+Il backend espone un endpoint WebSocket su `/ws` con autenticazione via query param `?token=`.
+Tutti i messaggi usano la busta v1 definita in `@pm-ui/protocol`:
 
-### Metodi client → server (invoke)
-| Metodo | Parametri | Descrizione |
-|--------|-----------|-------------|
-| `hello` | `clientName`, `clientVersion` | Handshake iniziale |
-| `listSessions` | — | Elenco sessioni |
-| `newSession` | `{ workspace: string }` | Crea nuova sessione |
-| `sendMessage` | `sessionId`, `text` | Invia messaggio |
-| `cancel` | `sessionId` | Annulla turno corrente |
+```json
+{ "v": 1, "id": "uuid", "ts": "ISO8601", "sessionId": "..." | null, "type": "...", "payload": {} }
+```
 
-### Eventi server → client (on)
-| Evento | Payload | Descrizione |
-|--------|---------|-------------|
-| `HelloResponse` | `{ ok, serverVersion, protocol }` | Risposta handshake |
-| `SessionsList` | `SessionInfo[]` | Elenco sessioni |
-| `SessionState` | `{ session, messages, model, permission }` | Stato sessione |
-| `AgentEvent` | `{ type, payload }` | Evento agente (streaming) |
-| `Error` | `{ code, message }` | Errore |
+### Messaggi client → server (send)
+| type | payload | Descrizione |
+|------|---------|-------------|
+| `hello` | `{ token, clientName, clientVersion }` | Handshake iniziale |
+| `list_sessions` | `{}` | Elenco sessioni |
+| `new_session` | `{ workspace: string }` | Crea nuova sessione |
+| `open_session` | `{ sessionId: string }` | Apri sessione esistente |
+| `send_message` | `{ text: string }` | Invia messaggio (richiede sessionId) |
+| `cancel` | `{}` | Annulla turno corrente |
+| `approve` | `{ approvalId: string }` | Approva action pendente |
+| `reject` | `{ approvalId: string }` | Rifiuta action pendente |
 
-### Mappatura eventi AgentEvent
-
-| type SignalR | type Protocollo |
-|--------------|-----------------|
-| `turn_started` | `turn_started` |
-| `assistant_delta` | `assistant_delta` |
-| `assistant_done` | `assistant_done` |
-| `tool_call_started` | `tool_call_started` |
-| `tool_call_finished` | `tool_call_finished` |
-| `turn_finished` | `turn_finished` |
+### Messaggi server → client (onmessage)
+| type | payload | Descrizione |
+|------|---------|-------------|
+| `hello_ok` | `{ serverVersion, protocol }` | Risposta handshake |
+| `error` | `{ code, message }` | Errore |
+| `sessions_list` | `{ sessions: SessionInfo[] }` | Elenco sessioni |
+| `session_state` | `{ session, messages, model, permission }` | Stato sessione |
+| `models_list` | `{ models, active }` | Modelli disponibili |
+| `permission_state` | `{ mode, rules }` | Stato permessi |
+| `turn_started` | `{ turnId }` | Turno iniziato |
+| `assistant_delta` | `{ turnId, messageId, text }` | Frammento streaming |
+| `assistant_done` | `{ turnId, messageId, usage }` | Streaming completato |
+| `tool_call_started` | `{ turnId, callId, name, args }` | Tool iniziato |
+| `tool_call_finished` | `{ turnId, callId, ok, summary, durationMs }` | Tool completato |
+| `approval_request` | `{ turnId, approvalId, kind, ... }` | Richiesta approvazione |
+| `approval_resolved` | `{ approvalId, outcome }` | Approvazione risolta |
+| `turn_finished` | `{ turnId, reason }` | Turno terminato |
 
 ## Configurazione
 
@@ -96,20 +102,21 @@ Output: `dist/web/`
 npm run test       # ng test --no-watch
 ```
 
-18 test totali: 14 sul reducer di stato, 2 sul wrapper SignalR, 2 sul componente root.
+18 test totali: 14 sul reducer di stato, 2 sul wrapper WebSocket, 2 sul componente root.
 
 ## Dipendenze
 
 | Pacchetto | Versione | Scopo |
 |-----------|----------|-------|
 | `@angular/*` | 22.2.x | Framework UI |
-| `@microsoft/signalr` | latest | Comunicazione real-time |
 | `@pm-ui/protocol` | file:../protocol | Tipi e utility protocollo |
 | `rxjs` | 7.8.1 | Reattivo |
 
-## Aggiornamento da WebSocket a SignalR
+## Note sulla migrazione da SignalR a WebSocket
 
-La migrazione da WebSocket a SignalR è trasparente per i componenti UI:
-- `ProtocolService` è un wrapper che delega a `SignalRProtocolService`
+La migrazione da SignalR a WebSocket standard è trasparente per i componenti UI:
+- `WebSocketProtocolService` gestisce la connessione WebSocket e usa `@pm-ui/protocol` per validazione
+- `ProtocolService` è un wrapper che delega a `WebSocketProtocolService`
 - L'API pubblica di `ProtocolService` è identica alla versione precedente
 - I componenti esistenti (`app.component.html`, `settings.ts`) non richiedono modifiche
+- Il backend deve esporre l'endpoint WebSocket su `/ws` con il protocollo v1

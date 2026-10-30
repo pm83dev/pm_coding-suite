@@ -6,11 +6,9 @@ C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\agent-ba
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\agent-backend.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\agent-backend.pdb
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\Microsoft.OpenApi.dll
-C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\Newtonsoft.Json.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\Swashbuckle.AspNetCore.Swagger.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\Swashbuckle.AspNetCore.SwaggerGen.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\Swashbuckle.AspNetCore.SwaggerUI.dll
-C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\System.Net.WebSockets.WebSocketProtocol.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\pm-code-core.dll
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\pm-code-core.pdb
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\agent-backend.csproj.AssemblyReference.cache
@@ -37,3 +35,8 @@ C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\refint\a
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\agent-backend.pdb
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\agent-backend.genruntimeconfig.cache
 C:\DevAgentPM\pm_coding-suite\packages\agent-backend\obj\Release\net8.0\ref\agent-backend.dll
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\web.config
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\agent-backend.deps.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\agent-backend.runtimeconfig.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\agent-backend.staticwebassets.endpoints.json
+C:\DevAgentPM\pm_coding-suite\packages\agent-backend\bin\Release\net8.0\publish\appsettings.json

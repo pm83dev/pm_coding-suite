@@ -1,7 +1,7 @@
-using LocalCodeAgent.Models;
-using AgentBackend.Services;
-using AgentBackend.Hubs;
 using AgentBackend.Controllers;
+using AgentBackend.Hubs;
+using AgentBackend.Services;
+using LocalCodeAgent.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,9 +15,7 @@ builder.Configuration.GetSection("ServeSettings").Bind(config.ServeSettings);
 // Services
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton<AgentSessionService>();
-
-// SignalR
-builder.Services.AddSignalR();
+builder.Services.AddSingleton<WebSocketHub>();
 
 // Controllers
 builder.Services.AddControllers();
@@ -26,7 +24,22 @@ builder.Services.AddControllers();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
-        policy.WithOrigins("http://localhost:4200")
+        policy.WithOrigins(
+            "http://localhost:4200",
+            "http://localhost:3005",
+            "http://localhost:8080",
+            "http://localhost",
+            "http://100.121.40.27:8080",
+            "http://100.121.40.27:3005",
+            "http://100.121.40.27:8765",
+            "http://192.168.1.178:8080",
+            "https://100.121.40.27:8080",
+            "https://100.121.40.27:3005",
+            "https://100.121.40.27:8765",
+            "https://192.168.1.178:8080",
+            "http://127.0.0.1:8765",
+            "http://localhost:8765"
+        )
               .AllowAnyHeader()
               .AllowAnyMethod());
 });
@@ -35,6 +48,8 @@ var app = builder.Build();
 
 // Middleware pipeline
 app.UseCors("AllowFrontend");
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 if (!string.IsNullOrEmpty(config.ServeSettings.Token))
 {
@@ -55,8 +70,17 @@ if (!string.IsNullOrEmpty(config.ServeSettings.Token))
 }
 
 app.UseRouting();
+
 app.MapControllers();
-app.MapHub<AgentHub>("/agent-hub");
+app.UseWebSockets();
+app.MapWhen(
+    ctx => ctx.Request.Path == "/ws",
+    appBuilder => appBuilder.Run(async ctx =>
+    {
+        var hub = ctx.RequestServices.GetRequiredService<WebSocketHub>();
+        await hub.ProcessWebSocketAsync(ctx, () => Task.CompletedTask);
+    })
+);
 
 // Start the server
 var port = config.ServeSettings.Port;
@@ -68,6 +92,7 @@ Console.WriteLine($"Port: {port}");
 Console.WriteLine($"Bind: {bindAddress}");
 Console.WriteLine($"Auth: {(string.IsNullOrEmpty(config.ServeSettings.Token) ? "disabled" : "enabled")}");
 Console.WriteLine($"LLM: {config.LlmSettings.BaseUrl} / {config.LlmSettings.Model}");
+Console.WriteLine("WebSocket: /ws");
 Console.WriteLine("==============================");
 
 await app.RunAsync();
