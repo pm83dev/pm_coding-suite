@@ -51,6 +51,9 @@ public class AgentEventDto
     [JsonPropertyName("code")]
     public string? Code { get; set; }
 
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+
     // --- approval_request ---
     [JsonPropertyName("approvalId")]
     public string? ApprovalId { get; set; }

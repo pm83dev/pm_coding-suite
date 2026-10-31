@@ -78,6 +78,10 @@ body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; 
 .input-bar input:focus { outline: none; border-color: #0d6efd; box-shadow: 0 0 0 3px rgba(13,110,253,0.15); }
 .input-bar input:disabled { background-color: #25282e; color: #6b7280; }
 .input-bar input::placeholder { color: #6b7280; }
+.input-bar textarea { flex: 1; padding: 0.65rem 1rem; border: 1px solid var(--pm-chat-border); border-radius: 8px; font-size: 0.9rem; background-color: var(--pm-chat-assistant-bg); color: var(--pm-chat-text); resize: vertical; min-height: 60px; max-height: 200px; line-height: 1.4; }
+.input-bar textarea:focus { outline: none; border-color: #0d6efd; box-shadow: 0 0 0 3px rgba(13,110,253,0.15); }
+.input-bar textarea:disabled { background-color: #25282e; color: #6b7280; }
+.input-bar textarea::placeholder { color: #6b7280; }
 /* Accordion per le approvazioni */
 .approval-accordion { background: #2d323c; border: 1px solid #f59e0b; border-radius: 8px; margin: 0.5rem 0; max-width: 900px; margin-left: 3.5rem; margin-right: 0; color: var(--pm-chat-text); }
 .approval-accordion.resolved { border-color: #6b7280; opacity: 0.85; }

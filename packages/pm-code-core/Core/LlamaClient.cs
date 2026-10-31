@@ -207,6 +207,16 @@ public class LlamaClient
             {
                 contentSb.Append(delta.Content);
                 onToken(delta.Content);
+                // Heartbeat anche durante la generazione di testo: l'utente vede
+                // "Generazione in corso… (N caratteri)" ogni 3s anche quando il
+                // LLM sta producendo testo (non solo tool call). Senza questo,
+                // durante il time-to-first-token o una generazione lunga di testo
+                // l'utente non vedrebbe nessun feedback.
+                if (onHeartbeat != null && DateTime.UtcNow - lastHeartbeat >= HeartbeatInterval)
+                {
+                    lastHeartbeat = DateTime.UtcNow;
+                    onHeartbeat($"Generazione in corso… ({contentSb.Length} caratteri)");
+                }
             }
 
             // Accumulate tool call deltas

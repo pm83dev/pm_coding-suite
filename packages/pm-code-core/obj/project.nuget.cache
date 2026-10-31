@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "e4CqicKDS+Q=",
+  "dgSpecHash": "6fA4eS10kek=",
   "success": true,
   "projectFilePath": "C:\\DevAgentPM\\pm_coding-suite\\packages\\pm-code-core\\pm-code-core.csproj",
   "expectedPackageFiles": [
@@ -15,11 +15,8 @@
     "C:\\Users\\paolo\\.nuget\\packages\\system.text.encodings.web\\8.0.0\\system.text.encodings.web.8.0.0.nupkg.sha512",
     "C:\\Users\\paolo\\.nuget\\packages\\system.text.json\\8.0.0\\system.text.json.8.0.0.nupkg.sha512",
     "C:\\Users\\paolo\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.31\\microsoft.netcore.app.ref.8.0.31.nupkg.sha512",
-    "C:\\Users\\paolo\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\8.0.31\\microsoft.netcore.app.runtime.win-x64.8.0.31.nupkg.sha512",
     "C:\\Users\\paolo\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.31\\microsoft.windowsdesktop.app.ref.8.0.31.nupkg.sha512",
-    "C:\\Users\\paolo\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\8.0.31\\microsoft.windowsdesktop.app.runtime.win-x64.8.0.31.nupkg.sha512",
-    "C:\\Users\\paolo\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.31\\microsoft.aspnetcore.app.ref.8.0.31.nupkg.sha512",
-    "C:\\Users\\paolo\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\8.0.31\\microsoft.aspnetcore.app.runtime.win-x64.8.0.31.nupkg.sha512"
+    "C:\\Users\\paolo\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.31\\microsoft.aspnetcore.app.ref.8.0.31.nupkg.sha512"
   ],
   "logs": []
 }

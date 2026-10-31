@@ -104,7 +104,7 @@ public class WebSocketSink : IAgentSink
     {
         // L'UI valida error.payload = { code, message }. Usiamo "bad_request" come code
         // generico (stesso pattern di ServeSink).
-        _emit(new AgentEventDto { Type = "error", Code = "bad_request", Text = message });
+        _emit(new AgentEventDto { Type = "error", Code = "bad_request", Message = message });
     }
 
     // Nessun tipo "notice" nel protocollo v1 (vedi ui/protocol/src/types.ts):

@@ -256,9 +256,11 @@
 
     <!-- Input bar -->
     <form class="input-bar" (ngSubmit)="send()">
-      <input type="text" name="draft" [ngModel]="draft()" (ngModelChange)="draft.set($event)"
-             placeholder="Scrivi un messaggio... (Ctrl+Invio per inviare)"
-             aria-label="Messaggio" [disabled]="!protocol.currentSessionId()" />
+      <textarea name="draft" [ngModel]="draft()" (ngModelChange)="draft.set($event)"
+                (keydown)="onDraftKeydown($event)"
+                placeholder="Scrivi un messaggio... (Invio per inviare, Ctrl+Invio per andare a capo)"
+                aria-label="Messaggio" [disabled]="!protocol.currentSessionId()"
+                rows="3"></textarea>
       <button type="submit" class="btn btn-primary" [disabled]="!protocol.currentSessionId() || !draft().trim()">
         <i class="bi bi-send"></i> Invia
       </button>

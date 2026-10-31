@@ -134,6 +134,9 @@ public class AgentLoopSession
         }
         catch (Exception ex)
         {
+            // Logga lo stack trace completo per diagnosticare errori come NullReferenceException
+            // (il solo ex.Message è troppo vago: "Object reference not set to an instance of an object").
+            System.Console.Error.WriteLine($"[AgentLoopSession] Turno {turnId} fallito con eccezione:\n{ex}");
             sink.Error(ex.Message);
             sink.TurnFinished(turnId, "error");
             return (false, turnId);
@@ -149,6 +152,8 @@ public class AgentLoopSession
     private async Task<string?> CheckPermissionAsync(string toolName, string argsJson, string turnId)
     {
         var mode = _session.PermissionMode;
+        // DEBUG: logga la modalità e il tool per capire se l'approvazione viene richiesta in "auto"
+        System.Console.Error.WriteLine($"[PERMISSION] mode={mode}, tool={toolName}, turnId={turnId}");
         if (mode == "auto") return null; // nessun controllo
 
         // Strumenti di sola lettura: sempre consentiti

@@ -79,6 +79,13 @@ namespace LocalCodeAgent.Core
             @"|\b(build|compile|tsc)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        // Ogni quanti secondi (min) inviare un ping di stato MENTRE un tool è in esecuzione.
+        // Senza questo, durante tool lenti (run_command con timeout fino a 60s, sol_analyze
+        // che lancia dotnet build, ...) la chat resta bloccata sull'ultimo heartbeat LLM
+        // ("Elaborazione in corso…") finché non arriva tool_call_finished — indistinguibile
+        // da un blocco. Stesso pattern di LlamaClient.HeartbeatInterval.
+        private static readonly TimeSpan ToolHeartbeatInterval = TimeSpan.FromSeconds(2);
+
         public AgentLoop(
             LlamaClient llm,
             ToolDispatcher dispatcher,
@@ -571,6 +578,32 @@ namespace LocalCodeAgent.Core
                 return ExecuteToolGuardedTraced(name, argsJson);
             }
 
+            // Esegue un'operazione (tipicamente un tool) in background e, ogni
+            // ToolHeartbeatInterval, invia un evento "status" con il tempo trascorso così
+            // l'UI non resta bloccata su "Elaborazione in corso…" durante tool lenti
+            // (run_command, sol_analyze/dotnet build, ...). Restituisce il risultato dell'operazione.
+            // Il task di esecuzione parte subito; il loop di heartbeat non lo rallenta.
+            async Task<(string Result, double DurationMs)> ExecuteWithHeartbeatAsync(
+                string name, string argsJson, CancellationToken ct,
+                Func<Task<(string, double)>> execute)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var task = execute();
+                while (!task.IsCompleted)
+                {
+                    if (ct.IsCancellationRequested) break;
+                    try
+                    {
+                        await Task.WhenAny(task, Task.Delay(ToolHeartbeatInterval, ct));
+                    }
+                    catch (OperationCanceledException) { break; }
+                    if (task.IsCompleted) break;
+                    _onStatus($"Esecuzione '{name}' in corso… ({(int)sw.Elapsed.TotalSeconds}s)");
+                }
+                var (result, durationMs) = await task;
+                return (result, durationMs);
+            }
+
             // Recupera tool call "persi" nel testo della risposta (es. JSON inline che il modello
             // ha scritto come testo invece che come tool_call strutturato).
             List<(string, string)> TryRescueTextToolCalls(string text)
@@ -707,8 +740,9 @@ namespace LocalCodeAgent.Core
                         if (!_options.IsMachineMode) Console.WriteLine();
                         _ui("__STEP__" + step);
 
-                        // Ping immediato appena si inizia a generare.
-                        _onStatus("Elaborazione in corso…");
+                        // Ping immediato appena si inizia a generare: include il numero di step
+                        // così l'utente vede in quale fase del turno si è (es. "Step 3: in attesa…").
+                        _onStatus($"Step {step}: in attesa della risposta del LLM…");
 
                         (message, usage, finishReason) = await _llm.StreamChatAsync(request, token =>
                         {
@@ -948,13 +982,28 @@ namespace LocalCodeAgent.Core
 
                     {
 
+                        // Guard difensivo: un modello può emettere una tool call con
+                        // Function null o nome vuoto (JSON maleformato). Senza questo
+                        // check, tc.Function.Name lancia un NullReferenceException che
+                        // sfugge al try del loop LLM e fa crashare il turno.
+                        if (tc.Function == null || string.IsNullOrEmpty(tc.Function.Name))
+                        {
+                            var skipResult = "ERRORE: tool call maleformata (Function null o nome vuoto) — ignorata.";
+                            _sink.ToolCallStarted(turnId, tc.Function?.Name ?? "(null)", tc.Function?.Arguments ?? "");
+                            _sink.ToolCallFinished(turnId, tc.Function?.Name ?? "(null)", false, skipResult, 0);
+                            history.Add(ChatMessage.ToolResult(tc.Id, skipResult));
+                            continue;
+                        }
+
                         if (_options.IsMachineMode) _trace($"  -> {tc.Function.Name}({OneLine(tc.Function.Arguments, 300)})");
 
                         _sink.ToolCallStarted(turnId, tc.Function.Name, tc.Function.Arguments);
 
 
 
-                        var (result, toolDurationMs) = await ExecuteToolWithPermissionAsync(tc.Function.Name, tc.Function.Arguments, ct);
+                        var (result, toolDurationMs) = await ExecuteWithHeartbeatAsync(
+                            tc.Function.Name, tc.Function.Arguments, ct,
+                            () => ExecuteToolWithPermissionAsync(tc.Function.Name, tc.Function.Arguments, ct));
 
                         TrackBuildState(tc.Function.Name, tc.Function.Arguments, result);
 
@@ -1094,7 +1143,9 @@ namespace LocalCodeAgent.Core
 
 
 
-                            var (result, rescuedDurationMs) = await ExecuteToolWithPermissionAsync(name, argsJson, ct);
+                            var (result, rescuedDurationMs) = await ExecuteWithHeartbeatAsync(
+                                name, argsJson, ct,
+                                () => ExecuteToolWithPermissionAsync(name, argsJson, ct));
 
                             TrackBuildState(name, argsJson, result);
 
@@ -1217,17 +1268,20 @@ namespace LocalCodeAgent.Core
 
 
 
-                        var autoBuildSw = System.Diagnostics.Stopwatch.StartNew();
+                        var (buildResult, autoBuildMs) = await ExecuteWithHeartbeatAsync(
+                            "sol_analyze", autoArgs, ct,
+                            async () =>
+                            {
+                                var sw = System.Diagnostics.Stopwatch.StartNew();
+                                var r = _dispatcher.Execute("sol_analyze", autoArgs, ct);
+                                sw.Stop();
+                                await Task.CompletedTask;
+                                return (r, sw.ElapsedMilliseconds);
+                            });
 
-                        var buildResult = _dispatcher.Execute("sol_analyze", autoArgs, ct);
-
-                        autoBuildSw.Stop();
-
-                        var autoBuildIsError = buildResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase);
-
-                        StructuredTrace.ToolCall("sol_analyze", autoArgs, !autoBuildIsError, autoBuildIsError ? "tool_error" : null,
-
-                            autoBuildSw.ElapsedMilliseconds, System.Text.Encoding.UTF8.GetByteCount(buildResult));
+                        StructuredTrace.ToolCall("sol_analyze", autoArgs, !buildResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase),
+                            buildResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase) ? "tool_error" : null,
+                            (long)autoBuildMs, System.Text.Encoding.UTF8.GetByteCount(buildResult));
 
                         TrackBuildState("sol_analyze", autoArgs, buildResult);
 
@@ -1235,7 +1289,7 @@ namespace LocalCodeAgent.Core
 
                         if (_options.IsMachineMode) _trace($"  <- sol_analyze: {OneLine(buildResult, 300)}");
 
-                        _sink.ToolCallFinished(turnId, "sol_analyze", !autoBuildIsError, buildResult, autoBuildSw.ElapsedMilliseconds);
+                        _sink.ToolCallFinished(turnId, "sol_analyze", !buildResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase), buildResult, autoBuildMs);
 
 
 

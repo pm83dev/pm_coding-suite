@@ -75,23 +75,11 @@
               "version": "[8.0.31, 8.0.31]"
             },
             {
-              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
-              "version": "[8.0.31, 8.0.31]"
-            },
-            {
               "name": "Microsoft.NETCore.App.Ref",
               "version": "[8.0.31, 8.0.31]"
             },
             {
-              "name": "Microsoft.NETCore.App.Runtime.win-x64",
-              "version": "[8.0.31, 8.0.31]"
-            },
-            {
               "name": "Microsoft.WindowsDesktop.App.Ref",
-              "version": "[8.0.31, 8.0.31]"
-            },
-            {
-              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
               "version": "[8.0.31, 8.0.31]"
             }
           ],
