@@ -47,6 +47,12 @@ export interface NewSessionPayload {
 export interface OpenSessionPayload {
     sessionId: string;
 }
+export interface DeleteSessionPayload {
+    sessionId: string;
+}
+export interface DeleteSessionAckPayload {
+    sessionId: string;
+}
 export interface SendMessagePayload {
     text: string;
 }
@@ -137,7 +143,7 @@ export interface ApprovalResolvedPayload {
     approvalId: string;
     outcome: ApprovalOutcome;
 }
-export type TurnFinishReason = "completed" | "cancelled" | "error";
+export type TurnFinishReason = "completed" | "cancelled" | "error" | "max_steps" | "timeout" | "aborted";
 export interface TurnFinishedPayload {
     turnId: string;
     reason: TurnFinishReason;
@@ -150,6 +156,8 @@ export type ClientMessage = Envelope<HelloPayload> & {
     type: "new_session";
 } | Envelope<OpenSessionPayload> & {
     type: "open_session";
+} | Envelope<DeleteSessionPayload> & {
+    type: "delete_session";
 } | Envelope<SendMessagePayload> & {
     type: "send_message";
 } | Envelope<CancelPayload> & {
@@ -171,6 +179,8 @@ export type ServerMessage = Envelope<HelloOkPayload> & {
     type: "sessions_list";
 } | Envelope<SessionStatePayload> & {
     type: "session_state";
+} | Envelope<DeleteSessionAckPayload> & {
+    type: "session_deleted";
 } | Envelope<ModelsListPayload> & {
     type: "models_list";
 } | Envelope<PermissionStatePayload> & {
@@ -192,5 +202,5 @@ export type ServerMessage = Envelope<HelloOkPayload> & {
 } | Envelope<TurnFinishedPayload> & {
     type: "turn_finished";
 };
-export declare const CLIENT_MESSAGE_TYPES: readonly ["hello", "list_sessions", "new_session", "open_session", "send_message", "cancel", "approve", "reject", "set_model", "set_permission"];
-export declare const SERVER_MESSAGE_TYPES: readonly ["hello_ok", "error", "sessions_list", "session_state", "models_list", "permission_state", "turn_started", "assistant_delta", "assistant_done", "tool_call_started", "tool_call_finished", "approval_request", "approval_resolved", "turn_finished"];
+export declare const CLIENT_MESSAGE_TYPES: readonly ["hello", "list_sessions", "new_session", "open_session", "delete_session", "send_message", "cancel", "approve", "reject", "set_model", "set_permission"];
+export declare const SERVER_MESSAGE_TYPES: readonly ["hello_ok", "error", "sessions_list", "session_state", "session_deleted", "models_list", "permission_state", "turn_started", "assistant_delta", "assistant_done", "tool_call_started", "tool_call_finished", "approval_request", "approval_resolved", "turn_finished"];

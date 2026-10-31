@@ -27,3 +27,4 @@
 
 - `docs/architettura-ui.md` non esiste nel workspace: seguo la specifica della richiesta.
 - Nessuna libreria di validazione installata: uso type guard scritte a mano (come previsto dalla specifica).
+- [2026-10-30] Fix `ui/web/src/test-setup.ts`: `_process.off` non esiste in alcuni ambienti di test (jsdom/happy-dom non espongono `off` su EventEmitter, disponibile solo in Node >= 10). Sostituito con `removeListener`, disponibile in tutti i runtime. Test 20/20 ok, build ok.

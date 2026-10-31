@@ -73,8 +73,17 @@ XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, data?: any) {
   return origSend.apply(this, [data] as any);
 } as any;
 
-/** @type {import('node').EventEmitter} */
-const _process = globalThis as unknown as { on: (e: string, h: any) => void; off: (e: string, h: any) => void };
+/**
+ * Interception dei rejection `UND_ERR_INVALID_ARG` (undici sotto jsdom).
+ *
+ * Nota: `off` è una API Node >= 10; in alcuni ambienti di test
+ * (jsdom/happy-dom) EventEmitter non la espone, quindi si usa `removeListener`
+ * (disponibile in tutti i runtime supportati).
+ */
+const _emitter = globalThis as unknown as {
+  on: (e: string, h: any) => void;
+  removeListener: (e: string, h: any) => void;
+};
 
 const handler: (e: PromiseRejectionEvent) => void = (e: PromiseRejectionEvent): void => {
   if (
@@ -87,5 +96,5 @@ const handler: (e: PromiseRejectionEvent) => void = (e: PromiseRejectionEvent): 
   }
 };
 
-beforeAll(() => _process.on("unhandledRejection", handler));
-afterAll(() => _process.off("unhandledRejection", handler));
+beforeAll(() => _emitter.on("unhandledRejection", handler));
+afterAll(() => _emitter.removeListener("unhandledRejection", handler));

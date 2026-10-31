@@ -23,13 +23,13 @@ public class AgentEventDto
     [JsonPropertyName("callId")]
     public string? CallId { get; set; }
 
-    [JsonPropertyName("toolName")]
+    [JsonPropertyName("name")]
     public string? ToolName { get; set; }
 
     [JsonPropertyName("args")]
     public object? Args { get; set; }
 
-    [JsonPropertyName("success")]
+    [JsonPropertyName("ok")]
     public bool? Success { get; set; }
 
     [JsonPropertyName("summary")]
@@ -44,8 +44,34 @@ public class AgentEventDto
     [JsonPropertyName("usage")]
     public UsageInfoDto? Usage { get; set; }
 
-    [JsonPropertyName("timestamp")]
-    public string Timestamp { get; set; } = "";
+    // --- approval_request ---
+    [JsonPropertyName("approvalId")]
+    public string? ApprovalId { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string? Kind { get; set; }
+
+    [JsonPropertyName("title")]
+    public string? Title { get; set; }
+
+    [JsonPropertyName("path")]
+    public string? Path { get; set; }
+
+    [JsonPropertyName("unifiedDiff")]
+    public string? UnifiedDiff { get; set; }
+
+    [JsonPropertyName("command")]
+    public string? Command { get; set; }
+
+    [JsonPropertyName("expiresAt")]
+    public string? ExpiresAt { get; set; }
+
+    // --- permission_state ---
+    [JsonPropertyName("mode")]
+    public string? Mode { get; set; }
+
+    [JsonPropertyName("rules")]
+    public object? Rules { get; set; }
 }
 
 public class UsageInfoDto

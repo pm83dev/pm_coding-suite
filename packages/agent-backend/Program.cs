@@ -65,6 +65,13 @@ if (!string.IsNullOrEmpty(config.ServeSettings.Token))
             return;
         }
 
+        // /api/workspaces: elenco directory per la combobox, non sensibile.
+        if (path.StartsWith("/api/workspaces", StringComparison.OrdinalIgnoreCase))
+        {
+            await next(context);
+            return;
+        }
+
         var authHeader = context.Request.Headers["Authorization"].ToString();
         var token = authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
             ? authHeader.Substring(7)
@@ -165,10 +172,121 @@ app.MapGet("/api/workspaces", (string? query) =>
         if (!string.IsNullOrEmpty(home))
         {
             Add(home);
-            foreach (var sub in new[] { "Desktop", "Documents", "Projects", "Source", "src", "code", "workspace" })
+            // Sottocartelle tipiche dello sviluppo
+            foreach (var sub in new[] { "Desktop", "Documents", "Projects", "Source", "src", "code", "workspace", "dev", "Dev", "DEV", "git", "repos", "work" })
             {
-                try { Add(Path.Combine(home, sub)); } catch { }
+                try
+                {
+                    var p = Path.Combine(home, sub);
+                    if (Directory.Exists(p))
+                    {
+                        Add(p);
+                        // Un livello più in profondità
+                        foreach (var sub2 in Directory.EnumerateDirectories(p, "*", SearchOption.TopDirectoryOnly))
+                        {
+                            if (!ignoreDirs.Contains(Path.GetFileName(sub2), StringComparer.OrdinalIgnoreCase))
+                                Add(sub2);
+                        }
+                    }
+                }
+                catch { }
             }
+        }
+    }
+    catch { }
+
+    // 4) Cartelle di sviluppo note a livello di drive (C:\, D:\, ecc.)
+    try
+    {
+        var devRoots = new[] { "Dev", "dev", "DEV", "Development", "Projects", "Src", "src", "Code", "code", "Work", "work", "Git", "git", "Repos", "repos", "software", "Software" };
+        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
+        {
+            foreach (var rootName in devRoots)
+            {
+                try
+                {
+                    var rootPath = Path.Combine(drive.RootDirectory.FullName, rootName);
+                    if (Directory.Exists(rootPath))
+                    {
+                        Add(rootPath);
+                        foreach (var sub in Directory.EnumerateDirectories(rootPath, "*", SearchOption.TopDirectoryOnly))
+                        {
+                            if (!ignoreDirs.Contains(Path.GetFileName(sub), StringComparer.OrdinalIgnoreCase))
+                                Add(sub);
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+    }
+    catch { }
+
+    // 5) Cartelle dell'utente corrente a livello di utente (C:\Users\<name>\Dev, ecc.)
+    try
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(home))
+        {
+            foreach (var rootName in new[] { "DevAgentPM", "dev", "Dev", "DEV", "projects", "Projects", "src", "Src", "code", "Code", "work", "Work", "git", "Git" })
+            {
+                try
+                {
+                    var p = Path.Combine(home, rootName);
+                    if (Directory.Exists(p))
+                    {
+                        Add(p);
+                        foreach (var sub in Directory.EnumerateDirectories(p, "*", SearchOption.TopDirectoryOnly))
+                        {
+                            if (!ignoreDirs.Contains(Path.GetFileName(sub), StringComparer.OrdinalIgnoreCase))
+                                Add(sub);
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+    }
+    catch { }
+
+    // 6) Scansione radice drive: cartelle con .git o file di progetto (csproj, package.json, etc.)
+    try
+    {
+        var projectMarkers = new[] { ".git", ".csproj", "package.json", ".sln", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt" };
+        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
+        {
+            try
+            {
+                foreach (var dir in drive.RootDirectory.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
+                {
+                    if (ignoreDirs.Contains(dir.Name, StringComparer.OrdinalIgnoreCase)) continue;
+                    try
+                    {
+                        var hasProject = projectMarkers.Any(m =>
+                            File.Exists(Path.Combine(dir.FullName, m)) ||
+                            Directory.Exists(Path.Combine(dir.FullName, m)));
+                        if (hasProject)
+                        {
+                            Add(dir.FullName);
+                            foreach (var sub in dir.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
+                            {
+                                if (ignoreDirs.Contains(sub.Name, StringComparer.OrdinalIgnoreCase)) continue;
+                                try
+                                {
+                                    var subHasProject = projectMarkers.Any(m =>
+                                        File.Exists(Path.Combine(sub.FullName, m)) ||
+                                        Directory.Exists(Path.Combine(sub.FullName, m)));
+                                    if (subHasProject)
+                                        Add(sub.FullName);
+                                }
+                                catch { }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
     }
     catch { }

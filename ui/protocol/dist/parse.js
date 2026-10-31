@@ -98,7 +98,7 @@ const APPROVAL_OUTCOMES = [
     "expired",
     "cancelled",
 ];
-const TURN_FINISH_REASONS = ["completed", "cancelled", "error"];
+const TURN_FINISH_REASONS = ["completed", "cancelled", "error", "max_steps", "timeout", "aborted"];
 function validateSessionInfo(p, where) {
     if (!isRecord(p))
         return { ok: false, error: `${where} deve essere un oggetto` };
@@ -197,6 +197,14 @@ const clientPayloadValidators = {
             };
         return null;
     },
+    delete_session: (p) => {
+        if (!strNonEmpty(p["sessionId"]))
+            return {
+                ok: false,
+                error: "delete_session.payload.sessionId mancante o non stringa non vuota",
+            };
+        return null;
+    },
     send_message: (p) => {
         if (!str(p["text"]))
             return {
@@ -290,6 +298,14 @@ const serverPayloadValidators = {
             return {
                 ok: false,
                 error: `session_state.payload.permission deve essere uno di ${PERMISSION_MODES.join("|")}`,
+            };
+        return null;
+    },
+    session_deleted: (p) => {
+        if (!strNonEmpty(p["sessionId"]))
+            return {
+                ok: false,
+                error: "session_deleted.payload.sessionId mancante o non stringa non vuota",
             };
         return null;
     },
@@ -503,6 +519,7 @@ export function parseServerMessage(raw) {
         "error",
         "sessions_list",
         "session_state",
+        "session_deleted",
         "models_list",
         "permission_state",
         "turn_started",
@@ -525,6 +542,7 @@ export function parseClientMessage(raw) {
         "list_sessions",
         "new_session",
         "open_session",
+        "delete_session",
         "send_message",
         "cancel",
         "approve",

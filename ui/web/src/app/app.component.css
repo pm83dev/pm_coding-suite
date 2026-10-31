@@ -13,12 +13,77 @@
   50% { opacity: 0; }
 }
 
-.tool-calls-section {
-  margin-top: 1rem;
-  padding: 0.75rem;
-  background: #f8f9fa;
-  border-radius: 8px;
-  max-width: 900px;
-  margin-left: auto;
-  margin-right: auto;
+/* Markdown content styling — ottimizzato per la chat (testi compatti) */
+.message-text {
+  line-height: 1.5;
+  font-size: 0.9rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
+
+.message-text p {
+  margin: 0 0 0.5rem 0;
+}
+
+.message-text p:last-child {
+  margin-bottom: 0;
+}
+
+/* Titoli ridimensionati: non devono risultare "enormi" in chat */
+.message-text .md-h {
+  margin: 0.75rem 0 0.4rem 0;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.message-text code {
+  background: #1a1d23;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.85em;
+  color: #e0e0e0;
+}
+
+.message-text pre {
+  background: #1a1d23;
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  font-size: 0.8rem;
+  border: 1px solid #3d424a;
+}
+
+.message-text pre code {
+  background: none;
+  padding: 0;
+}
+
+.message-text ul,
+.message-text ol {
+  margin: 0.25rem 0 0.5rem 0;
+  padding-left: 1.25rem;
+}
+
+.message-text li {
+  margin-bottom: 0.15rem;
+}
+
+.message-text hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 0.75rem 0;
+}
+
+.message-text a {
+  color: #0d6efd;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.message-text a:hover {
+  text-decoration: underline;
+}
+
+/* Non più usato: le tool calls sono ora inline con i messaggi */

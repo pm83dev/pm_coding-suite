@@ -18,6 +18,7 @@ public class WebSocketHub
     private readonly AgentConfig _config;
     private readonly string? _braveApiKey;
     private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+    private string? _activeTurnId;
     private readonly JsonSerializerOptions _jsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -72,13 +73,48 @@ public class WebSocketHub
             if (result.MessageType == WebSocketMessageType.Text && result.EndOfMessage)
             {
                 var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+
+                // Determina il type del messaggio per decidere se fare await o no.
+                // I messaggi "lunghi" (send_message) avviano il loop ReAct che può
+                // durare a lungo e bloccarsi in AwaitApprovalAsync. Se facciamo
+                // await su HandleMessage, il ReceiveLoop si blocca e non può leggere
+                // altri messaggi (approve/reject/cancel) finché il turno non termina.
+                // Quindi per send_message NON facciamo await: lo eseguiamo in
+                // background così il ReceiveLoop resta libero di leggere approve/cancel.
+                var isLongRunning = false;
                 try
                 {
-                    await HandleMessage(clientId, text);
+                    using var doc = JsonDocument.Parse(text);
+                    isLongRunning = doc.RootElement.TryGetProperty("type", out var t) && t.GetString() == "send_message";
                 }
-                catch (Exception ex)
+                catch { }
+
+                if (isLongRunning)
                 {
-                    await SendAll("error", new { code = "bad_request", message = ex.Message });
+                    // Esegui in background (fire-and-forget con gestione errori).
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await HandleMessage(clientId, text);
+                        }
+                        catch (Exception ex)
+                        {
+                            await SendAll("error", new { code = "error", message = ex.Message });
+                        }
+                    });
+                }
+                else
+                {
+                    // Messaggi brevi: facciamo await (sono rapidi e non bloccano).
+                    try
+                    {
+                        await HandleMessage(clientId, text);
+                    }
+                    catch (Exception ex)
+                    {
+                        await SendAll("error", new { code = "bad_request", message = ex.Message });
+                    }
                 }
             }
         }
@@ -97,6 +133,11 @@ public class WebSocketHub
         {
             payload = payloadProp;
         }
+
+        // Log di debug: traccia ogni messaggio ricevuto (utile per capire se
+        // approve/reject/cancel arrivano al backend). Include il contenuto grezzo
+        // per diagnosticare eventuali problemi di formato.
+        DebugLog($"received type={type} (client={clientId[..8]}) raw={text.Substring(0, Math.Min(200, text.Length))}");
 
         switch (type)
         {
@@ -134,7 +175,7 @@ public class WebSocketHub
                         },
                         messages = Array.Empty<object>(),
                         model = session.Model,
-                        permission = "readonly"
+                        permission = session.PermissionMode
                     });
                     break;
                 }
@@ -159,10 +200,24 @@ public class WebSocketHub
                             Status = session.Status,
                             Model = session.Model
                         },
-                        messages = Array.Empty<object>(),
+                        messages = MapHistory(session.History),
                         model = session.Model,
-                        permission = "readonly"
+                        permission = session.PermissionMode
                     });
+                    break;
+                }
+
+            case "delete_session":
+                {
+                    var delId = payload?.GetProperty("sessionId").GetString() ?? "";
+                    var delSession = _sessionService.GetSession(delId);
+                    if (delSession == null)
+                    {
+                        await SendAll("error", new { code = "unknown_session", message = "Session not found" });
+                        return;
+                    }
+                    _sessionService.DeleteSession(delId);
+                    await SendAll("session_deleted", new { sessionId = delId });
                     break;
                 }
 
@@ -190,18 +245,26 @@ public class WebSocketHub
                         return;
                     }
 
+                    // Avvia il tracking del turno: crea il CTS che il loop ReAct
+                    // controlla per fermarsi su "cancel".
+                    session.BeginTurn();
+
                     try
                     {
                         var executionService = new ToolExecutionService(session, EmitEvent, _config);
-                        await executionService.ExecuteTurnAsync(msgText);
+                        var (success, activeTurnId) = await executionService.ExecuteTurnAsync(msgText);
+                        _activeTurnId = activeTurnId;
                     }
                     catch (Exception ex)
                     {
                         await SendAll("error", new { code = "error", message = ex.Message });
-                        await SendAll("turn_finished", new { turnId = (string?)null, reason = "error" });
+                        await SendAll("turn_finished", new { turnId = _activeTurnId, reason = "error" });
                     }
                     finally
                     {
+                        // Pulisce il CTS del turno (idempotente: va bene chiamarlo
+                        // anche se il turno è già terminato normalmente).
+                        session.EndTurnCts();
                         _sessionService.EndTurn(msgSessionId, "completed");
                     }
                     break;
@@ -210,23 +273,76 @@ public class WebSocketHub
             case "cancel":
                 {
                     var cancelId = root.TryGetProperty("sessionId", out var ci) ? ci.GetString() ?? "" : "";
-                    _sessionService.EndTurn(cancelId, "cancelled");
-                    await SendAll("turn_finished", new { turnId = (string?)null, reason = "cancelled" });
+                    var cancelSession = string.IsNullOrEmpty(cancelId) ? null : _sessionService.GetSession(cancelId);
+                    var cancelled = cancelSession != null && cancelSession.CancelTurn();
+                    var cancelTurnId = _activeTurnId ?? Guid.NewGuid().ToString("N");
+                    if (cancelled)
+                    {
+                        // Il loop ReAct vedrà il token cancellato e emetterà
+                        // turn_finished da solo. Qui emettiamo anche un evento
+                        // immediato per feedback UI istantaneo (il loop lo
+                        // sovrascriverà con lo stesso reason).
+                        await SendAll("turn_finished", new { turnId = cancelTurnId, reason = "cancelled" });
+                        _sessionService.EndTurn(cancelId, "cancelled");
+                        _activeTurnId = null;
+                    }
+                    else
+                    {
+                        await SendAll("error", new { code = "bad_request", message = "Nessun turno in corso da annullare" });
+                    }
                     break;
                 }
 
             case "approve":
                 {
                     var approvalId = payload?.GetProperty("approvalId").GetString() ?? "";
-                    await SendAll("approval_resolved", new { approvalId, outcome = "approved" });
+                    var approveSid = root.TryGetProperty("sessionId", out var apSid) ? apSid.GetString() ?? "" : "";
+                    var approveSession = string.IsNullOrEmpty(approveSid) ? null : _sessionService.GetSession(approveSid);
+                    var hasPending = approveSession?.HasPendingApproval ?? false;
+                    DebugLog($"approve: approvalId={approvalId}, sessionId={approveSid}, sessionFound={approveSession != null}, hasPending={hasPending}");
+                    var approved = approveSession != null && approveSession.TryResolveApproval(true);
+                    DebugLog($"approve: resolved={approved}");
+                    if (approved)
+                        await SendAll("approval_resolved", new { approvalId, outcome = "approved" });
+                    else
+                        await SendAll("error", new { code = "bad_request", message = "Nessuna approvazione pendente da approvare" });
                     break;
                 }
 
             case "reject":
                 {
                     var approvalId = payload?.GetProperty("approvalId").GetString() ?? "";
-                    var reason = payload?.TryGetProperty("reason", out var rProp) == true ? rProp.GetString() : null;
-                    await SendAll("approval_resolved", new { approvalId, outcome = "rejected" });
+                    var rejectSid = root.TryGetProperty("sessionId", out var rjSid) ? rjSid.GetString() ?? "" : "";
+                    var rejectSession = string.IsNullOrEmpty(rejectSid) ? null : _sessionService.GetSession(rejectSid);
+                    var hasPending = rejectSession?.HasPendingApproval ?? false;
+                    DebugLog($"reject: approvalId={approvalId}, sessionId={rejectSid}, sessionFound={rejectSession != null}, hasPending={hasPending}");
+                    var rejected = rejectSession != null && rejectSession.TryResolveApproval(false);
+                    DebugLog($"reject: resolved={rejected}");
+                    if (rejected)
+                        await SendAll("approval_resolved", new { approvalId, outcome = "rejected" });
+                    else
+                        await SendAll("error", new { code = "bad_request", message = "Nessuna approvazione pendente da rifiutare" });
+                    break;
+                }
+
+            case "set_permission":
+                {
+                    var mode = payload?.GetProperty("mode").GetString() ?? "";
+                    if (mode is not ("readonly" or "ask" or "auto"))
+                    {
+                        await SendAll("error", new { code = "bad_request", message = "Modalità permessi non valida (attesi: readonly, ask, auto)" });
+                        return;
+                    }
+                    var permSid = root.TryGetProperty("sessionId", out var pSid) ? pSid.GetString() ?? "" : "";
+                    var permSession = string.IsNullOrEmpty(permSid) ? null : _sessionService.GetSession(permSid);
+                    if (permSession != null)
+                    {
+                        permSession.PermissionMode = mode;
+                        // Se il turno è in attesa di conferma, sbloccalo per applicare subito il nuovo modo.
+                        if (permSession.HasPendingApproval)
+                            permSession.TryResolveApproval(mode == "auto");
+                        await SendAll("permission_state", new { mode, rules = Array.Empty<object>() });
+                    }
                     break;
                 }
 
@@ -234,6 +350,24 @@ public class WebSocketHub
                 await SendAll("error", new { code = "bad_request", message = $"Unknown message type: {type}" });
                 break;
         }
+    }
+
+    /// <summary>
+    /// Log di debug su file (C:\pm-code\agent-backend\debug.log) — non viene
+    /// ottimizzato via dal compiler, a differenza di Console.WriteLine in release.
+    /// </summary>
+    private static readonly object _logLock = new();
+    private static void DebugLog(string message)
+    {
+        try
+        {
+            lock (_logLock)
+            {
+                var line = $"[{DateTime.UtcNow:HH:mm:ss.fff}] {message}";
+                File.AppendAllText(@"C:\pm-code\agent-backend\debug.log", line + Environment.NewLine);
+            }
+        }
+        catch { /* il log non deve mai rompere il flusso */ }
     }
 
     /// <summary>
@@ -279,5 +413,29 @@ public class WebSocketHub
             await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
         }
         catch { /* client disconnected */ }
+    }
+
+    /// <summary>
+    /// Mappa la storia LLM (solo ruoli user/assistant con testo) nel formato ChatMessage
+    /// atteso dal frontend: { id, role, text, ts }.
+    /// </summary>
+    private static List<object> MapHistory(List<ChatMessage> history)
+    {
+        var result = new List<object>();
+        var i = 0;
+        foreach (var m in history)
+        {
+            if (m.Role != "user" && m.Role != "assistant") continue;
+            var content = m.Content;
+            if (string.IsNullOrWhiteSpace(content)) continue;
+            result.Add(new
+            {
+                id = $"hist-{i++}",
+                role = m.Role,
+                text = content,
+                ts = DateTime.UtcNow.ToString("o")
+            });
+        }
+        return result;
     }
 }

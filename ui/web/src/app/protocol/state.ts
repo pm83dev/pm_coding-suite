@@ -23,6 +23,8 @@ export interface ToolCallState {
   ok?: boolean;
   summary?: string;
   durationMs?: number;
+  /** Id del messaggio assistant che ha generato questa tool call (per display inline). */
+  messageId?: string;
 }
 
 /** Approvazione pendente o risolta. */
@@ -36,6 +38,8 @@ export interface ApprovalState {
   command?: string;
   expiresAt: string; // ISO8601
   outcome?: ApprovalOutcome;
+  /** Id del messaggio assistant che ha generato questa approvazione (per display inline). */
+  messageId?: string;
 }
 
 /** Stato completo dell'app, aggiornato dal reducer. */
@@ -132,6 +136,19 @@ export function applyServerMessage(
       };
     }
 
+    case "session_deleted": {
+      const id = msg.payload.sessionId;
+      const sessions = state.sessions.filter((s) => s.id !== id);
+      return {
+        ...state,
+        sessions,
+        // Se la sessione aperta viene eliminata, torna a "nessuna sessione".
+        currentSessionId:
+          state.currentSessionId === id ? null : state.currentSessionId,
+        messages: state.currentSessionId === id ? [] : state.messages,
+      };
+    }
+
     case "models_list":
       return { ...state, models: msg.payload.models, activeModelId: msg.payload.active };
 
@@ -145,6 +162,7 @@ export function applyServerMessage(
         streamingMessageId: null,
         streamingText: "",
         toolCalls: [],
+        approvals: [],
         lastTurnReason: null,
       };
 
@@ -155,17 +173,18 @@ export function applyServerMessage(
         ...state,
         streamingMessageId: p.messageId,
         streamingText: text,
-        messages: upsertAssistantMessage(state.messages, p.messageId, text),
       };
     }
 
     case "assistant_done": {
       const p = msg.payload;
+      const finalText = state.streamingText;
       return {
         ...state,
         streamingMessageId: null,
         streamingText: "",
         lastUsage: p.usage,
+        messages: upsertAssistantMessage(state.messages, p.messageId, finalText),
       };
     }
 
@@ -181,6 +200,7 @@ export function applyServerMessage(
             args: p.args,
             startedAt: msg.ts,
             finished: false,
+            messageId: state.streamingMessageId ?? undefined,
           },
         ],
       };
@@ -213,6 +233,7 @@ export function applyServerMessage(
             unifiedDiff: p.unifiedDiff,
             command: p.command,
             expiresAt: p.expiresAt,
+            messageId: state.streamingMessageId ?? undefined,
           },
         ],
       };

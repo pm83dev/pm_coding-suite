@@ -46,6 +46,34 @@ describe("applyServerMessage (reducer)", () => {
     expect(next.permissionMode).toBe("ask");
   });
 
+  it("session_deleted rimuove la sessione dall'elenco (sezione corrente non toccata)", () => {
+    const sessions = [
+      { id: "s1", title: "A", workspace: "/w", updatedAt: "2026-01-01T00:00:00Z", status: "idle" as const },
+      { id: "s2", title: "B", workspace: "/w", updatedAt: "2026-01-02T00:00:00Z", status: "idle" as const },
+    ];
+    let s: ProtocolState = { ...initialProtocolState, sessions, currentSessionId: "s2" };
+    s = applyServerMessage(s, msg("session_deleted", { sessionId: "s1" }, "s2"));
+    expect(s.sessions).toEqual([sessions[1]]);
+    // La sessione corrente (s2) non è quella eliminata: resta invariata.
+    expect(s.currentSessionId).toBe("s2");
+  });
+
+  it("session_deleted azzera la sessione corrente se eliminata", () => {
+    const sessions = [
+      { id: "s1", title: "A", workspace: "/w", updatedAt: "2026-01-01T00:00:00Z", status: "idle" as const },
+    ];
+    let s: ProtocolState = {
+      ...initialProtocolState,
+      sessions,
+      currentSessionId: "s1",
+      messages: [{ id: "m1", role: "user" as const, text: "ciao", ts: "2026-01-01T00:00:01Z" }],
+    };
+    s = applyServerMessage(s, msg("session_deleted", { sessionId: "s1" }, "s1"));
+    expect(s.sessions).toEqual([]);
+    expect(s.currentSessionId).toBeNull();
+    expect(s.messages).toEqual([]);
+  });
+
   it("turn_started azzera streaming e tool call", () => {
     let s: ProtocolState = { ...initialProtocolState, streamingText: "vecchio", toolCalls: [{ callId: "c0", name: "x", args: {}, startedAt: "", finished: false }] };
     s = applyServerMessage(s, msg("turn_started", { turnId: "t1" }, "s1"));
@@ -54,22 +82,25 @@ describe("applyServerMessage (reducer)", () => {
     expect(s.toolCalls).toEqual([]);
   });
 
-  it("assistant_delta accumula il testo in streaming e nel messaggio", () => {
+  it("assistant_delta accumula solo il testo in streaming (nessun messaggio finché non c'è assistant_done)", () => {
     let s = applyServerMessage(initialProtocolState, msg("turn_started", { turnId: "t1" }, "s1"));
     s = applyServerMessage(s, msg("assistant_delta", { turnId: "t1", messageId: "m1", text: "Ciao" }, "s1"));
     s = applyServerMessage(s, msg("assistant_delta", { turnId: "t1", messageId: "m1", text: " mondo" }, "s1"));
     expect(s.streamingText).toBe("Ciao mondo");
-    expect(s.messages).toHaveLength(1);
-    expect(s.messages[0]?.text).toBe("Ciao mondo");
+    // Il messaggio non viene aggiunto durante lo streaming per evitare duplicati
+    expect(s.messages).toHaveLength(0);
   });
 
-  it("assistant_done salva l'usage e azzera lo streaming", () => {
+  it("assistant_done finalizza il messaggio e salva l'usage", () => {
     let s = applyServerMessage(initialProtocolState, msg("turn_started", { turnId: "t1" }, "s1"));
     s = applyServerMessage(s, msg("assistant_delta", { turnId: "t1", messageId: "m1", text: "ok" }, "s1"));
     s = applyServerMessage(s, msg("assistant_done", { turnId: "t1", messageId: "m1", usage: { promptTokens: 10, completionTokens: 5 } }, "s1"));
     expect(s.lastUsage).toEqual({ promptTokens: 10, completionTokens: 5 });
     expect(s.streamingText).toBe("");
     expect(s.streamingMessageId).toBeNull();
+    // Il messaggio viene creato una sola volta, al termine
+    expect(s.messages).toHaveLength(1);
+    expect(s.messages[0]?.text).toBe("ok");
   });
 
   it("tool_call_started/finished traccia la chiamata", () => {

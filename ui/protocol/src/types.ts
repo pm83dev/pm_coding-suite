@@ -66,6 +66,14 @@ export interface OpenSessionPayload {
   sessionId: string;
 }
 
+export interface DeleteSessionPayload {
+  sessionId: string;
+}
+
+export interface DeleteSessionAckPayload {
+  sessionId: string;
+}
+
 export interface SendMessagePayload {
   text: string;
 }
@@ -182,7 +190,7 @@ export interface ApprovalResolvedPayload {
   outcome: ApprovalOutcome;
 }
 
-export type TurnFinishReason = "completed" | "cancelled" | "error";
+export type TurnFinishReason = "completed" | "cancelled" | "error" | "max_steps" | "timeout" | "aborted";
 
 export interface TurnFinishedPayload {
   turnId: string;
@@ -198,6 +206,7 @@ export type ClientMessage =
   | Envelope<ListSessionsPayload> & { type: "list_sessions" }
   | Envelope<NewSessionPayload> & { type: "new_session" }
   | Envelope<OpenSessionPayload> & { type: "open_session" }
+  | Envelope<DeleteSessionPayload> & { type: "delete_session" }
   | Envelope<SendMessagePayload> & { type: "send_message" }
   | Envelope<CancelPayload> & { type: "cancel" }
   | Envelope<ApprovePayload> & { type: "approve" }
@@ -210,6 +219,7 @@ export type ServerMessage =
   | Envelope<ErrorPayload> & { type: "error" }
   | Envelope<SessionsListPayload> & { type: "sessions_list" }
   | Envelope<SessionStatePayload> & { type: "session_state" }
+  | Envelope<DeleteSessionAckPayload> & { type: "session_deleted" }
   | Envelope<ModelsListPayload> & { type: "models_list" }
   | Envelope<PermissionStatePayload> & { type: "permission_state" }
   | Envelope<TurnStartedPayload> & { type: "turn_started" }
@@ -226,6 +236,7 @@ export const CLIENT_MESSAGE_TYPES = [
   "list_sessions",
   "new_session",
   "open_session",
+  "delete_session",
   "send_message",
   "cancel",
   "approve",
@@ -239,6 +250,7 @@ export const SERVER_MESSAGE_TYPES = [
   "error",
   "sessions_list",
   "session_state",
+  "session_deleted",
   "models_list",
   "permission_state",
   "turn_started",

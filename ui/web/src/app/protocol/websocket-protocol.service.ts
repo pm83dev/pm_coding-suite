@@ -15,6 +15,7 @@ import { loadSettings, saveSettings, type ConnectionSettings } from './settings'
 import {
   applyServerMessage,
   initialProtocolState,
+  withUserMessage,
   type ApprovalState,
   type ConnectionState,
   type ProtocolState,
@@ -66,6 +67,7 @@ export class WebSocketProtocolService implements OnDestroy {
     () => this.protocolState().currentTurnId,
   );
   readonly streamingText: Signal<string> = computed(() => this.protocolState().streamingText);
+  readonly streamingMessageId: Signal<string | null> = computed(() => this.protocolState().streamingMessageId);
   readonly toolCalls: Signal<ToolCallState[]> = computed(() => this.protocolState().toolCalls);
   readonly approvals: Signal<ApprovalState[]> = computed(() => this.protocolState().approvals);
   readonly lastUsage: Signal<UsageInfo | null> = computed(() => this.protocolState().lastUsage);
@@ -152,13 +154,12 @@ export class WebSocketProtocolService implements OnDestroy {
           helloPayload['token'] = s.token;
         }
 
-        setTimeout(() => {
-          console.log('[WS] sending hello, readyState:', this.ws?.readyState);
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(makeMessage('hello', helloPayload)));
-            console.log('[WS] hello sent');
-          }
-        }, 50);
+        // Invia hello direttamente in onopen (il WebSocket è già OPEN)
+        console.log('[WS] sending hello, readyState:', this.ws?.readyState);
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify(makeMessage('hello', helloPayload)));
+          console.log('[WS] hello sent');
+        }
       };
 
       this.ws.onmessage = (event: MessageEvent) => {
@@ -256,6 +257,12 @@ export class WebSocketProtocolService implements OnDestroy {
       if (buffered.length > 0) {
         buffered.forEach((raw) => this.handleRaw(raw));
       }
+      // Dopo l'handshake: carica l'elenco sessioni e riapri l'ultima sessione (se presente)
+      this.listSessions();
+      const lastId = this.settings().lastSessionId;
+      if (lastId) {
+        this.openSession(lastId);
+      }
       return;
     }
 
@@ -266,6 +273,14 @@ export class WebSocketProtocolService implements OnDestroy {
     }
 
     this.setState((prev) => applyServerMessage(prev, msg));
+
+    // Persisti l'ID della sessione corrente per riaprirla dopo un refresh
+    if (msg.type === 'session_state') {
+      const sid = (msg.payload as { session?: { id?: string } })?.session?.id;
+      if (sid) {
+        this.saveSettings({ lastSessionId: sid });
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -297,7 +312,14 @@ export class WebSocketProtocolService implements OnDestroy {
     this.send('open_session', { sessionId });
   }
 
+  deleteSession(sessionId: string): void {
+    this.send('delete_session', { sessionId });
+  }
+
   sendMessage(text: string): void {
+    // Aggiungi il messaggio utente locale subito (così si vede in chat)
+    this.setState((prev) => withUserMessage(prev, text));
+    // Invia al backend
     this.send('send_message', { text });
   }
 
@@ -306,15 +328,22 @@ export class WebSocketProtocolService implements OnDestroy {
   }
 
   approve(approvalId: string): void {
+    console.log('[WS] approve() called, approvalId:', approvalId, 'ws readyState:', this.ws?.readyState);
     this.send('approve', { approvalId });
   }
 
   reject(approvalId: string, reason?: string): void {
+    console.log('[WS] reject() called, approvalId:', approvalId, 'ws readyState:', this.ws?.readyState);
     this.send('reject', { approvalId, reason });
+  }
+
+  setPermission(mode: 'readonly' | 'ask' | 'auto'): void {
+    this.send('set_permission', { mode });
   }
 
   private send(type: string, payload: Record<string, unknown>, sessionId?: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) {
+      console.log('[WS] send() skipped: not connected, readyState:', this.ws?.readyState);
       this.setState((prev) => ({
         ...prev,
         error: 'Not connected',
@@ -322,7 +351,9 @@ export class WebSocketProtocolService implements OnDestroy {
       return;
     }
     const sid = sessionId ?? this.stateSubject.value.currentSessionId ?? null;
-    this.ws.send(JSON.stringify(makeMessage(type, payload, sid)));
+    const msg = JSON.stringify(makeMessage(type, payload, sid));
+    console.log('[WS] send()', type, 'sessionId:', sid, 'payload:', JSON.stringify(payload));
+    this.ws.send(msg);
   }
 
   // ---------------------------------------------------------------------------

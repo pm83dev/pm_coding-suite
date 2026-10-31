@@ -123,7 +123,7 @@ const APPROVAL_OUTCOMES = [
   "expired",
   "cancelled",
 ] as const;
-const TURN_FINISH_REASONS = ["completed", "cancelled", "error"] as const;
+const TURN_FINISH_REASONS = ["completed", "cancelled", "error", "max_steps", "timeout", "aborted"] as const;
 
 function validateSessionInfo(
   p: Record<string, unknown>,
@@ -240,6 +240,15 @@ const clientPayloadValidators: Record<string, PayloadValidator> = {
       };
     return null;
   },
+  delete_session: (p) => {
+    if (!strNonEmpty(p["sessionId"]))
+      return {
+        ok: false,
+        error:
+          "delete_session.payload.sessionId mancante o non stringa non vuota",
+      };
+    return null;
+  },
   send_message: (p) => {
     if (!str(p["text"]))
       return {
@@ -345,6 +354,15 @@ const serverPayloadValidators: Record<string, PayloadValidator> = {
       return {
         ok: false,
         error: `session_state.payload.permission deve essere uno di ${PERMISSION_MODES.join("|")}`,
+      };
+    return null;
+  },
+  session_deleted: (p) => {
+    if (!strNonEmpty(p["sessionId"]))
+      return {
+        ok: false,
+        error:
+          "session_deleted.payload.sessionId mancante o non stringa non vuota",
       };
     return null;
   },
@@ -578,6 +596,7 @@ export function parseServerMessage<T = import("./types.js").ServerMessage>(
       "error",
       "sessions_list",
       "session_state",
+      "session_deleted",
       "models_list",
       "permission_state",
       "turn_started",
@@ -607,6 +626,7 @@ export function parseClientMessage<T = import("./types.js").ClientMessage>(
       "list_sessions",
       "new_session",
       "open_session",
+      "delete_session",
       "send_message",
       "cancel",
       "approve",

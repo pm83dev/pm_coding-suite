@@ -23,6 +23,7 @@ export class ProtocolService implements OnDestroy {
   readonly permissionMode = this.websocket.permissionMode;
   readonly currentTurnId = this.websocket.currentTurnId;
   readonly streamingText = this.websocket.streamingText;
+  readonly streamingMessageId = this.websocket.streamingMessageId;
   readonly toolCalls = this.websocket.toolCalls;
   readonly approvals = this.websocket.approvals;
   readonly lastUsage = this.websocket.lastUsage;
@@ -39,6 +40,7 @@ export class ProtocolService implements OnDestroy {
   cancel(): void { this.websocket.cancel(); }
   approve(approvalId: string): void { this.websocket.approve(approvalId); }
   reject(approvalId: string): void { this.websocket.reject(approvalId); }
+  setPermission(mode: 'readonly' | 'ask' | 'auto'): void { this.websocket.setPermission(mode); }
 
   _setStateForTest(st: ProtocolState): void { this.websocket._setStateForTest(st); }
   _applyForTest(msg: ServerMessage): void { this.websocket._applyForTest(msg); }
