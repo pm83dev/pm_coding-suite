@@ -74,6 +74,49 @@ public class AgentSettings
 }
 
 /// <summary>
+/// Opzioni di esecuzione per <c>AgentLoop.RunTurnAsync</c>: unifica i parametri di
+/// campionamento LLM e i limiti del loop in un unico oggetto, così il costruttore di
+/// <c>AgentLoop</c> e i backend (CLI, serve) non devono passare 10+ argomenti separati.
+/// </summary>
+public sealed record AgentLoopOptions
+{
+    /// <summary>Se true, l'output va su <see cref="IAgentSink"/>/trace invece che su Console.</summary>
+    public bool IsMachineMode { get; init; }
+
+    /// <summary>Se true, è la modalità --serve: alcuni tool sono bloccati.</summary>
+    public bool IsServeMode { get; init; }
+
+    /// <summary>Tool bloccati in modalità serve.</summary>
+    public IReadOnlySet<string> ServeBlockedTools { get; init; } = new HashSet<string>();
+
+    /// <summary>Numero massimo di step per turno.</summary>
+    public int MaxSteps { get; init; } = 30;
+
+    /// <summary>Dimensione massima del contesto in token.</summary>
+    public int MaxContextTokens { get; init; } = 81920;
+
+    /// <summary>Numero massimo di ripetizioni identiche di uno stesso tool call.</summary>
+    public int MaxRepeats { get; init; } = 3;
+
+    /// <summary>Numero massimo di letture consecutive prima del nudge.</summary>
+    public int MaxConsecutiveReadOnly { get; init; } = 6;
+
+    /// <summary>Numero massimo di righe leggibili per file.</summary>
+    public int MaxLinesPerFile { get; init; } = 400;
+
+    // ── Parametri di campionamento LLM ──────────────────────────────────────────
+
+    public float Temperature { get; init; } = 0.0f;
+    public float FrequencyPenalty { get; init; } = 0.3f;
+    public float? PresencePenalty { get; init; }
+    public float? TopP { get; init; }
+    public int? TopK { get; init; }
+    public float? MinP { get; init; }
+    public float? RepeatPenalty { get; init; }
+    public int? RepeatLastN { get; init; }
+}
+
+/// <summary>
 /// Configurazione ricerca web (Brave API key).
 /// Mappa il blocco "WebSearchSettings" di appsettings.json.
 /// </summary>
@@ -115,4 +158,23 @@ public class AgentConfig
 
     [JsonPropertyName("ServeSettings")]
     public ServeSettings ServeSettings { get; set; } = new();
+
+    [JsonPropertyName("PersistenceSettings")]
+    public PersistenceSettings PersistenceSettings { get; set; } = new();
+}
+
+/// <summary>
+/// Configurazione della persistenza delle sessioni. Mappa il blocco "PersistenceSettings"
+/// di appsettings.json. Le sessioni (storico + metadati) vengono salvate in una cartella
+/// centrale così sopravvivono ai riavvii del backend.
+/// </summary>
+public class PersistenceSettings
+{
+    /// <summary>
+    /// Cartella dove salvare i file JSON delle sessioni. Default: "sessions" relativo alla
+    /// cartella di lavoro del backend (es. C:\pm-code\agent-backend\sessions). Se vuoto,
+    /// si usa AppContext.BaseDirectory + "sessions".
+    /// </summary>
+    [JsonPropertyName("SessionsDir")]
+    public string SessionsDir { get; set; } = "";
 }

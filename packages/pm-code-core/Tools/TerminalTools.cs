@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
 using LocalCodeAgent.Core;
 using LocalCodeAgent.Models;
 
@@ -876,13 +877,26 @@ public class TerminalTools(WorkspaceContext workspace)
         proc.BeginErrorReadLine();
         proc.StandardInput.Close();
 
-        bool finished = proc.WaitForExit(timeoutMs);
+        // ATTENZIONE: Process.WaitForExit(int) su Windows può BLOCCARSI oltre il timeout quando
+        // il processo ha pipe stdout/stderr redirectate (qui sempre, per via di BeginOutputReadLine)
+        // — soprattutto con il pwsh dello Store (MSIX, C:\...\WindowsApps\...), che il kernel tratta
+        // in modo speciale e che inoltre crea i figli FUORI dal job object. Osservato: un
+        // "dotnet run" (dev server) lanciato in foreground non veniva terminato e il turno restava
+        // in attesa per minuti, con il thread del backend appeso in WaitForExit.
+        //
+        // Soluzione: attendere la fine sul thread corrente MA con un watchdog su un thread separato
+        // che, se il timeout scatta, forza il kill del processo (e del suo albero). Il kill chiude
+        // le pipe e sblocca WaitForExit, che ritorna quindi sempre entro timeoutMs + margine.
+        bool finished = WaitForExitWithWatchdog(proc, timeoutMs);
         if (!finished)
         {
+            // Il watchdog ha già provato il kill; riproviamo qui, in ordine, ogni via per essere
+            // sicuri di eliminare l'albero (job object, entireProcessTree, e discendenti ricostruiti
+            // dal PID, che è il caso del pwsh MSIX che sfugge al job).
             var detached = killLeftovers ? ProcessJob.Descendants(proc.Id, startedAt) : [];
-            proc.Kill(entireProcessTree: true);
-            job?.Terminate();
             KillAll(detached);
+            try { proc.Kill(entireProcessTree: true); } catch { /* già terminato */ }
+            job?.Terminate();
             var partial = SanitizeOutput(output.ToString().Trim());
             if (partial.Length > 1500) partial = "...(inizio troncato)\n" + partial[^1500..];
             return $"ERRORE: timeout ({timeoutMs / 1000}s) — processo terminato forzatamente." +
@@ -928,5 +942,48 @@ public class TerminalTools(WorkspaceContext workspace)
             text = "...(inizio troncato)\n" + text[^maxChars..];
 
         return string.IsNullOrEmpty(text) ? "(nessun output)" : text;
+    }
+
+    /// <summary>
+    /// Attende la fine di <paramref name="proc"/> con un timeout GARANTITO.
+    /// <see cref="Process.WaitForExit(int)"/> su Windows, con pipe stdout/stderr redirectate
+    /// (qui sempre, per BeginOutputReadLine) e in particolare con il pwsh dello Store (MSIX),
+    /// può NON rispettare il timeout e bloccare il thread per minuti. Qui un watchdog su un
+    /// thread separato, a timeout scaduto, forza il kill del processo e del suo albero: il kill
+    /// chiude le pipe e sblocca WaitForExit, che ritorna quindi sempre.
+    /// Restituisce true se il processo è terminato da solo entro il timeout, false se è stato
+    /// necessario terminarlo forzatamente.
+    /// </summary>
+    private static bool WaitForExitWithWatchdog(Process proc, int timeoutMs)
+    {
+        var finished = new ManualResetEventSlim(false);
+        var timedOut = new ManualResetEventSlim(false);
+
+        // Attenditore: WaitForExit() senza timeout sul thread corrente.
+        var waiter = new Thread(() =>
+        {
+            try { proc.WaitForExit(); } catch { /* processo già terminato */ }
+            finally { finished.Set(); }
+        }) { IsBackground = true, Name = "RunProcess-waiter" };
+        waiter.Start();
+
+        // Watchdog: a timeout scatta il kill FORTE (albero + discendenti MSIX + job).
+        var watchdog = new Thread(() =>
+        {
+            if (finished.Wait(timeoutMs)) return; // terminato in tempo
+            timedOut.Set();
+            try
+            {
+                var detached = ProcessJob.Descendants(proc.Id, DateTime.Now.AddSeconds(-5));
+                KillAll(detached);
+                proc.Kill(entireProcessTree: true);
+            }
+            catch { /* già terminato */ }
+        }) { IsBackground = true, Name = "RunProcess-watchdog" };
+        watchdog.Start();
+
+        // Aspetta che uno dei due eventi si verifichi (finito o timeout).
+        WaitHandle.WaitAny(new WaitHandle[] { finished.WaitHandle, timedOut.WaitHandle });
+        return !timedOut.IsSet;
     }
 }

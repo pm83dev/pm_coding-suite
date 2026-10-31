@@ -139,6 +139,31 @@ describe("applyServerMessage (reducer)", () => {
     expect(s.lastTurnReason).toBe("completed");
   });
 
+  it("status salva il testo di avanzamento (heartbeat)", () => {
+    let s = applyServerMessage(initialProtocolState, msg("turn_started", { turnId: "t1" }, "s1"));
+    expect(s.statusText).toBeNull();
+    s = applyServerMessage(s, msg("status", { text: "Elaborazione in corso..." }, "s1"));
+    expect(s.statusText).toBe("Elaborazione in corso...");
+    // Il testo non è parte della risposta: lo streaming resta vuoto.
+    expect(s.streamingText).toBe("");
+  });
+
+  it("turn_started azzera statusText", () => {
+    let s = applyServerMessage(initialProtocolState, msg("turn_started", { turnId: "t1" }, "s1"));
+    s = applyServerMessage(s, msg("status", { text: "vecchio" }, "s1"));
+    s = applyServerMessage(s, msg("turn_finished", { turnId: "t1", reason: "completed" }, "s1"));
+    s = applyServerMessage(s, msg("turn_started", { turnId: "t2" }, "s1"));
+    expect(s.statusText).toBeNull();
+  });
+
+  it("turn_finished azzera statusText", () => {
+    let s = applyServerMessage(initialProtocolState, msg("turn_started", { turnId: "t1" }, "s1"));
+    s = applyServerMessage(s, msg("status", { text: "Generazione 'read_file' in corso..." }, "s1"));
+    expect(s.statusText).toBe("Generazione 'read_file' in corso...");
+    s = applyServerMessage(s, msg("turn_finished", { turnId: "t1", reason: "completed" }, "s1"));
+    expect(s.statusText).toBeNull();
+  });
+
   it("error imposta il messaggio di errore", () => {
     const s = applyServerMessage(initialProtocolState, msg("error", { code: "bad_request", message: "payload errato" }));
     expect(s.error).toBe("bad_request: payload errato");

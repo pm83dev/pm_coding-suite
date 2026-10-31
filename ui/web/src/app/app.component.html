@@ -57,7 +57,7 @@
     </div>
 
     <!-- Chat area -->
-    <div class="chat-area">
+    <div class="chat-area" #chatScroll (scroll)="onChatScroll()">
       @if (protocol.currentSessionId()) {
         <div class="messages-container">
           @for (m of protocol.messages(); track m.id) {
@@ -176,6 +176,66 @@
                 }
               </div>
             }
+          } @else if (protocol.statusText() && protocol.currentTurnId()) {
+            <!-- Heartbeat: nessun testo ancora in streaming (es. tool call lunga) —
+                 mostra che l'agente sta lavorando. -->
+            <div class="message assistant status-indicator">
+              <div class="message-avatar">A</div>
+              <div class="message-content">
+                <div class="message-role">Assistente</div>
+                <div class="status-text">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <span class="status-label">{{ protocol.statusText() }}</span>
+                </div>
+              </div>
+            </div>
+          }
+          <!-- Approvazioni pendenti del turno corrente (fallback): quando lo streaming
+               è già terminato (o l'approvazione non è agganciata al messaggio che si sta
+               streamizzando) l'approvazione non viene mostrata dal blocco inline qui sopra —
+               la si mostra comunque per turno, altrimenti l'utente non vedrebbe mai il
+               bottone Approva e il turno resterebbe in attesa (il backend aspetta 5 min).
+               Si esclude solo quella già mostrata inline, cioè quella il cui messageId
+               corrisponde AL messaggio che si sta streamizzando (streamingMessageId != null).
+               La condizione sul turnId è difensiva: mostra l'approvazione se il suo turnId
+               coincide con quello corrente OPPURE se currentTurnId è ancora null (es. il
+               messaggio turn_started non è ancora stato applicato) — in entrambi i casi
+               l'approvazione è chiaramente quella del turno attivo e va mostrata. -->
+          @for (appr of protocol.approvals().filter(a => !a.outcome && (a.turnId === protocol.currentTurnId() || protocol.currentTurnId() === null) && !(protocol.streamingMessageId() !== null && a.messageId === protocol.streamingMessageId())); track appr.approvalId) {
+            <div class="approval-accordion" [class.resolved]="!!appr.outcome">
+              <div class="approval-accordion-header" (click)="toggleApproval(appr.approvalId)">
+                <i class="bi" [class.bi-chevron-right]="!isApprovalExpanded(appr.approvalId)" [class.bi-chevron-down]="isApprovalExpanded(appr.approvalId)"></i>
+                <i class="bi bi-shield-lock me-1"></i>
+                <strong>{{ appr.title }}</strong>
+                @if (appr.outcome) {
+                  <span class="approval-outcome ms-auto {{ appr.outcome }}">
+                    <i class="bi" [class.bi-check-circle]="appr.outcome === 'approved'" [class.bi-x-circle]="appr.outcome !== 'approved'"></i>
+                    {{ appr.outcome === 'approved' ? 'Approvata' : appr.outcome === 'rejected' ? 'Rifiutata' : appr.outcome }}
+                  </span>
+                } @else {
+                  <span class="approval-badge ms-auto">{{ appr.kind }}</span>
+                }
+              </div>
+              @if (isApprovalExpanded(appr.approvalId)) {
+                <div class="approval-accordion-body">
+                  @if (appr.kind === 'write') {
+                    <pre class="diff-block" [innerHTML]="appr.unifiedDiff | diff"></pre>
+                  } @else if (appr.kind === 'command') {
+                    <code class="command-block">{{ appr.command }}</code>
+                  }
+                  @if (!appr.outcome) {
+                    <div class="approval-actions">
+                      <button type="button" class="btn btn-success btn-sm" (click)="onApprove(appr.approvalId)">
+                        <i class="bi bi-check-lg"></i> Approva
+                      </button>
+                      <button type="button" class="btn btn-danger btn-sm" (click)="onReject(appr.approvalId)">
+                        <i class="bi bi-x-lg"></i> Rifiuta
+                      </button>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
           }
         </div>
       } @else {
@@ -184,6 +244,13 @@
           <h2>Benvenuto in pm-coding-suite</h2>
           <p class="text-muted">Configura la connessione nella sidebar e crea una nuova sessione.</p>
         </div>
+      }
+      <!-- Bottone "vai in fondo": appare quando l'utente è risalito per rileggere e
+           l'autoscroll è sospeso. Un click riporta in fondo e riattiva l'autoscroll. -->
+      @if (showJumpToBottom()) {
+        <button type="button" class="jump-to-bottom" (click)="jumpToBottom()" title="Vai in fondo" aria-label="Vai in fondo">
+          <i class="bi bi-arrow-down"></i>
+        </button>
       }
     </div>
 

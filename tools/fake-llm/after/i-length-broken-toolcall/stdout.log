@@ -1,0 +1,6 @@
+
+
+
+
+
+?? Limite di token della risposta raggiunto (finish_reason="length"): il turno si � interrotto prima di finire. Non ho eseguito nessuna tool call da quella risposta (poteva essere tagliata a met�). Riprova con una richiesta pi� piccola o scomponi il task in passi pi� piccoli.

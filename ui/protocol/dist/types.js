@@ -25,6 +25,7 @@ export const SERVER_MESSAGE_TYPES = [
     "models_list",
     "permission_state",
     "turn_started",
+    "status",
     "assistant_delta",
     "assistant_done",
     "tool_call_started",

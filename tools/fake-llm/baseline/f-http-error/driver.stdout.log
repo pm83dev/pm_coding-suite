@@ -1,0 +1,5 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-f-http-error
+[driver] pm-code avviato, PID=12640
+[driver] pm-code uscito con codice 0
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-f-http-error\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-f-http-error\logs

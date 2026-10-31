@@ -1,0 +1,7 @@
+﻿{"ts":"2026-10-31T14:59:41.2460801\u002B01:00","sessionId":"1fe53b86","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\after\\work-b-reset\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8922","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T14:59:41.6384641\u002B01:00","sessionId":"1fe53b86","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T14:59:41.6386697\u002B01:00","sessionId":"1fe53b86","turnId":1,"type":"user_message","text":"Primo messaggio prima del reset."}
+{"ts":"2026-10-31T14:59:41.6420690\u002B01:00","sessionId":"1fe53b86","turnId":1,"type":"llm_request","promptTokens":1050,"durationMs":3,"finishReason":"stop","ok":true,"errorKind":null,"contextPercent":1.28173828125,"maxTokens":32768}
+{"ts":"2026-10-31T14:59:41.6424515\u002B01:00","sessionId":"1fe53b86","turnId":1,"type":"context_size","tokensUsed":1050,"tokensMax":81920}
+{"ts":"2026-10-31T14:59:41.6427515\u002B01:00","sessionId":"1fe53b86","turnId":1,"type":"turn_end","reason":"completed"}
+{"ts":"2026-10-31T14:59:42.0423538\u002B01:00","sessionId":"1fe53b86","turnId":1,"type":"session_end","reason":"process_exit"}

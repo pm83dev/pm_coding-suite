@@ -250,6 +250,11 @@ public class WebSocketHub
 
                     if (!_sessionService.TryStartTurn(msgSessionId))
                     {
+                        // Log per diagnosticare: se la sessione esiste ma il flag TurnInProgress
+                        // è ancora true, il turno precedente non ha chiamato EndTurn (es. il
+                        // Task è ancora appeso in RunTurnAsync, o il backend è stato riavviato
+                        // lasciando lo stato in memoria incoerente).
+                        DebugLog($"send_message RIFIUTATO (già in corso) sessione={msgSessionId[..Math.Min(8, msgSessionId.Length)]}");
                         await SendAll("error", new { code = "bad_request", message = "Turn already in progress" });
                         return;
                     }
@@ -274,8 +279,8 @@ public class WebSocketHub
                     {
                         try
                         {
-                            var executionService = new ToolExecutionService(session, EmitEvent, _config);
-                            var (success, activeTurnId) = await executionService.ExecuteTurnAsync(msgText);
+                            var executionService = new AgentLoopSession(session, EmitEvent, _config);
+                            var (success, activeTurnId) = await executionService.RunTurnAsync(msgText);
                             _activeTurnId = activeTurnId;
                         }
                         catch (Exception ex)
@@ -285,16 +290,19 @@ public class WebSocketHub
                         }
                     });
 
-                    // Watchdog: se il Task non è terminato dopo 10 minuti (molto più
-                    // dei 300 s di AwaitApprovalAsync + margine per gli step), forza
-                    // EndTurn. Il Task in sé continua a girare (non lo cancelliamo:
-                    // l'approvazione potrebbe ancora essere in attesa), ma la sessione
-                    // torna "idle" e un nuovo send_message può partire.
-                    _ = Task.Delay(TimeSpan.FromMinutes(10)).ContinueWith(t =>
+                    // Watchdog: se il Task non è terminato dopo 5 minuti (molto più
+                    // dei 300 s di AwaitApprovalAsync + margine per gli step, ma molto
+                    // meno dei 10 min precedenti), forza EndTurn. Il Task in sé continua
+                    // a girare (non lo cancelliamo: l'approvazione potrebbe ancora essere
+                    // in attesa), ma la sessione torna "idle" e un nuovo send_message può
+                    // partire. 5 min è un compromesso: abbastanza per un turno lungo con
+                    // molte approvazioni, poco abbastanza da non bloccare l'utente a lungo
+                    // se un turno resta appeso (es. bug nel loop).
+                    _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(t =>
                     {
                         if (!turnTask.IsCompleted)
                         {
-                            DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo 10 min — forza EndTurn");
+                            DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo 5 min — forza EndTurn");
                             _sessionService.EndTurn(msgSessionId, "watchdog");
                         }
                     }, TaskScheduler.Default);

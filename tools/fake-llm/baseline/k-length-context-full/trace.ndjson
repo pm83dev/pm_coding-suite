@@ -1,0 +1,6 @@
+﻿{"ts":"2026-10-31T12:35:07.5171751\u002B01:00","sessionId":"2749eb96","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\baseline\\work-k-length-context-full\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:9021","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T12:35:07.5330732\u002B01:00","sessionId":"2749eb96","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T12:35:07.5334162\u002B01:00","sessionId":"2749eb96","turnId":1,"type":"user_message","text":"Scrivi qualcosa di molto lungo."}
+{"ts":"2026-10-31T12:35:07.5843420\u002B01:00","sessionId":"2749eb96","turnId":1,"type":"llm_request","promptTokens":75000,"durationMs":44,"finishReason":null,"ok":false,"errorKind":"length","contextPercent":91.552734375,"maxTokens":32768}
+{"ts":"2026-10-31T12:35:07.5966882\u002B01:00","sessionId":"2749eb96","turnId":1,"type":"turn_end","reason":"error"}
+{"ts":"2026-10-31T12:35:07.7298496\u002B01:00","sessionId":"2749eb96","turnId":1,"type":"session_end","reason":"process_exit"}

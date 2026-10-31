@@ -1,0 +1,5 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-b-reset
+[driver] pm-code avviato, PID=24148
+[driver] pm-code uscito con codice 0
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-b-reset\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-b-reset\logs

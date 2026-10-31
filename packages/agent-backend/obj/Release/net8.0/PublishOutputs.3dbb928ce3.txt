@@ -1,0 +1,17 @@
+C:\pm-code\agent-backend\publish\agent-backend.exe
+C:\pm-code\agent-backend\publish\publish\web.config
+C:\pm-code\agent-backend\publish\appsettings.json
+C:\pm-code\agent-backend\publish\publish\agent-backend.deps.json
+C:\pm-code\agent-backend\publish\publish\agent-backend.runtimeconfig.json
+C:\pm-code\agent-backend\publish\publish\agent-backend.staticwebassets.endpoints.json
+C:\pm-code\agent-backend\publish\publish\appsettings.json
+C:\pm-code\agent-backend\publish\agent-backend.dll
+C:\pm-code\agent-backend\publish\agent-backend.deps.json
+C:\pm-code\agent-backend\publish\agent-backend.runtimeconfig.json
+C:\pm-code\agent-backend\publish\agent-backend.pdb
+C:\pm-code\agent-backend\publish\Microsoft.OpenApi.dll
+C:\pm-code\agent-backend\publish\Swashbuckle.AspNetCore.Swagger.dll
+C:\pm-code\agent-backend\publish\Swashbuckle.AspNetCore.SwaggerGen.dll
+C:\pm-code\agent-backend\publish\Swashbuckle.AspNetCore.SwaggerUI.dll
+C:\pm-code\agent-backend\publish\pm-code-core.dll
+C:\pm-code\agent-backend\publish\pm-code-core.pdb

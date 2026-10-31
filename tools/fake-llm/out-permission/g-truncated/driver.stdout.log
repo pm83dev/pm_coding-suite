@@ -1,0 +1,5 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-g-truncated
+[driver] pm-code avviato, PID=15776
+[driver] pm-code uscito con codice 0
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-g-truncated\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-g-truncated\logs

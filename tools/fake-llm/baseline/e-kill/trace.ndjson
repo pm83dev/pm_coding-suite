@@ -1,0 +1,6 @@
+﻿{"ts":"2026-10-31T12:34:51.8260818\u002B01:00","sessionId":"5ee92f03","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\baseline\\work-e-kill\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8955","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T12:34:51.8429684\u002B01:00","sessionId":"5ee92f03","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T12:34:51.8433165\u002B01:00","sessionId":"5ee92f03","turnId":1,"type":"user_message","text":"Fai un turno normale."}
+{"ts":"2026-10-31T12:34:51.8974961\u002B01:00","sessionId":"5ee92f03","turnId":1,"type":"llm_request","promptTokens":1000,"durationMs":47,"finishReason":"stop","ok":true,"errorKind":null,"contextPercent":1.220703125,"maxTokens":32768}
+{"ts":"2026-10-31T12:34:51.9038033\u002B01:00","sessionId":"5ee92f03","turnId":1,"type":"context_size","tokensUsed":1000,"tokensMax":81920}
+{"ts":"2026-10-31T12:34:51.9098034\u002B01:00","sessionId":"5ee92f03","turnId":1,"type":"turn_end","reason":"completed"}

@@ -1,0 +1,16 @@
+Sampling: temperature=0 frequency_penalty=0.3 presence_penalty=- top_p=- top_k=- min_p=- repeat_penalty=- repeat_last_n=- | anti-loop: MaxRepeats=3 MaxConsecutiveReadOnly=6 MaxLinesPerFile=400
+����������������������������������������������ͻ
+�  LOCAL CODE AGENT - PM SOFTWARE              �
+�  Powered by PM LLM                           �
+����������������������������������������������ͼ
+ Connessione al server LLM...
+� Server online - modello: FAKE
+Workspace: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\after\work-f-http-error\workspace
+Task (es: 'Crea una console app Hello World in C#')
+Comandi: /help  /init  /reset  /workspace  /tools  /paste  /cd <path>  quit
+
+You >   [1] ? Errore LLM: HTTP 500: simulated server error
+You > 
+Arrivederci!
+
+Arrivederci!

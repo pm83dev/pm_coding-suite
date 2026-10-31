@@ -100,6 +100,16 @@ export interface PermissionStatePayload {
 export interface TurnStartedPayload {
     turnId: string;
 }
+/**
+ * Heartbeat di avanzamento del turno (es. "Elaborazione in corso…",
+ * "Generazione 'tool' in corso… (N caratteri)"). Non è testo della risposta:
+ * è puro feedback di stato per far capire all'utente che l'agente sta lavorando
+ * (es. durante una tool call lunga, dove non arriva nessun assistant_delta).
+ */
+export interface StatusPayload {
+    turnId: string;
+    text: string;
+}
 export interface AssistantDeltaPayload {
     turnId: string;
     messageId: string;
@@ -187,6 +197,8 @@ export type ServerMessage = Envelope<HelloOkPayload> & {
     type: "permission_state";
 } | Envelope<TurnStartedPayload> & {
     type: "turn_started";
+} | Envelope<StatusPayload> & {
+    type: "status";
 } | Envelope<AssistantDeltaPayload> & {
     type: "assistant_delta";
 } | Envelope<AssistantDonePayload> & {
@@ -203,4 +215,4 @@ export type ServerMessage = Envelope<HelloOkPayload> & {
     type: "turn_finished";
 };
 export declare const CLIENT_MESSAGE_TYPES: readonly ["hello", "list_sessions", "new_session", "open_session", "delete_session", "send_message", "cancel", "approve", "reject", "set_model", "set_permission"];
-export declare const SERVER_MESSAGE_TYPES: readonly ["hello_ok", "error", "sessions_list", "session_state", "session_deleted", "models_list", "permission_state", "turn_started", "assistant_delta", "assistant_done", "tool_call_started", "tool_call_finished", "approval_request", "approval_resolved", "turn_finished"];
+export declare const SERVER_MESSAGE_TYPES: readonly ["hello_ok", "error", "sessions_list", "session_state", "session_deleted", "models_list", "permission_state", "turn_started", "status", "assistant_delta", "assistant_done", "tool_call_started", "tool_call_finished", "approval_request", "approval_resolved", "turn_finished"];

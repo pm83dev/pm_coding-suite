@@ -1,0 +1,9 @@
+﻿{"ts":"2026-10-31T15:21:55.9130136\u002B01:00","sessionId":"b9120273","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\out-permission\\work-g-truncated\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8977","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T15:21:55.9348944\u002B01:00","sessionId":"b9120273","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T15:21:55.9352211\u002B01:00","sessionId":"b9120273","turnId":1,"type":"user_message","text":"Prova un messaggio qualsiasi."}
+{"ts":"2026-10-31T15:21:55.9854306\u002B01:00","sessionId":"b9120273","turnId":1,"type":"llm_request","promptTokens":null,"durationMs":43,"finishReason":null,"ok":false,"errorKind":"stream_truncated","contextPercent":null,"maxTokens":32768}
+{"ts":"2026-10-31T15:21:55.9883700\u002B01:00","sessionId":"b9120273","turnId":1,"type":"llm_retry","attempt":1,"maxAttempts":2,"reason":"stream_truncated","delayMs":1500}
+{"ts":"2026-10-31T15:21:57.4958168\u002B01:00","sessionId":"b9120273","turnId":1,"type":"llm_request","promptTokens":1050,"durationMs":8,"finishReason":"stop","ok":true,"errorKind":null,"contextPercent":1.28173828125,"maxTokens":32768}
+{"ts":"2026-10-31T15:21:57.5015917\u002B01:00","sessionId":"b9120273","turnId":1,"type":"context_size","tokensUsed":1050,"tokensMax":81920}
+{"ts":"2026-10-31T15:21:57.5093413\u002B01:00","sessionId":"b9120273","turnId":1,"type":"turn_end","reason":"completed"}
+{"ts":"2026-10-31T15:21:57.5110533\u002B01:00","sessionId":"b9120273","turnId":1,"type":"session_end","reason":"process_exit"}

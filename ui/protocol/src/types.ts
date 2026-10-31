@@ -138,6 +138,17 @@ export interface TurnStartedPayload {
   turnId: string;
 }
 
+/**
+ * Heartbeat di avanzamento del turno (es. "Elaborazione in corso…",
+ * "Generazione 'tool' in corso… (N caratteri)"). Non è testo della risposta:
+ * è puro feedback di stato per far capire all'utente che l'agente sta lavorando
+ * (es. durante una tool call lunga, dove non arriva nessun assistant_delta).
+ */
+export interface StatusPayload {
+  turnId: string;
+  text: string; // messaggio di avanzamento da mostrare all'utente
+}
+
 export interface AssistantDeltaPayload {
   turnId: string;
   messageId: string;
@@ -223,6 +234,7 @@ export type ServerMessage =
   | Envelope<ModelsListPayload> & { type: "models_list" }
   | Envelope<PermissionStatePayload> & { type: "permission_state" }
   | Envelope<TurnStartedPayload> & { type: "turn_started" }
+  | Envelope<StatusPayload> & { type: "status" }
   | Envelope<AssistantDeltaPayload> & { type: "assistant_delta" }
   | Envelope<AssistantDonePayload> & { type: "assistant_done" }
   | Envelope<ToolCallStartedPayload> & { type: "tool_call_started" }
@@ -254,6 +266,7 @@ export const SERVER_MESSAGE_TYPES = [
   "models_list",
   "permission_state",
   "turn_started",
+  "status",
   "assistant_delta",
   "assistant_done",
   "tool_call_started",

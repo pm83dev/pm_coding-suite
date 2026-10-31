@@ -1,0 +1,6 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-e-kill
+[driver] pm-code avviato, PID=3220
+[driver] kill di PID=3220 dopo 1502 ms (nessuna chance di flush)
+[driver] pm-code uscito con codice -1
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-e-kill\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-e-kill\logs

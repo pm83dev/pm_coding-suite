@@ -58,6 +58,13 @@ export interface ProtocolState {
   /** Testo in streaming del messaggio assistant corrente. */
   streamingMessageId: string | null;
   streamingText: string;
+  /**
+   * Heartbeat di avanzamento del turno ("Elaborazione in corso…",
+   * "Generazione 'tool' in corso…"). Puro feedback di stato: quando non c'è
+   * ancora testo in streaming (es. durante una tool call lunga) serve a far
+   * capire all'utente che l'agente sta lavorando. Null se assente.
+   */
+  statusText: string | null;
   toolCalls: ToolCallState[];
   approvals: ApprovalState[];
   /** Usage dell'ultimo turno completato. */
@@ -78,6 +85,7 @@ export const initialProtocolState: ProtocolState = {
   currentTurnId: null,
   streamingMessageId: null,
   streamingText: "",
+  statusText: null,
   toolCalls: [],
   approvals: [],
   lastUsage: null,
@@ -112,10 +120,38 @@ export function applyServerMessage(
 ): ProtocolState {
   switch (msg.type) {
     case "hello_ok":
-      return state;
+      // Handshake completato (anche dopo un reconnect): azzera lo stato di turno
+      // eventuale lasciato da una connessione precedente. Se il backend è stato
+      // riavviato, le sessioni in memoria sono andate perse e un currentTurnId
+      // residuo bloccherebbe l'UI con "Turn already in progress". L'errore viene
+      // azzerato dal service (applyServerMessage) qui accanto.
+      return {
+        ...state,
+        currentTurnId: null,
+        streamingMessageId: null,
+        streamingText: "",
+        toolCalls: [],
+      };
 
-    case "error":
-      return { ...state, error: `${msg.payload.code}: ${msg.payload.message}` };
+    case "error": {
+      // unknown_session: la sessione che l'UI ha aperto non esiste più sul backend
+      // (es. riavvio). Azzera lo stato locale per non restare bloccato: torna a
+      // "nessuna sessione" e l'utente può crearne una nuova.
+      const isUnknownSession = msg.payload.code === "unknown_session";
+      const base =
+        isUnknownSession
+          ? {
+              ...state,
+              currentSessionId: null,
+              messages: [],
+              currentTurnId: null,
+              streamingMessageId: null,
+              streamingText: "",
+              toolCalls: [],
+            }
+          : state;
+      return { ...base, error: `${msg.payload.code}: ${msg.payload.message}` };
+    }
 
     case "sessions_list":
       return { ...state, sessions: msg.payload.sessions };
@@ -161,10 +197,17 @@ export function applyServerMessage(
         currentTurnId: msg.payload.turnId,
         streamingMessageId: null,
         streamingText: "",
+        statusText: null,
         toolCalls: [],
         approvals: [],
         lastTurnReason: null,
       };
+
+    case "status":
+      // Heartbeat di avanzamento ("Elaborazione in corso…"): salva solo il
+      // testo di feedback; non tocca lo streaming (il testo non è parte della
+      // risposta). Lo si mostra finché non arriva testo o il turno termina.
+      return { ...state, statusText: msg.payload.text };
 
     case "assistant_delta": {
       const p = msg.payload;
@@ -256,6 +299,7 @@ export function applyServerMessage(
         currentTurnId: null,
         streamingMessageId: null,
         streamingText: "",
+        statusText: null,
         lastTurnReason: p.reason,
       };
     }

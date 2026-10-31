@@ -41,8 +41,15 @@ public class AgentEventDto
     [JsonPropertyName("reason")]
     public string? Reason { get; set; }
 
+    [JsonPropertyName("outcome")]
+    public string? Outcome { get; set; }
+
     [JsonPropertyName("usage")]
     public UsageInfoDto? Usage { get; set; }
+
+    // --- error ---
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
 
     // --- approval_request ---
     [JsonPropertyName("approvalId")]

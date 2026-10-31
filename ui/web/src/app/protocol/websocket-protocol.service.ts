@@ -68,6 +68,7 @@ export class WebSocketProtocolService implements OnDestroy {
   );
   readonly streamingText: Signal<string> = computed(() => this.protocolState().streamingText);
   readonly streamingMessageId: Signal<string | null> = computed(() => this.protocolState().streamingMessageId);
+  readonly statusText: Signal<string | null> = computed(() => this.protocolState().statusText);
   readonly toolCalls: Signal<ToolCallState[]> = computed(() => this.protocolState().toolCalls);
   readonly approvals: Signal<ApprovalState[]> = computed(() => this.protocolState().approvals);
   readonly lastUsage: Signal<UsageInfo | null> = computed(() => this.protocolState().lastUsage);
@@ -279,6 +280,17 @@ export class WebSocketProtocolService implements OnDestroy {
       const sid = (msg.payload as { session?: { id?: string } })?.session?.id;
       if (sid) {
         this.saveSettings({ lastSessionId: sid });
+      }
+    }
+
+    // Se la sessione che stavamo riaprendo non esiste più sul backend (riavvio),
+    // rimuovi il lastSessionId persistito: altrimenti ad ogni reconnect
+    // riproviamo ad aprirla e riceviamo un altro "unknown_session".
+    if (msg.type === 'error' && (msg.payload as { code?: string }).code === 'unknown_session') {
+      const current = this.settings();
+      if (current.lastSessionId) {
+        const { lastSessionId: _removed, ...rest } = current;
+        this.saveSettings(rest);
       }
     }
   }

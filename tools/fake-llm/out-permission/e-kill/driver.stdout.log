@@ -1,0 +1,6 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-e-kill
+[driver] pm-code avviato, PID=17080
+[driver] kill di PID=17080 dopo 1503 ms (nessuna chance di flush)
+[driver] pm-code uscito con codice -1
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-e-kill\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-e-kill\logs

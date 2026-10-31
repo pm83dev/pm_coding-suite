@@ -1,0 +1,10 @@
+﻿{"ts":"2026-10-31T15:21:59.0815618\u002B01:00","sessionId":"3657e633","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\out-permission\\work-h-secret\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8988","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T15:21:59.0987059\u002B01:00","sessionId":"3657e633","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T15:21:59.0991180\u002B01:00","sessionId":"3657e633","turnId":1,"type":"user_message","text":"Scrivi un file con una chiave segreta finta dentro."}
+{"ts":"2026-10-31T15:21:59.1603505\u002B01:00","sessionId":"3657e633","turnId":1,"type":"llm_request","promptTokens":1000,"durationMs":54,"finishReason":"tool_calls","ok":true,"errorKind":null,"contextPercent":1.220703125,"maxTokens":32768}
+{"ts":"2026-10-31T15:21:59.1666045\u002B01:00","sessionId":"3657e633","turnId":1,"type":"context_size","tokensUsed":1000,"tokensMax":81920}
+{"ts":"2026-10-31T15:21:59.1739767\u002B01:00","sessionId":"3657e633","turnId":1,"type":"tool_call","name":"write_file","args":"{\u0022path\u0022:\u0022secret.txt\u0022,\u0022content\u0022:\u0022API_KEY=[REDACTED] non deve comparire in chiaro nel trace\u0022}","ok":true,"errorKind":null,"durationMs":5,"bytes":52}
+{"ts":"2026-10-31T15:21:59.1800888\u002B01:00","sessionId":"3657e633","turnId":1,"type":"llm_request","promptTokens":1050,"durationMs":5,"finishReason":"stop","ok":true,"errorKind":null,"contextPercent":1.28173828125,"maxTokens":32768}
+{"ts":"2026-10-31T15:21:59.1801911\u002B01:00","sessionId":"3657e633","turnId":1,"type":"context_size","tokensUsed":1050,"tokensMax":81920}
+{"ts":"2026-10-31T15:21:59.1839219\u002B01:00","sessionId":"3657e633","turnId":1,"type":"turn_end","reason":"completed"}
+{"ts":"2026-10-31T15:21:59.2906508\u002B01:00","sessionId":"3657e633","turnId":1,"type":"session_end","reason":"process_exit"}

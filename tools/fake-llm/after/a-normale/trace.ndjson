@@ -1,0 +1,15 @@
+﻿{"ts":"2026-10-31T14:59:38.4352837\u002B01:00","sessionId":"d6ee0c3f","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\after\\work-a-normale\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8911","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T14:59:38.4555333\u002B01:00","sessionId":"d6ee0c3f","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T14:59:38.4586070\u002B01:00","sessionId":"d6ee0c3f","turnId":1,"type":"user_message","text":"Dimmi che sei pronto, senza usare tool."}
+{"ts":"2026-10-31T14:59:38.5119229\u002B01:00","sessionId":"d6ee0c3f","turnId":1,"type":"llm_request","promptTokens":1000,"durationMs":47,"finishReason":"stop","ok":true,"errorKind":null,"contextPercent":1.220703125,"maxTokens":32768}
+{"ts":"2026-10-31T14:59:38.5185440\u002B01:00","sessionId":"d6ee0c3f","turnId":1,"type":"context_size","tokensUsed":1000,"tokensMax":81920}
+{"ts":"2026-10-31T14:59:38.5233760\u002B01:00","sessionId":"d6ee0c3f","turnId":1,"type":"turn_end","reason":"completed"}
+{"ts":"2026-10-31T14:59:38.6383839\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"turn_start"}
+{"ts":"2026-10-31T14:59:38.6385154\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"user_message","text":"Leggi hello.txt e dimmi cosa contiene."}
+{"ts":"2026-10-31T14:59:38.6497130\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"llm_request","promptTokens":1050,"durationMs":11,"finishReason":"tool_calls","ok":true,"errorKind":null,"contextPercent":1.28173828125,"maxTokens":32768}
+{"ts":"2026-10-31T14:59:38.6498078\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"context_size","tokensUsed":1050,"tokensMax":81920}
+{"ts":"2026-10-31T14:59:38.6573348\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"tool_call","name":"read_file","args":"{\u0022path\u0022:\u0022hello.txt\u0022}","ok":true,"errorKind":null,"durationMs":6,"bytes":41}
+{"ts":"2026-10-31T14:59:38.6609937\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"llm_request","promptTokens":1100,"durationMs":2,"finishReason":"stop","ok":true,"errorKind":null,"contextPercent":1.3427734375,"maxTokens":32768}
+{"ts":"2026-10-31T14:59:38.6610425\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"context_size","tokensUsed":1100,"tokensMax":81920}
+{"ts":"2026-10-31T14:59:38.6613036\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"turn_end","reason":"completed"}
+{"ts":"2026-10-31T14:59:39.0551590\u002B01:00","sessionId":"d6ee0c3f","turnId":2,"type":"session_end","reason":"process_exit"}

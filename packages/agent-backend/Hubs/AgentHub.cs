@@ -73,8 +73,8 @@ public class AgentHub : Hub
 
         try
         {
-            var executionService = new ToolExecutionService(session, EmitEvent, _config);
-            await executionService.ExecuteTurnAsync(text);
+            var executionService = new AgentLoopSession(session, EmitEvent, _config);
+            await executionService.RunTurnAsync(text);
         }
         finally
         {

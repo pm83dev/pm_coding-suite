@@ -1,0 +1,4 @@
+﻿{"ts":"2026-10-31T15:21:46.9648411\u002B01:00","sessionId":"00a83157","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\out-permission\\work-d-ctrlc\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8944","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T15:21:46.9811386\u002B01:00","sessionId":"00a83157","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T15:21:46.9814481\u002B01:00","sessionId":"00a83157","turnId":1,"type":"user_message","text":"Fai qualcosa che richiede un po\u0027 di tempo."}
+{"ts":"2026-10-31T15:21:49.2931872\u002B01:00","sessionId":"00a83157","turnId":1,"type":"session_end","reason":"process_exit"}

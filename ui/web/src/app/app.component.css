@@ -13,6 +13,35 @@
   50% { opacity: 0; }
 }
 
+/* Indicatore "Elaborazione in corso…" (heartbeat del turno quando non c'è
+   ancora testo in streaming, es. durante una tool call lunga). */
+.status-indicator .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #6b7280;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+.status-indicator .status-label {
+  animation: blink 1.4s ease-in-out infinite;
+}
+
+.status-indicator .spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid #4b5563;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Markdown content styling — ottimizzato per la chat (testi compatti) */
 .message-text {
   line-height: 1.5;

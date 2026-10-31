@@ -1,0 +1,9 @@
+﻿{"ts":"2026-10-31T12:34:56.8357512\u002B01:00","sessionId":"e4df3413","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\baseline\\work-g-truncated\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8977","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T12:34:56.8528405\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T12:34:56.8531764\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"user_message","text":"Prova un messaggio qualsiasi."}
+{"ts":"2026-10-31T12:34:56.9040823\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"llm_request","promptTokens":null,"durationMs":44,"finishReason":null,"ok":false,"errorKind":"stream_truncated","contextPercent":null,"maxTokens":32768}
+{"ts":"2026-10-31T12:34:56.9067745\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"llm_retry","attempt":1,"maxAttempts":2,"reason":"stream_truncated","delayMs":1500}
+{"ts":"2026-10-31T12:34:58.4202559\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"llm_request","promptTokens":1050,"durationMs":9,"finishReason":"stop","ok":true,"errorKind":null,"contextPercent":1.28173828125,"maxTokens":32768}
+{"ts":"2026-10-31T12:34:58.4260643\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"context_size","tokensUsed":1050,"tokensMax":81920}
+{"ts":"2026-10-31T12:34:58.4336879\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"turn_end","reason":"completed"}
+{"ts":"2026-10-31T12:34:58.4348168\u002B01:00","sessionId":"e4df3413","turnId":1,"type":"session_end","reason":"process_exit"}

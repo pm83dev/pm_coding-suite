@@ -1,0 +1,5 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-g-truncated
+[driver] pm-code avviato, PID=5952
+[driver] pm-code uscito con codice 0
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-g-truncated\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-g-truncated\logs

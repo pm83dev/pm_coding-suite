@@ -1,0 +1,7 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-d-ctrlc
+[driver] pm-code avviato, PID=27920
+[driver] invio CTRL_C_EVENT a PID=27920 dopo 2505 ms
+[driver] SendCtrlC risultato: ok
+[driver] pm-code uscito con codice -1073741510
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-d-ctrlc\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\baseline\work-d-ctrlc\logs

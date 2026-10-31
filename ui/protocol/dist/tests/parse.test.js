@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { parseClientMessage, parseServerMessage, makeMessage } from "../index.js";
 import { loadExample, listExamples } from "./helpers.js";
 const CLIENT_TYPES = new Set(["hello", "list_sessions", "new_session", "open_session", "send_message", "cancel", "approve", "reject", "set_model", "set_permission"]);
-const SERVER_TYPES = new Set(["hello_ok", "error", "sessions_list", "session_state", "models_list", "permission_state", "turn_started", "assistant_delta", "assistant_done", "tool_call_started", "tool_call_finished", "approval_request", "approval_resolved", "turn_finished"]);
+const SERVER_TYPES = new Set(["hello_ok", "error", "sessions_list", "session_state", "models_list", "permission_state", "turn_started", "status", "assistant_delta", "assistant_done", "tool_call_started", "tool_call_finished", "approval_request", "approval_resolved", "turn_finished"]);
 test("ogni esempio JSON valida nella direzione corretta e il type coincide col nome file", () => {
     const names = listExamples();
     assert.ok(names.length >= 24, `attesi almeno 24 esempi, trovati ${names.length}`);

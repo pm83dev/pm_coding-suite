@@ -341,6 +341,19 @@ const serverPayloadValidators = {
             };
         return null;
     },
+    status: (p) => {
+        if (!strNonEmpty(p["turnId"]))
+            return {
+                ok: false,
+                error: "status.payload.turnId mancante o non stringa non vuota",
+            };
+        if (!str(p["text"]))
+            return {
+                ok: false,
+                error: "status.payload.text mancante o non stringa",
+            };
+        return null;
+    },
     assistant_delta: (p) => {
         for (const f of ["turnId", "messageId"]) {
             if (!strNonEmpty(p[f]))
@@ -523,6 +536,7 @@ export function parseServerMessage(raw) {
         "models_list",
         "permission_state",
         "turn_started",
+        "status",
         "assistant_delta",
         "assistant_done",
         "tool_call_started",

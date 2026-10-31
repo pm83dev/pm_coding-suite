@@ -1,0 +1,6 @@
+﻿{"ts":"2026-10-31T12:34:54.6993180\u002B01:00","sessionId":"312c2933","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\baseline\\work-f-http-error\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8966","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T12:34:54.7182260\u002B01:00","sessionId":"312c2933","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T12:34:54.7187319\u002B01:00","sessionId":"312c2933","turnId":1,"type":"user_message","text":"Prova un messaggio qualsiasi."}
+{"ts":"2026-10-31T12:34:54.7699834\u002B01:00","sessionId":"312c2933","turnId":1,"type":"llm_request","promptTokens":null,"durationMs":45,"finishReason":null,"ok":false,"errorKind":"http_error","contextPercent":null,"maxTokens":32768}
+{"ts":"2026-10-31T12:34:54.7726480\u002B01:00","sessionId":"312c2933","turnId":1,"type":"turn_end","reason":"error"}
+{"ts":"2026-10-31T12:34:54.8956555\u002B01:00","sessionId":"312c2933","turnId":1,"type":"session_end","reason":"process_exit"}

@@ -1,0 +1,8 @@
+﻿{"ts":"2026-10-31T12:35:04.3736889\u002B01:00","sessionId":"22b90636","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\baseline\\work-j-truncated-toolcall\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:9010","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T12:35:04.3911054\u002B01:00","sessionId":"22b90636","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T12:35:04.3914126\u002B01:00","sessionId":"22b90636","turnId":1,"type":"user_message","text":"Scrivi un file."}
+{"ts":"2026-10-31T12:35:04.4472451\u002B01:00","sessionId":"22b90636","turnId":1,"type":"llm_request","promptTokens":null,"durationMs":49,"finishReason":null,"ok":false,"errorKind":"stream_truncated","contextPercent":null,"maxTokens":32768}
+{"ts":"2026-10-31T12:35:04.4497570\u002B01:00","sessionId":"22b90636","turnId":1,"type":"llm_retry","attempt":1,"maxAttempts":2,"reason":"stream_truncated","delayMs":1500}
+{"ts":"2026-10-31T12:35:05.9609489\u002B01:00","sessionId":"22b90636","turnId":1,"type":"llm_request","promptTokens":null,"durationMs":3,"finishReason":null,"ok":false,"errorKind":"stream_truncated","contextPercent":null,"maxTokens":32768}
+{"ts":"2026-10-31T12:35:05.9613410\u002B01:00","sessionId":"22b90636","turnId":1,"type":"turn_end","reason":"error"}
+{"ts":"2026-10-31T12:35:05.9623341\u002B01:00","sessionId":"22b90636","turnId":1,"type":"session_end","reason":"process_exit"}

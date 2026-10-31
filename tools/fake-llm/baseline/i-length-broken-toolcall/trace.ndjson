@@ -1,0 +1,6 @@
+﻿{"ts":"2026-10-31T12:35:02.2101699\u002B01:00","sessionId":"ecdddee7","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\baseline\\work-i-length-broken-toolcall\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8999","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T12:35:02.2324458\u002B01:00","sessionId":"ecdddee7","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T12:35:02.2328171\u002B01:00","sessionId":"ecdddee7","turnId":1,"type":"user_message","text":"Scrivi un file lungo."}
+{"ts":"2026-10-31T12:35:02.3333712\u002B01:00","sessionId":"ecdddee7","turnId":1,"type":"llm_request","promptTokens":2000,"durationMs":94,"finishReason":null,"ok":false,"errorKind":"length","contextPercent":2.44140625,"maxTokens":32768}
+{"ts":"2026-10-31T12:35:02.3431153\u002B01:00","sessionId":"ecdddee7","turnId":1,"type":"turn_end","reason":"error"}
+{"ts":"2026-10-31T12:35:02.3842549\u002B01:00","sessionId":"ecdddee7","turnId":1,"type":"session_end","reason":"process_exit"}

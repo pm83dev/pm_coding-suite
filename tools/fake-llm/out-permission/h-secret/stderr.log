@@ -1,0 +1,18 @@
+Sampling: temperature=0 frequency_penalty=0.3 presence_penalty=- top_p=- top_k=- min_p=- repeat_penalty=- repeat_last_n=- | anti-loop: MaxRepeats=3 MaxConsecutiveReadOnly=6 MaxLinesPerFile=400
+����������������������������������������������ͻ
+�  LOCAL CODE AGENT - PM SOFTWARE              �
+�  Powered by PM LLM                           �
+����������������������������������������������ͼ
+ Connessione al server LLM...
+� Server online - modello: FAKE
+Workspace: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\out-permission\work-h-secret\workspace
+Task (es: 'Crea una console app Hello World in C#')
+Comandi: /help  /init  /reset  /workspace  /tools  /paste  /cd <path>  quit
+
+You >   [1]   ? write_file({"path":"secret.txt","content":"API_KEY=sk-abcdef1234567890ABCDEF non deve comparire in chiaro nel t.)
+     � File scritto: secret.txt (72 caratteri, 1 righe)
+  [2] [tokens: prompt=1050 completion=20 | step=2]
+You > 
+Arrivederci!
+
+Arrivederci!

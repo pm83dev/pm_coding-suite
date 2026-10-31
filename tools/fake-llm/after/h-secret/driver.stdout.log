@@ -1,0 +1,5 @@
+[driver] workdir=C:\DevAgentPM\pm_coding-suite\tools\fake-llm\after\work-h-secret
+[driver] pm-code avviato, PID=18104
+[driver] pm-code uscito con codice 0
+[driver] traces: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\after\work-h-secret\traces
+[driver] log pm-code: C:\DevAgentPM\pm_coding-suite\tools\fake-llm\after\work-h-secret\logs

@@ -1,0 +1,6 @@
+﻿{"ts":"2026-10-31T15:21:53.7528462\u002B01:00","sessionId":"8b12d262","turnId":0,"type":"session_start","workspace":"C:\\DevAgentPM\\pm_coding-suite\\tools\\fake-llm\\out-permission\\work-f-http-error\\workspace","model":"FAKE","endpoint":"http://127.0.0.1:8966","coreVersion":"1.0.0.0"}
+{"ts":"2026-10-31T15:21:53.7718549\u002B01:00","sessionId":"8b12d262","turnId":1,"type":"turn_start"}
+{"ts":"2026-10-31T15:21:53.7723117\u002B01:00","sessionId":"8b12d262","turnId":1,"type":"user_message","text":"Prova un messaggio qualsiasi."}
+{"ts":"2026-10-31T15:21:53.8175344\u002B01:00","sessionId":"8b12d262","turnId":1,"type":"llm_request","promptTokens":null,"durationMs":39,"finishReason":null,"ok":false,"errorKind":"http_error","contextPercent":null,"maxTokens":32768}
+{"ts":"2026-10-31T15:21:53.8202094\u002B01:00","sessionId":"8b12d262","turnId":1,"type":"turn_end","reason":"error"}
+{"ts":"2026-10-31T15:21:53.9640451\u002B01:00","sessionId":"8b12d262","turnId":1,"type":"session_end","reason":"process_exit"}
