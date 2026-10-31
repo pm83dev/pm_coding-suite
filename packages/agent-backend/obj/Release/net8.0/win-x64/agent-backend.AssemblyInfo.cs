@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("agent-backend")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b1a87816df76c6de1a3b14af04b372a106a438a9")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f947f575fe8bd786b9e6c100e48c2f0683a9f5ba")]
 [assembly: System.Reflection.AssemblyProductAttribute("agent-backend")]
 [assembly: System.Reflection.AssemblyTitleAttribute("agent-backend")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

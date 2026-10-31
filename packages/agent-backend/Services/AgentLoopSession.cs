@@ -107,13 +107,29 @@ public class AgentLoopSession
             RepeatLastN = _config.LlmSettings.RepeatLastN
         };
 
+        var exploreAgent = new ExploreSubAgent(
+            llm,
+            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
+            workspace,
+            r =>
+            {
+                r.Temperature = _config.LlmSettings.Temperature;
+                r.FrequencyPenalty = _config.LlmSettings.FrequencyPenalty;
+                r.PresencePenalty = _config.LlmSettings.PresencePenalty;
+                r.TopP = _config.LlmSettings.TopP;
+                r.TopK = _config.LlmSettings.TopK;
+                r.MinP = _config.LlmSettings.MinP;
+                r.RepeatPenalty = _config.LlmSettings.RepeatPenalty;
+                r.RepeatLastN = _config.LlmSettings.RepeatLastN;
+            });
+
         var loop = new AgentLoop(
             llm,
             dispatcher,
             sessionManager,
             sink,
             workspace,
-            null, // exploreAgent: non usato in agent-backend
+            exploreAgent,
             options,
             _ => { }, // ui: no-op (gli eventi vanno via sink)
             _ => { }, // trace: no-op
