@@ -10,6 +10,8 @@ agent/.pm_workspace_index.json
 .pm_todo_state.json
 tools/**/bin/
 tools/**/obj/
+packages/**/bin/
+packages/**/obj/
 
 # Node / VS Code extension
 extension/node_modules/
