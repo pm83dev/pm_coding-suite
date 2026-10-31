@@ -27,6 +27,10 @@ public class ToolExecutionService
         var sessionManager = _session.SessionManager;
         var maxSteps = _config.AgentSettings.MaxSteps;
 
+        // Stesso contratto di LlamaClient/ChatRequest nel core (pm-code): se la sessione
+        // è in corso un nuovo send_message non parte (vedi TryStartTurn in WebSocketHub),
+        // quindi non c'è rischio di write concorrenti su History — il core fa la stessa
+        // operazione senza lock (history.Add in RunAgentLoopAsync).
         if (llm == null || dispatcher == null || sessionManager == null) return (false, turnId);
 
         // Build system prompt (stesso formato di pm-code)
@@ -87,11 +91,24 @@ public class ToolExecutionService
                 return (false, turnId);
             }
 
+            // Stessi parametri di campionamento del core (pm-code/RunAgentLoopAsync):
+            // MaxTokens 32768 (il default 4096 di ChatRequest troncherebbe le risposte con
+            // tool call e il loop non convergerebbe), temperature/frequency_penalty dagli
+            // stessi valori di LlmSettings che il core usa.
             var request = new ChatRequest
             {
                 Messages = history.ToList(),
                 Tools = dispatcher.AllDefinitions,
-                ToolChoice = "auto"
+                ToolChoice = "auto",
+                MaxTokens = 32768,
+                Temperature = _config.LlmSettings.Temperature,
+                FrequencyPenalty = _config.LlmSettings.FrequencyPenalty,
+                PresencePenalty = _config.LlmSettings.PresencePenalty,
+                TopP = _config.LlmSettings.TopP,
+                TopK = _config.LlmSettings.TopK,
+                MinP = _config.LlmSettings.MinP,
+                RepeatPenalty = _config.LlmSettings.RepeatPenalty,
+                RepeatLastN = _config.LlmSettings.RepeatLastN
             };
 
             var messageId = $"msg-{Guid.NewGuid():N}"[..12];
@@ -170,7 +187,7 @@ public class ToolExecutionService
                     }
                     else
                     {
-                        result = dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, CancellationToken.None);
+                        result = dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, ct);
                     }
                 }
                 sw.Stop();
@@ -253,7 +270,9 @@ public class ToolExecutionService
                 return $"⛔ Modifica a '{relPath}' rifiutata o scaduta: NON applicata.";
         }
 
-        return dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, CancellationToken.None);
+        // Token del turno (stesso comportamento del core): se il client invia "cancel"
+        // durante l'esecuzione, il tool viene interrotto.
+        return dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, _session.TurnCancellationToken);
     }
 
     // ── Esecuzione di run_command con controllo permessi ──────────────────────────────
@@ -292,7 +311,9 @@ public class ToolExecutionService
                 return "⛔ Comando rifiutato o scaduto: NON eseguito.";
         }
 
-        return dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, CancellationToken.None);
+        // Token del turno (stesso comportamento del core): se il client invia "cancel"
+        // durante l'esecuzione, il comando viene interrotto.
+        return dispatcher.Execute(tc.Function.Name, tc.Function.Arguments, _session.TurnCancellationToken);
     }
 
     private static string SafeRel(WorkspaceContext workspace, string absPath)

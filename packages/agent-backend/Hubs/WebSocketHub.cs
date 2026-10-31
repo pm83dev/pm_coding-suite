@@ -81,6 +81,15 @@ public class WebSocketHub
                 // altri messaggi (approve/reject/cancel) finché il turno non termina.
                 // Quindi per send_message NON facciamo await: lo eseguiamo in
                 // background così il ReceiveLoop resta libero di leggere approve/cancel.
+                //
+                // Attenzione: il Task.Run NON va cancellato quando la connessione muore.
+                // Se il turno è già in attesa di approvazione, il ReceiveLoop è già
+                // terminato e il Task non può più essere cancellato dal connCt di
+                // ProcessWebSocketAsync; cancellarlo lo lascerebbe in sospeso per i
+                // 300 s di AwaitApprovalAsync. La Task vive per il suo ciclo di vita
+                // naturale (il turno, non la connessione): i clienti disconnessi
+                // non ricevono più eventi, ma il turno va comunque a buon fine e
+                // EndTurn viene chiamato nel finally di HandleMessage.
                 var isLongRunning = false;
                 try
                 {
@@ -249,16 +258,50 @@ public class WebSocketHub
                     // controlla per fermarsi su "cancel".
                     session.BeginTurn();
 
+                    // Il flag TurnInProgress è la SENTINELLA di fine turno: resta true
+                    // per tutta la durata del turno (Tutti gli step, approvazioni incluse)
+                    // e viene azzerato SOLO dal finally qui sotto. Se il Task.Run
+                    // fallisse con un'eccezione non catturata (es. un bug nel loop) il
+                    // finally non girerebbe e la sessione resterebbe "running" per
+                    // sempre, rifiutando ogni send_message successivo con
+                    // "Turn already in progress" — esattamente il bug che si è visto
+                    // (sessione bloccata dopo un turno interrotto). La Task.Run non
+                    // può essere cancellata (vedi commento in ReceiveLoop), quindi
+                    // l'unico modo per garantire il cleanup è un watchdog che forza
+                    // EndTurn se il Task non è ancora terminato dopo un tempo
+                    // ragionevole.
+                    var turnTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var executionService = new ToolExecutionService(session, EmitEvent, _config);
+                            var (success, activeTurnId) = await executionService.ExecuteTurnAsync(msgText);
+                            _activeTurnId = activeTurnId;
+                        }
+                        catch (Exception ex)
+                        {
+                            await SendAll("error", new { code = "error", message = ex.Message });
+                            await SendAll("turn_finished", new { turnId = _activeTurnId, reason = "error" });
+                        }
+                    });
+
+                    // Watchdog: se il Task non è terminato dopo 10 minuti (molto più
+                    // dei 300 s di AwaitApprovalAsync + margine per gli step), forza
+                    // EndTurn. Il Task in sé continua a girare (non lo cancelliamo:
+                    // l'approvazione potrebbe ancora essere in attesa), ma la sessione
+                    // torna "idle" e un nuovo send_message può partire.
+                    _ = Task.Delay(TimeSpan.FromMinutes(10)).ContinueWith(t =>
+                    {
+                        if (!turnTask.IsCompleted)
+                        {
+                            DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo 10 min — forza EndTurn");
+                            _sessionService.EndTurn(msgSessionId, "watchdog");
+                        }
+                    }, TaskScheduler.Default);
+
                     try
                     {
-                        var executionService = new ToolExecutionService(session, EmitEvent, _config);
-                        var (success, activeTurnId) = await executionService.ExecuteTurnAsync(msgText);
-                        _activeTurnId = activeTurnId;
-                    }
-                    catch (Exception ex)
-                    {
-                        await SendAll("error", new { code = "error", message = ex.Message });
-                        await SendAll("turn_finished", new { turnId = _activeTurnId, reason = "error" });
+                        await turnTask;
                     }
                     finally
                     {
