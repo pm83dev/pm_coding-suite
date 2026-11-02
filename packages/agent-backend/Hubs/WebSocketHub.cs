@@ -184,7 +184,8 @@ public class WebSocketHub
                         },
                         messages = Array.Empty<object>(),
                         model = session.Model,
-                        permission = session.PermissionMode
+                        permission = session.PermissionMode,
+                        pendingApprovals = BuildPendingApprovals(session)
                     });
                     break;
                 }
@@ -211,7 +212,8 @@ public class WebSocketHub
                         },
                         messages = MapHistory(session.History),
                         model = session.Model,
-                        permission = session.PermissionMode
+                        permission = session.PermissionMode,
+                        pendingApprovals = BuildPendingApprovals(session)
                     });
                     break;
                 }
@@ -298,11 +300,23 @@ public class WebSocketHub
                     // partire. 5 min è un compromesso: abbastanza per un turno lungo con
                     // molte approvazioni, poco abbastanza da non bloccare l'utente a lungo
                     // se un turno resta appeso (es. bug nel loop).
-                    _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(t =>
+                    _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(async t =>
                     {
                         if (!turnTask.IsCompleted)
                         {
                             DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo 5 min — forza EndTurn");
+                            // Se il turno è bloccato in attesa di un'approvazione, emetti
+                            // approval_resolved con outcome "expired" così il client (se
+                            // connesso) pulisce il bottone e lo stato non resta incoerente.
+                            // Il Task di turno continua a girare: AwaitApprovalAsync ha il
+                            // proprio timeout di 300 s che lo sbloccherà comunque.
+                            var pending = _sessionService.GetSession(msgSessionId)?.GetPendingApprovalSnapshot();
+                            if (pending != null)
+                            {
+                                var pid = GetProperty(pending, "approvalId");
+                                if (!string.IsNullOrEmpty(pid))
+                                    await SendAll("approval_resolved", new { approvalId = pid, outcome = "expired" });
+                            }
                             _sessionService.EndTurn(msgSessionId, "watchdog");
                         }
                     }, TaskScheduler.Default);
@@ -488,5 +502,31 @@ public class WebSocketHub
             });
         }
         return result;
+    }
+
+    /// <summary>
+    /// Costruisce l'array delle approvazioni pendenti da includere in session_state.
+    /// Al (ri)connessione il client usa questo campo per ri-esporre il bottone di
+    /// approvazione che avrebbe perso se l'evento approval_request fosse stato
+    /// emesso mentre era disconnesso (es. durante un refresh della pagina).
+    /// Restituisce un array vuoto (non null) quando non c'è nulla di pendente.
+    /// </summary>
+    private static List<object> BuildPendingApprovals(AgentSession session)
+    {
+        var pending = session.GetPendingApprovalSnapshot();
+        if (pending == null) return [];
+        return [pending];
+    }
+
+    /// <summary>
+    /// Legge una proprietà stringa da un oggetto anonimo serializzabile, via
+    /// reflection (nome esatto o camelCase). Torna "" se assente o non stringa.
+    /// </summary>
+    private static string GetProperty(object obj, string name)
+    {
+        var prop = obj.GetType().GetProperty(name)
+                  ?? obj.GetType().GetProperty(name is { Length: > 0 } n ? char.ToLower(n[0]) + n[1..] : name);
+        var val = prop?.GetValue(obj);
+        return val as string ?? "";
     }
 }

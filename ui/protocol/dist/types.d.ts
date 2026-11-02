@@ -88,6 +88,24 @@ export interface SessionStatePayload {
     messages: ChatMessage[];
     model: string;
     permission: PermissionMode;
+    /**
+     * Approvazioni ancora pendenti sul server al momento dello snapshot.
+     * Opzionale per retrocompatibilità: i backend vecchi non lo mandano.
+     * Serve a ri-esporre il bottone di approvazione dopo un refresh/
+     * riconnessione, quando l'evento approval_request è stato perso.
+     */
+    pendingApprovals?: PendingApproval[];
+}
+/** Approvazione pendente riportata in session_state (stesso shape di ApprovalRequestPayload). */
+export interface PendingApproval {
+    approvalId: string;
+    turnId: string;
+    kind: ApprovalKind;
+    title: string;
+    path?: string;
+    unifiedDiff?: string;
+    command?: string;
+    expiresAt: string;
 }
 export interface ModelsListPayload {
     models: ModelInfo[];

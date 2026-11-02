@@ -88,12 +88,24 @@ public class SessionManager
         // passa da /cd, quindi non rigenera il system message — riusare history[0] farebbe
         // "dimenticare" al modello il workspace corrente e ripartire da quello di default,
         // perché il riassunto generato di solito non ripete esplicitamente il path attuale.
+        //
+        // FIX persistenza: NON si butta via tutta la history. Si conserva la coda di
+        // messaggi recenti (ultimi N, tagliata su un confine user) così i messaggi
+        // assistant dell'ultimo tratto di conversazione restano nello storico e
+        // sopravvivono al refresh. Il riassunto copre la parte antica; i recenti
+        // restano per esteso. Senza questo fix il rollover sostituiva l'intera
+        // history con 3 messaggi e il client, dopo il refresh, vedeva solo i propri
+        // messaggi user (quelli del nuovo turno) e nessun assistant.
+        var recent = PickRecentMessages(toSummarize);
+
         List<ChatMessage> fresh =
         [
             ChatMessage.System(_buildSystemPrompt()),
             new ChatMessage { Role = "user",      Content = $"[SESSIONE PRECEDENTE #{previousId}]\n{summary}" },
             new ChatMessage { Role = "assistant",  Content = "Contesto sessione precedente acquisito. Continuo." }
         ];
+        foreach (var m in recent)
+            fresh.Add(m);
         if (!string.IsNullOrWhiteSpace(currentRequest))
             fresh.Add(ChatMessage.User(atTurnStart
                 ? currentRequest
@@ -101,6 +113,56 @@ public class SessionManager
                   "riassunto e nel piano, senza rifare i passi già completati. Prima di modificare un file rileggi le " +
                   "righe interessate.]\n" + currentRequest));
         return fresh;
+    }
+
+    /// <summary>
+    /// Estrae la coda di messaggi da conservare per esteso dopo il rollover.
+    /// Prende gli ultimi <see cref="RecentMessagesKept"/> messaggi di <paramref name="toSummarize"/>
+    /// e ritaglia la coda su un confine "user": il primo messaggio conservato deve
+    /// essere un user (o un assistant che non sia il primo della coda), così la
+    /// sequenza user/assistant resta valida per il provider. I ruoli "tool" e i
+    /// messaggi assistant con tool_calls vengono mantenuti se cadono dentro la
+    /// finestra (sono parte del flusso), ma se il primo della finestra è un
+    /// "tool" o un assistant-con-tool-calls senza il corrispondente user, si
+    /// sposta il confine al prossimo user.
+    /// </summary>
+    private static List<ChatMessage> PickRecentMessages(List<ChatMessage> toSummarize)
+    {
+        if (toSummarize.Count == 0) return [];
+
+        // La coda parte dall'ultimo user che non è l'ultimo messaggio (se l'ultimo
+        // è user, è la richiesta corrente che viene riacclusa separatamente; se è
+        // assistant/tool, l'ultimo user è l'ultimo turno completo).
+        var start = toSummarize.Count;
+        for (var i = toSummarize.Count - 1; i >= 0; i--)
+        {
+            if (toSummarize[i].Role == "user")
+            {
+                start = i;
+                break;
+            }
+        }
+        // Se non c'è nessun user (caso degenerato), conserva tutto.
+        if (start == toSummarize.Count) start = 0;
+
+        // Limita alla finestra recente: se la coda è più lunga di RecentMessagesKept,
+        // ritaglia di nuovo su un confine user (così non si parte a metà di un tool call).
+        var maxBack = RecentMessagesKept;
+        if (start > 0)
+        {
+            var target = toSummarize.Count - maxBack;
+            if (target > start)
+            {
+                for (var i = toSummarize.Count - 1; i >= 0; i--)
+                {
+                    if (i <= target && toSummarize[i].Role == "user") { start = i; break; }
+                }
+                // Se il ritaglio non ha trovato un user (es. tool call lunga),
+                // resta dove era: meglio conservare di più che rompere la sequenza.
+            }
+        }
+
+        return toSummarize.GetRange(start, toSummarize.Count - start);
     }
 
     private const int MaxSavedSummaries = 20;
@@ -170,6 +232,12 @@ public class SessionManager
     // proprio le scoperte del debug in corso (es. il testo esatto di un HTTP 400), e dopo il
     // rollover l'agente rifaceva da capo la stessa indagine.
     private const int RecentMessages = 16;
+
+    // Numero di messaggi (coda) conservati per esteso nella history dopo il rollover.
+    // Deve essere maggiore di RecentMessages (che governa il riassunto) così la coda
+    // conservata copre almeno l'intera finestra riportata per esteso nel riassunto,
+    // evitando che un messaggio compaia sia nel riassunto che per esteso.
+    private const int RecentMessagesKept = 20;
 
     private static string FormatHistory(List<ChatMessage> messages)
     {

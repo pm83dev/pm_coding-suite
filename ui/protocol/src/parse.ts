@@ -168,6 +168,38 @@ function validateChatMessage(
   return null;
 }
 
+/**
+ * Valida un elemento di session_state.pendingApprovals. Stesso shape di
+ * approval_request (stesso validatore riusato), così il client può trattare
+ * l'approvazione pendente esattamente come un approval_request appena arrivato.
+ */
+function validatePendingApproval(
+  p: Record<string, unknown>,
+  where: string,
+): ParseResult<never> | null {
+  if (!isRecord(p))
+    return { ok: false, error: `${where} deve essere un oggetto` };
+  for (const f of ["turnId", "approvalId", "title"] as const) {
+    if (!strNonEmpty(p[f]))
+      return { ok: false, error: `${where}.${f} mancante o non stringa non vuota` };
+  }
+  if (!oneOf(p["kind"], APPROVAL_KINDS))
+    return {
+      ok: false,
+      error: `${where}.kind deve essere uno di ${APPROVAL_KINDS.join("|")}`,
+    };
+  if (p["kind"] === "write") {
+    if (!strNonEmpty(p["path"]))
+      return { ok: false, error: `${where}.path obbligatorio con kind 'write'` };
+  } else if (p["kind"] === "command") {
+    if (!strNonEmpty(p["command"]))
+      return { ok: false, error: `${where}.command obbligatorio con kind 'command'` };
+  }
+  if (!isoDate(p["expiresAt"]))
+    return { ok: false, error: `${where}.expiresAt non è una data ISO8601` };
+  return null;
+}
+
 function validateModelInfo(
   p: Record<string, unknown>,
   where: string,
@@ -355,6 +387,16 @@ const serverPayloadValidators: Record<string, PayloadValidator> = {
         ok: false,
         error: `session_state.payload.permission deve essere uno di ${PERMISSION_MODES.join("|")}`,
       };
+    // pendingApprovals: opzionale (retrocompatibilità). Se presente, deve essere
+    // un array di oggetti con gli stessi campi di approval_request.
+    if (p["pendingApprovals"] !== undefined) {
+      const rPa = validateArray(
+        p["pendingApprovals"],
+        (x, w) => validatePendingApproval(x as Record<string, unknown>, w),
+        "pendingApproval",
+      );
+      if (!rPa.ok) return rPa;
+    }
     return null;
   },
   session_deleted: (p) => {

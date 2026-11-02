@@ -244,6 +244,18 @@ public class AgentLoopSession
             UnifiedDiff = string.IsNullOrEmpty(diff) ? "(nessuna differenza)" : diff,
             ExpiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o")
         });
+        // Espone l'approvazione pendente sulla sessione: se il client si
+        // riconnette (refresh) mentre è in attesa, session_state la ri-espone.
+        _session.PendingApprovalInfo = new
+        {
+            approvalId,
+            turnId,
+            kind = "write",
+            title,
+            path = relPath,
+            unifiedDiff = string.IsNullOrEmpty(diff) ? "(nessuna differenza)" : diff,
+            expiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o")
+        };
 
         var approved = await _session.AwaitApprovalAsync(300);
         var outcome = approved ? "approved" : "rejected";
@@ -274,6 +286,17 @@ public class AgentLoopSession
             Command = command,
             ExpiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o")
         });
+        // Espone l'approvazione pendente sulla sessione: se il client si
+        // riconnette (refresh) mentre è in attesa, session_state la ri-espone.
+        _session.PendingApprovalInfo = new
+        {
+            approvalId,
+            turnId,
+            kind = "command",
+            title = "Esegui comando",
+            command,
+            expiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o")
+        };
 
         var approved = await _session.AwaitApprovalAsync(300);
         var outcome = approved ? "approved" : "rejected";

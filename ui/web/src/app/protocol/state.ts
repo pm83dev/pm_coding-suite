@@ -169,6 +169,21 @@ export function applyServerMessage(
         streamingMessageId: null,
         streamingText: "",
         toolCalls: [],
+        // Ri-espone le approvazioni ancora pendenti sul server: l'evento
+        // approval_request è un broadcast in tempo reale che, se il browser era
+        // disconnesso (refresh/riconnessione), viene perso per sempre. Il campo
+        // pendingApprovals in session_state è l'unico modo per ripristinarlo.
+        // Se il backend non lo manda (vecchia versione) si azzera a [].
+        approvals: (p.pendingApprovals ?? []).map((a) => ({
+          approvalId: a.approvalId,
+          turnId: a.turnId,
+          kind: a.kind,
+          title: a.title,
+          path: a.path,
+          unifiedDiff: a.unifiedDiff,
+          command: a.command,
+          expiresAt: a.expiresAt,
+        })),
       };
     }
 

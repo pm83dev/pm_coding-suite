@@ -31,6 +31,17 @@ public class AgentSession
     // TaskCompletionSource viene risolto dal messaggio approve/reject del client.
     private TaskCompletionSource<bool>? _pendingApproval;
 
+    /// <summary>
+    /// Dettagli dell'approvazione sulla quale il turno è attualmente in attesa
+    /// (null se nessuna). Impostata dal backend quando emette approval_request,
+    /// azzerata quando l'approvazione viene risolta. Serve a ri-esporre il bottone
+    /// di approvazione al (ri)connessione del client: l'evento approval_request è
+    /// un broadcast in tempo reale che, se il browser è disconnesso (refresh),
+    /// viene perso per sempre e senza questo campo session_state non potrebbe
+    /// ripristinarlo.
+    /// </summary>
+    public object? PendingApprovalInfo { get; set; }
+
     // Cancel del turno in corso: quando il client invia "cancel", il token viene
     // cancellato e il loop ReAct lo rispetta (stop tra uno step e l'altro, e
     // durante la chiamata LLM).
@@ -81,6 +92,18 @@ public class AgentSession
     public void SetPendingApproval(TaskCompletionSource<bool>? tcs) => _pendingApproval = tcs;
 
     /// <summary>
+    /// Restituisce una copia "scattabile" dell'approvazione pendente corrente
+    /// (o null). Serve a costruire il payload session_state senza contendere il
+    /// lock della sessione (che lo chiama) e senza che la serializzazione veda un
+    /// oggetto mutato a metà.
+    /// </summary>
+    public object? GetPendingApprovalSnapshot()
+    {
+        lock (_lock)
+            return _pendingApproval != null ? PendingApprovalInfo : null;
+    }
+
+    /// <summary>
     /// Blocca il turno in attesa della decisione utente (o del timeout). Restituisce true se
     /// approvato, false se rifiutato/scaduto.
     /// </summary>
@@ -99,6 +122,7 @@ public class AgentSession
         finally
         {
             SetPendingApproval(null);
+            PendingApprovalInfo = null;
         }
     }
 
@@ -106,6 +130,16 @@ public class AgentSession
     public bool TryResolveApproval(bool approved)
     {
         var tcs = _pendingApproval;
-        return tcs != null && tcs.TrySetResult(approved);
+        if (tcs == null) return false;
+        var ok = tcs.TrySetResult(approved);
+        if (ok)
+        {
+            lock (_lock)
+            {
+                _pendingApproval = null;
+                PendingApprovalInfo = null;
+            }
+        }
+        return ok;
     }
 }
