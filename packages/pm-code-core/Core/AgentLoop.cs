@@ -687,13 +687,14 @@ namespace LocalCodeAgent.Core
                     onSummary: text => { if (_options.IsMachineMode) _trace("  [rollover] " + text.Replace("\n", "\n  [rollover] ")); });
                 History = history;
                 // Il contenuto dei file letti è uscito dal contesto: prima di modificarli vanno riletti.
+                // NB: non si azzerano qui i contatori anti-loop (consecutiveReadOnly/readOnlyNudgeGiven/
+                // restrictReadOnly/readBlocks). Un rollover avviene DURANTE il turno (a ogni step, non solo
+                // all'inizio), quindi un loop di sole letture che dura abbastanza da superare la soglia di
+                // contesto otterrebbe altrimenti un reset gratuito del guard a ogni rollover, continuando
+                // a girare a vuoto indefinitamente sotto lo stesso turno.
                 if (!ReferenceEquals(beforeRollover, history))
                 {
                     _dispatcher.ClearCache();
-                    consecutiveReadOnly = 0;
-                    readOnlyNudgeGiven = false;
-                    restrictReadOnly = false;
-                    readBlocks = 0;
                 }
 
                 // ── Call LLM (streaming) ──────────────────────────────────────
