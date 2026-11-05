@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed } from "@angular/core";
+import { Component, inject, signal, computed, effect } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 
 import { ProtocolService } from "../protocol/protocol.service";
@@ -20,10 +20,6 @@ import type { ConnectionSettings } from "../protocol/settings";
       <label>
         URL server (HTTP)
         <input type="text" [ngModel]="url()" (ngModelChange)="url.set($event)" placeholder="http://127.0.0.1:8765" />
-      </label>
-      <label>
-        Token (opzionale)
-        <input type="password" [ngModel]="token()" (ngModelChange)="token.set($event)" placeholder="Token di autenticazione" />
       </label>
       <label class="workspace-label">
         Workspace (cartella)
@@ -137,11 +133,25 @@ export class Settings {
   private readonly protocol = inject(ProtocolService);
 
   protected readonly url = signal(this.protocol.settings().serverUrl);
-  protected readonly token = signal(this.protocol.settings().token ?? "");
   protected readonly workspace = signal(this.protocol.settings().workspace ?? ".");
   protected readonly permissionMode = signal<"readonly" | "ask" | "auto">(
     this.protocol.settings().permissionMode ?? "ask",
   );
+
+  constructor() {
+    // Tiene il valore mostrato in sync con lo stato reale della sessione (arriva
+    // da session_state all'apertura/cambio sessione o da permission_state dopo
+    // un set_permission, incluso quello auto-risolto per approvazioni pendenti).
+    // Senza questo, il <select> può restare sul vecchio default locale e un
+    // cambio che "sembra" uguale al valore mostrato non scatena ngModelChange,
+    // quindi il comando set_permission non viene mai inviato.
+    effect(() => {
+      const live = this.protocol.permissionMode();
+      if (live && live !== this.permissionMode()) {
+        this.permissionMode.set(live);
+      }
+    });
+  }
 
   protected readonly permissionHint = computed(() => {
     switch (this.permissionMode()) {
@@ -212,8 +222,6 @@ export class Settings {
 
   protected save(): void {
     const s: Partial<ConnectionSettings> = { serverUrl: this.url().trim() };
-    const t = this.token().trim();
-    if (t) s.token = t;
     const w = this.workspace().trim();
     if (w) s.workspace = w;
     this.protocol.saveSettings(s);
@@ -224,10 +232,9 @@ export class Settings {
   }
 
   protected resetSettings(): void {
-    if (confirm("Sei sicuro di voler resettare le impostazioni? URL, token, workspace e permessi verranno eliminati.")) {
+    if (confirm("Sei sicuro di voler resettare le impostazioni? URL, workspace e permessi verranno eliminati.")) {
       localStorage.removeItem("pm-coding-suite.settings");
       this.url.set("http://127.0.0.1:8765");
-      this.token.set("");
       this.workspace.set(".");
       this.permissionMode.set("ask");
       this.allWorkspaces.set([]);

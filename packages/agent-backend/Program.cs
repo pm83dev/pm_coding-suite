@@ -93,7 +93,8 @@ app.MapControllers();
 // (recenti usi + driver disponibili + home utente) filtrati per query.
 app.MapGet("/api/workspaces", (string? query) =>
 {
-    var q = (query ?? "").Trim().ToLowerInvariant();
+    var rawQuery = (query ?? "").Trim();
+    var q = rawQuery.ToLowerInvariant();
     var ignoreDirs = new[] { ".git", "bin", "obj", "node_modules", ".vs", "__pycache__", ".nuget", "$recycle.bin", "system volume information" };
     var candidates = new List<string>();
     var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -109,6 +110,40 @@ app.MapGet("/api/workspaces", (string? query) =>
         }
         catch { /* ignora path non validi */ }
     }
+
+    // 0) Navigazione live: tutte le liste sotto sono euristiche statiche (nomi noti,
+    // cartelle già usate, marker di progetto) che non vedono una cartella appena
+    // creata finché non corrisponde a uno di quei pattern o non viene aperta almeno
+    // una volta. Se la query è un path assoluto (anche parziale, es. "C:\DevAgent" o
+    // "C:\DevAgentPM\"), elenchiamo invece DAL DISCO le sottocartelle reali della
+    // cartella genitore scritta finora: così una cartella nuova compare subito.
+    try
+    {
+        if (rawQuery.Length >= 2 && (char.IsLetter(rawQuery[0]) && rawQuery[1] == ':' || rawQuery.StartsWith(@"\\")))
+        {
+            var lastSep = rawQuery.LastIndexOfAny(['\\', '/']);
+            var parentDir = lastSep >= 0 ? rawQuery[..lastSep] : rawQuery;
+            var namePrefix = lastSep >= 0 ? rawQuery[(lastSep + 1)..] : "";
+            if (lastSep < 0 && Directory.Exists(rawQuery))
+            {
+                // La query è già una cartella esistente (es. "C:\DevAgentPM"): mostra le sue
+                // sottocartelle invece che quelle del suo genitore.
+                parentDir = rawQuery;
+                namePrefix = "";
+            }
+            if (Directory.Exists(parentDir))
+            {
+                foreach (var sub in Directory.EnumerateDirectories(parentDir))
+                {
+                    var name = Path.GetFileName(sub);
+                    if (ignoreDirs.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+                    if (namePrefix.Length == 0 || name.StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase))
+                        Add(sub);
+                }
+            }
+        }
+    }
+    catch { /* path non valido o inaccessibile: ignora, restano le euristiche sotto */ }
 
     // 1) Recenti: .pm-agent/workspaces.json in %USERPROFILE% (se esiste)
     try

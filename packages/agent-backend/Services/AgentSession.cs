@@ -22,6 +22,15 @@ public class AgentSession
     public bool TurnInProgress { get; set; }
 
     /// <summary>
+    /// Id del turno attualmente in corso su QUESTA sessione (null se nessun turno
+    /// attivo). Impostato quando il loop emette "turn_started", azzerato su
+    /// "turn_finished". Serve a instradare correttamente cancel/log per sessione,
+    /// al posto di un unico campo globale condiviso tra tutte le sessioni (che
+    /// con più sessioni concorrenti avrebbe mescolato i turnId tra l'una e l'altra).
+    /// </summary>
+    public string? CurrentTurnId { get; set; }
+
+    /// <summary>
     /// Modalità di permesso della sessione: "readonly" (solo lettura), "ask" (chiede
     /// conferma per modifiche/comandi) o "auto" (agisce senza conferma).
     /// </summary>

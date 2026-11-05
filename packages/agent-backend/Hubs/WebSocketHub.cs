@@ -18,7 +18,18 @@ public class WebSocketHub
     private readonly AgentConfig _config;
     private readonly string? _braveApiKey;
     private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
-    private string? _activeTurnId;
+
+    /// <summary>
+    /// Sessione attualmente "aperta" da ciascun client (impostata da new_session/
+    /// open_session, azzerata alla disconnessione). Usata per instradare gli eventi
+    /// di una sessione SOLO ai client che la stanno guardando: prima ogni evento
+    /// veniva inviato a tutti i client connessi con sessionId sempre null, quindi
+    /// con più sessioni/tab aperte in parallelo gli eventi di una sessione (testo in
+    /// streaming, tool call, richieste di approvazione, cambi di permesso...)
+    /// finivano anche nella UI che stava guardando un'altra sessione.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string?> _clientSessions = new();
+
     private readonly JsonSerializerOptions _jsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -48,6 +59,7 @@ public class WebSocketHub
         var ws = await context.WebSockets.AcceptWebSocketAsync();
         var clientId = Guid.NewGuid().ToString("N");
         _clients[clientId] = ws;
+        _clientSessions[clientId] = null;
 
         try
         {
@@ -56,6 +68,7 @@ public class WebSocketHub
         finally
         {
             _clients.TryRemove(clientId, out _);
+            _clientSessions.TryRemove(clientId, out _);
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Disconnected", CancellationToken.None); } catch { }
         }
     }
@@ -109,7 +122,7 @@ public class WebSocketHub
                         }
                         catch (Exception ex)
                         {
-                            await SendAll("error", new { code = "error", message = ex.Message });
+                            await SendTo(clientId, "error", new { code = "error", message = ex.Message });
                         }
                     });
                 }
@@ -122,7 +135,7 @@ public class WebSocketHub
                     }
                     catch (Exception ex)
                     {
-                        await SendAll("error", new { code = "bad_request", message = ex.Message });
+                        await SendTo(clientId, "error", new { code = "bad_request", message = ex.Message });
                     }
                 }
             }
@@ -156,13 +169,13 @@ public class WebSocketHub
                 {
                     // Token present but not validated (local-only app)
                 }
-                await SendAll("hello_ok", new { serverVersion = "2.0.0", protocol = 1 });
+                await SendTo(clientId, "hello_ok", new { serverVersion = "2.0.0", protocol = 1 });
                 break;
 
             case "list_sessions":
                 {
                     var sessions = _sessionService.ListSessions();
-                    await SendAll("sessions_list", new { sessions });
+                    await SendTo(clientId, "sessions_list", new { sessions });
                     break;
                 }
 
@@ -171,7 +184,11 @@ public class WebSocketHub
                     var workspace = payload?.GetProperty("workspace").GetString() ?? ".";
                     var model = payload?.TryGetProperty("model", out var mProp) == true ? mProp.GetString() : null;
                     var session = _sessionService.CreateSession(workspace, model);
-                    await SendAll("session_state", new
+                    // Questo client ora "guarda" la nuova sessione: gli eventi del
+                    // turno (quando partirà) verranno instradati solo a lui (e a
+                    // chiunque altro apra la stessa sessione in futuro).
+                    _clientSessions[clientId] = session.SessionId;
+                    await SendTo(clientId, "session_state", new
                     {
                         session = new
                         {
@@ -186,7 +203,11 @@ public class WebSocketHub
                         model = session.Model,
                         permission = session.PermissionMode,
                         pendingApprovals = BuildPendingApprovals(session)
-                    });
+                    }, session.SessionId);
+                    // Le altre tab/client non vedono il contenuto della nuova sessione
+                    // (session_state va solo al richiedente), ma la loro sidebar deve
+                    // comunque sapere che ora esiste: aggiorna la lista per tutti.
+                    await SendAll("sessions_list", new { sessions = _sessionService.ListSessions() });
                     break;
                 }
 
@@ -196,10 +217,11 @@ public class WebSocketHub
                     var session = _sessionService.GetSession(sid);
                     if (session == null)
                     {
-                        await SendAll("error", new { code = "unknown_session", message = "Session not found" });
+                        await SendTo(clientId, "error", new { code = "unknown_session", message = "Session not found" });
                         return;
                     }
-                    await SendAll("session_state", new
+                    _clientSessions[clientId] = sid;
+                    await SendTo(clientId, "session_state", new
                     {
                         session = new
                         {
@@ -214,7 +236,7 @@ public class WebSocketHub
                         model = session.Model,
                         permission = session.PermissionMode,
                         pendingApprovals = BuildPendingApprovals(session)
-                    });
+                    }, sid);
                     break;
                 }
 
@@ -224,10 +246,14 @@ public class WebSocketHub
                     var delSession = _sessionService.GetSession(delId);
                     if (delSession == null)
                     {
-                        await SendAll("error", new { code = "unknown_session", message = "Session not found" });
+                        await SendTo(clientId, "error", new { code = "unknown_session", message = "Session not found" });
                         return;
                     }
                     _sessionService.DeleteSession(delId);
+                    // Se qualche client aveva questa sessione aperta, smette di seguirla
+                    // (altrimenti resterebbe "abbonato" a una sessione ormai inesistente).
+                    foreach (var cid in _clientSessions.Keys)
+                        _clientSessions.TryUpdate(cid, null, delId);
                     await SendAll("session_deleted", new { sessionId = delId });
                     break;
                 }
@@ -239,14 +265,14 @@ public class WebSocketHub
 
                     if (string.IsNullOrEmpty(msgSessionId))
                     {
-                        await SendAll("error", new { code = "bad_request", message = "sessionId required" });
+                        await SendTo(clientId, "error", new { code = "bad_request", message = "sessionId required" });
                         return;
                     }
 
                     var session = _sessionService.GetSession(msgSessionId);
                     if (session == null)
                     {
-                        await SendAll("error", new { code = "unknown_session", message = "Session not found" });
+                        await SendTo(clientId, "error", new { code = "unknown_session", message = "Session not found" });
                         return;
                     }
 
@@ -257,7 +283,7 @@ public class WebSocketHub
                         // Task è ancora appeso in RunTurnAsync, o il backend è stato riavviato
                         // lasciando lo stato in memoria incoerente).
                         DebugLog($"send_message RIFIUTATO (già in corso) sessione={msgSessionId[..Math.Min(8, msgSessionId.Length)]}");
-                        await SendAll("error", new { code = "bad_request", message = "Turn already in progress" });
+                        await SendTo(clientId, "error", new { code = "bad_request", message = "Turn already in progress" });
                         return;
                     }
 
@@ -281,14 +307,23 @@ public class WebSocketHub
                     {
                         try
                         {
-                            var executionService = new AgentLoopSession(session, EmitEvent, _config);
-                            var (success, activeTurnId) = await executionService.RunTurnAsync(msgText);
-                            _activeTurnId = activeTurnId;
+                            var executionService = new AgentLoopSession(
+                                session,
+                                evt => EmitSessionEvent(session, msgSessionId, evt),
+                                _config);
+                            await executionService.RunTurnAsync(msgText);
                         }
                         catch (Exception ex)
                         {
-                            await SendAll("error", new { code = "error", message = ex.Message });
-                            await SendAll("turn_finished", new { turnId = _activeTurnId, reason = "error" });
+                            // turnId può non essere ancora noto se l'eccezione avviene prima
+                            // che il loop emetta "turn_started": il parser del client scarta
+                            // turn_finished senza un turnId non vuoto, quindi usiamo un id
+                            // sintetico in quel caso (coerente con lo stesso fallback usato
+                            // in "cancel" qui sotto).
+                            var errorTurnId = session.CurrentTurnId ?? Guid.NewGuid().ToString("N");
+                            await SendToSession(msgSessionId, "error", new { code = "error", message = ex.Message });
+                            await SendToSession(msgSessionId, "turn_finished", new { turnId = errorTurnId, reason = "error" });
+                            session.CurrentTurnId = null;
                         }
                     });
 
@@ -315,7 +350,7 @@ public class WebSocketHub
                             {
                                 var pid = GetProperty(pending, "approvalId");
                                 if (!string.IsNullOrEmpty(pid))
-                                    await SendAll("approval_resolved", new { approvalId = pid, outcome = "expired" });
+                                    await SendToSession(msgSessionId, "approval_resolved", new { approvalId = pid, outcome = "expired" });
                             }
                             _sessionService.EndTurn(msgSessionId, "watchdog");
                         }
@@ -340,20 +375,20 @@ public class WebSocketHub
                     var cancelId = root.TryGetProperty("sessionId", out var ci) ? ci.GetString() ?? "" : "";
                     var cancelSession = string.IsNullOrEmpty(cancelId) ? null : _sessionService.GetSession(cancelId);
                     var cancelled = cancelSession != null && cancelSession.CancelTurn();
-                    var cancelTurnId = _activeTurnId ?? Guid.NewGuid().ToString("N");
                     if (cancelled)
                     {
                         // Il loop ReAct vedrà il token cancellato e emetterà
                         // turn_finished da solo. Qui emettiamo anche un evento
                         // immediato per feedback UI istantaneo (il loop lo
                         // sovrascriverà con lo stesso reason).
-                        await SendAll("turn_finished", new { turnId = cancelTurnId, reason = "cancelled" });
+                        var cancelTurnId = cancelSession!.CurrentTurnId ?? Guid.NewGuid().ToString("N");
+                        await SendToSession(cancelId, "turn_finished", new { turnId = cancelTurnId, reason = "cancelled" });
+                        cancelSession.CurrentTurnId = null;
                         _sessionService.EndTurn(cancelId, "cancelled");
-                        _activeTurnId = null;
                     }
                     else
                     {
-                        await SendAll("error", new { code = "bad_request", message = "Nessun turno in corso da annullare" });
+                        await SendTo(clientId, "error", new { code = "bad_request", message = "Nessun turno in corso da annullare" });
                     }
                     break;
                 }
@@ -368,9 +403,9 @@ public class WebSocketHub
                     var approved = approveSession != null && approveSession.TryResolveApproval(true);
                     DebugLog($"approve: resolved={approved}");
                     if (approved)
-                        await SendAll("approval_resolved", new { approvalId, outcome = "approved" });
+                        await SendToSession(approveSid, "approval_resolved", new { approvalId, outcome = "approved" });
                     else
-                        await SendAll("error", new { code = "bad_request", message = "Nessuna approvazione pendente da approvare" });
+                        await SendTo(clientId, "error", new { code = "bad_request", message = "Nessuna approvazione pendente da approvare" });
                     break;
                 }
 
@@ -384,9 +419,9 @@ public class WebSocketHub
                     var rejected = rejectSession != null && rejectSession.TryResolveApproval(false);
                     DebugLog($"reject: resolved={rejected}");
                     if (rejected)
-                        await SendAll("approval_resolved", new { approvalId, outcome = "rejected" });
+                        await SendToSession(rejectSid, "approval_resolved", new { approvalId, outcome = "rejected" });
                     else
-                        await SendAll("error", new { code = "bad_request", message = "Nessuna approvazione pendente da rifiutare" });
+                        await SendTo(clientId, "error", new { code = "bad_request", message = "Nessuna approvazione pendente da rifiutare" });
                     break;
                 }
 
@@ -395,24 +430,29 @@ public class WebSocketHub
                     var mode = payload?.GetProperty("mode").GetString() ?? "";
                     if (mode is not ("readonly" or "ask" or "auto"))
                     {
-                        await SendAll("error", new { code = "bad_request", message = "Modalità permessi non valida (attesi: readonly, ask, auto)" });
+                        await SendTo(clientId, "error", new { code = "bad_request", message = "Modalità permessi non valida (attesi: readonly, ask, auto)" });
                         return;
                     }
                     var permSid = root.TryGetProperty("sessionId", out var pSid) ? pSid.GetString() ?? "" : "";
                     var permSession = string.IsNullOrEmpty(permSid) ? null : _sessionService.GetSession(permSid);
-                    if (permSession != null)
+                    if (permSession == null)
                     {
-                        permSession.PermissionMode = mode;
-                        // Se il turno è in attesa di conferma, sbloccalo per applicare subito il nuovo modo.
-                        if (permSession.HasPendingApproval)
-                            permSession.TryResolveApproval(mode == "auto");
-                        await SendAll("permission_state", new { mode, rules = Array.Empty<object>() });
+                        // Prima non si mandava alcuna risposta in questo caso: il client
+                        // restava senza riscontro e non poteva distinguere "comando perso"
+                        // da "applicato". Ora rispondiamo sempre, come approve/reject/cancel.
+                        await SendTo(clientId, "error", new { code = "unknown_session", message = "Sessione non trovata: impossibile cambiare la modalità permessi" });
+                        break;
                     }
+                    permSession.PermissionMode = mode;
+                    // Se il turno è in attesa di conferma, sbloccalo per applicare subito il nuovo modo.
+                    if (permSession.HasPendingApproval)
+                        permSession.TryResolveApproval(mode == "auto");
+                    await SendToSession(permSid, "permission_state", new { mode, rules = Array.Empty<object>() });
                     break;
                 }
 
             default:
-                await SendAll("error", new { code = "bad_request", message = $"Unknown message type: {type}" });
+                await SendTo(clientId, "error", new { code = "bad_request", message = $"Unknown message type: {type}" });
                 break;
         }
     }
@@ -436,38 +476,78 @@ public class WebSocketHub
     }
 
     /// <summary>
-    /// Emette un evento dell'agente a tutti i client connessi.
+    /// Riceve gli eventi del loop ReAct (via AgentLoopSession) per UNA sessione
+    /// specifica, aggiorna il turnId corrente della sessione e li instrada solo ai
+    /// client che hanno quella sessione aperta.
     /// </summary>
-    private void EmitEvent(AgentEventDto evt)
+    private void EmitSessionEvent(AgentSession session, string sessionId, AgentEventDto evt)
     {
-        var messageId = Guid.NewGuid().ToString("N");
-        var timestamp = DateTime.UtcNow.ToString("o");
-        var payloadJson = JsonSerializer.Serialize(evt, _jsonOpts);
-        var json = $"{{\"v\":1,\"id\":\"{messageId}\",\"ts\":\"{timestamp}\",\"sessionId\":null,\"type\":\"{evt.Type}\",\"payload\":{payloadJson}}}";
-        foreach (var (_, ws) in _clients)
+        if (evt.Type == "turn_started")
+            session.CurrentTurnId = evt.TurnId;
+        else if (evt.Type == "turn_finished")
+            session.CurrentTurnId = null;
+
+        _ = SendToSession(sessionId, evt.Type, evt);
+    }
+
+    /// <summary>
+    /// Invia un messaggio a un singolo client (risposte a comandi puntuali: hello,
+    /// errori, snapshot di sessione al richiedente...). Non broadcast.
+    /// </summary>
+    private Task SendTo(string clientId, string eventType, object payload, string? sessionId = null)
+    {
+        if (!_clients.TryGetValue(clientId, out var ws))
+            return Task.CompletedTask;
+        var json = BuildEnvelope(eventType, payload, sessionId);
+        return SendAsync(ws, json);
+    }
+
+    /// <summary>
+    /// Invia un messaggio a tutti i client che hanno attualmente aperta la sessione
+    /// indicata (tracciata in <see cref="_clientSessions"/> da new_session/
+    /// open_session). È il modo corretto di propagare eventi di turno/approvazione/
+    /// permesso: solo chi guarda quella sessione li riceve, invece del broadcast
+    /// indiscriminato a tutti i client connessi.
+    /// </summary>
+    private async Task SendToSession(string sessionId, string eventType, object payload)
+    {
+        var json = BuildEnvelope(eventType, payload, sessionId);
+        foreach (var (cid, ws) in _clients)
         {
-            SendAsync(ws, json); // fire-and-forget
+            if (_clientSessions.TryGetValue(cid, out var open) && open == sessionId)
+                await SendAsync(ws, json);
         }
     }
 
     /// <summary>
-    /// Invia un messaggio a tutti i client connessi usando il formato protocollo v1.
-    /// Formato: {"v":1,"id":"uuid","ts":"ISO8601","sessionId":null,"type":"eventType","payload":{...}}
+    /// Invia un messaggio a TUTTI i client connessi, indipendentemente dalla
+    /// sessione aperta. Riservato a eventi davvero globali (handshake, elenco
+    /// sessioni, cancellazione di una sessione) che non riguardano il contenuto
+    /// di una singola sessione.
     /// </summary>
     private async Task SendAll(string eventType, object payload)
     {
-        var payloadJson = JsonSerializer.Serialize(payload, _jsonOpts);
-        var messageId = Guid.NewGuid().ToString("N");
-        var timestamp = DateTime.UtcNow.ToString("o");
-
-        // Build protocol v1 envelope
-
-        var json = $"{{\"v\":1,\"id\":\"{messageId}\",\"ts\":\"{timestamp}\",\"sessionId\":null,\"type\":\"{eventType}\",\"payload\":{payloadJson}}}";
-
+        var json = BuildEnvelope(eventType, payload, null);
         foreach (var (_, ws) in _clients)
         {
             await SendAsync(ws, json);
         }
+    }
+
+    /// <summary>
+    /// Costruisce la busta protocollo v1: {"v":1,"id":"uuid","ts":"ISO8601",
+    /// "sessionId":"..."|null,"type":"eventType","payload":{...}}. A differenza
+    /// della versione precedente, sessionId riflette la sessione reale a cui
+    /// l'evento appartiene (null solo per eventi davvero globali), così il client
+    /// può in futuro filtrare per sicurezza anche lato suo.
+    /// </summary>
+    private string BuildEnvelope(string eventType, object payload, string? sessionId)
+    {
+        var payloadJson = JsonSerializer.Serialize(payload, _jsonOpts);
+        var messageId = Guid.NewGuid().ToString("N");
+        var timestamp = DateTime.UtcNow.ToString("o");
+        var sidJson = sessionId == null ? "null" : JsonSerializer.Serialize(sessionId);
+        return $"{{\"v\":1,\"id\":\"{messageId}\",\"ts\":\"{timestamp}\",\"sessionId\":{sidJson},\"type\":\"{eventType}\",\"payload\":{payloadJson}}}";
     }
 
     private async Task SendAsync(WebSocket ws, string json)

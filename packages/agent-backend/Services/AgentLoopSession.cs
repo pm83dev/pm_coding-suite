@@ -176,7 +176,7 @@ public class AgentLoopSession
         var readOnlyTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
-            "list_directory", "get_workspace_tree", "get_directory_details",
+            "list_directory", "get_workspace_tree", "dir_info",
             "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
             "manage_todo", "project_notes", "lessons"
         };
@@ -196,9 +196,15 @@ public class AgentLoopSession
                 return await CheckWritePermissionAsync(toolName, argsJson, turnId);
             if (toolName is "run_command" or "run_dotnet")
                 return await CheckCommandPermissionAsync(argsJson, turnId);
+            // Altre azioni mutanti/distruttive (filesystem e git) che non passano né
+            // per il diff di edit/write né per run_command, ma hanno comunque effetti
+            // reali e devono chiedere conferma come le altre in modalità "ask".
+            if (toolName is "delete_file" or "move_file" or "create_directory"
+                or "git_add" or "git_commit" or "git_checkout" or "stop_background_job")
+                return await CheckFileSystemActionPermissionAsync(toolName, argsJson, turnId);
         }
 
-        return null; // altri tool: consentiti anche in ask
+        return null; // altri tool (lettura di rete, analisi, cambio workspace): consentiti anche in ask
     }
 
     private async Task<string?> CheckWritePermissionAsync(string toolName, string argsJson, string turnId)
@@ -257,7 +263,20 @@ public class AgentLoopSession
             expiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o")
         };
 
-        var approved = await _session.AwaitApprovalAsync(300);
+        // Il turno resta bloccato in attesa della decisione dell'utente: la sessione
+        // passa a "waiting_approval" così la lista sessioni (sidebar) lo riflette
+        // invece di mostrare "running" per tutta l'attesa (fino a 300s).
+        var previousStatus = _session.Status;
+        _session.Status = "waiting_approval";
+        bool approved;
+        try
+        {
+            approved = await _session.AwaitApprovalAsync(300);
+        }
+        finally
+        {
+            _session.Status = previousStatus;
+        }
         var outcome = approved ? "approved" : "rejected";
         _onEvent(new AgentEventDto { Type = "approval_resolved", ApprovalId = approvalId, Outcome = outcome });
 
@@ -274,17 +293,61 @@ public class AgentLoopSession
         catch { return "ERRORE: argomenti tool non validi per il comando."; }
 
         var command = args.TryGetProperty("command", out var cp) ? cp.GetString() ?? "" : "";
+        return await RequestActionApprovalAsync(turnId, "Esegui comando", command,
+            "⛔ Comando rifiutato o scaduto: NON eseguito.");
+    }
 
+    /// <summary>
+    /// Approvazione per azioni mutanti/distruttive che non sono né una scrittura
+    /// di file con diff (edit_file/write_file) né un comando di shell (run_command/
+    /// run_dotnet): delete_file, move_file, create_directory, git_add/commit/checkout,
+    /// stop_background_job. Mostrate come kind "command" con una descrizione sintetica
+    /// dell'azione, perché non ha senso costruire un unified diff per queste.
+    /// </summary>
+    private async Task<string?> CheckFileSystemActionPermissionAsync(string toolName, string argsJson, string turnId)
+    {
+        JsonElement args;
+        try { args = JsonSerializer.Deserialize<JsonElement>(argsJson)!; }
+        catch { return "ERRORE: argomenti tool non validi."; }
+
+        string Get(string name) => args.TryGetProperty(name, out var p) ? (p.GetString() ?? "") : "";
+
+        var (title, display) = toolName switch
+        {
+            "delete_file" => ("Elimina file", $"delete_file {Get("path")}"),
+            "move_file" => ("Sposta/rinomina file", $"move_file {Get("source")} -> {Get("destination")}"),
+            "create_directory" => ("Crea cartella", $"create_directory {Get("path")}"),
+            "git_add" => ("git add (staging)", $"git add {Get("path")}"),
+            "git_commit" => ("git commit", $"git commit -m \"{Get("message")}\""),
+            "git_checkout" => ("git checkout",
+                $"git checkout {(args.TryGetProperty("create_new", out var cn) && cn.ValueKind == JsonValueKind.True ? "-b " : "")}{Get("branch")}"),
+            "stop_background_job" => ("Termina processo in background",
+                $"stop_background_job pid={(args.TryGetProperty("pid", out var pidEl) ? pidEl.ToString() : "")}"),
+            _ => (toolName, toolName),
+        };
+
+        return await RequestActionApprovalAsync(turnId, title, display,
+            $"⛔ Azione '{title}' rifiutata o scaduta: NON eseguita.");
+    }
+
+    /// <summary>
+    /// Flusso comune di richiesta approvazione "kind=command": emette l'evento,
+    /// espone l'approvazione pendente sulla sessione (per il ripristino dopo
+    /// refresh/riconnessione) e attende la decisione dell'utente (o il timeout).
+    /// </summary>
+    private async Task<string?> RequestActionApprovalAsync(string turnId, string title, string commandDisplay, string rejectMessage)
+    {
         var approvalId = Guid.NewGuid().ToString("N");
+        var expiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o");
         _onEvent(new AgentEventDto
         {
             Type = "approval_request",
             TurnId = turnId,
             ApprovalId = approvalId,
             Kind = "command",
-            Title = "Esegui comando",
-            Command = command,
-            ExpiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o")
+            Title = title,
+            Command = commandDisplay,
+            ExpiresAt = expiresAt
         });
         // Espone l'approvazione pendente sulla sessione: se il client si
         // riconnette (refresh) mentre è in attesa, session_state la ri-espone.
@@ -293,19 +356,26 @@ public class AgentLoopSession
             approvalId,
             turnId,
             kind = "command",
-            title = "Esegui comando",
-            command,
-            expiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o")
+            title,
+            command = commandDisplay,
+            expiresAt
         };
 
-        var approved = await _session.AwaitApprovalAsync(300);
+        var previousStatus = _session.Status;
+        _session.Status = "waiting_approval";
+        bool approved;
+        try
+        {
+            approved = await _session.AwaitApprovalAsync(300);
+        }
+        finally
+        {
+            _session.Status = previousStatus;
+        }
         var outcome = approved ? "approved" : "rejected";
         _onEvent(new AgentEventDto { Type = "approval_resolved", ApprovalId = approvalId, Outcome = outcome });
 
-        if (!approved)
-            return "⛔ Comando rifiutato o scaduto: NON eseguito.";
-
-        return null; // approvato: procedi con l'esecuzione
+        return approved ? null : rejectMessage;
     }
 
     private static string SafeRel(WorkspaceContext workspace, string absPath)

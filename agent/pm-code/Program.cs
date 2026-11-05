@@ -476,7 +476,7 @@ async Task<bool> RunAgentLoopAsync(
     var readOnlyTools = new HashSet<string>
     {
         "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
-        "list_directory", "get_workspace_tree", "get_directory_details",
+        "list_directory", "get_workspace_tree", "dir_info",
         "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
         ExploreSubAgent.ToolName,
     };

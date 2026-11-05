@@ -114,10 +114,41 @@ function upsertAssistantMessage(
  * Reducer puro: applica un evento server (già validato) allo stato e restituisce
  * il nuovo stato. Non ha effetti collaterali: è testabile in isolamento.
  */
+/**
+ * Tipi di evento che riguardano una sessione specifica (non lo stato globale
+ * come sessions_list o hello_ok). Il backend li instrada solo ai client che
+ * hanno quella sessione aperta, ma con un cambio di sessione in corso un
+ * evento "in volo" per la sessione precedente può comunque arrivare dopo che
+ * lo stato locale è già passato a un'altra: li scartiamo qui per sicurezza.
+ * "session_state" è escluso di proposito: è la risposta diretta a new_session/
+ * open_session ed è proprio ciò che aggiorna currentSessionId.
+ */
+const SESSION_SCOPED_TYPES = new Set<string>([
+  "turn_started",
+  "status",
+  "assistant_delta",
+  "assistant_done",
+  "tool_call_started",
+  "tool_call_finished",
+  "approval_request",
+  "approval_resolved",
+  "turn_finished",
+  "permission_state",
+]);
+
 export function applyServerMessage(
   state: ProtocolState,
   msg: ServerMessage,
 ): ProtocolState {
+  if (
+    SESSION_SCOPED_TYPES.has(msg.type) &&
+    msg.sessionId != null &&
+    state.currentSessionId != null &&
+    msg.sessionId !== state.currentSessionId
+  ) {
+    return state;
+  }
+
   switch (msg.type) {
     case "hello_ok":
       // Handshake completato (anche dopo un reconnect): azzera lo stato di turno
@@ -242,7 +273,12 @@ export function applyServerMessage(
         streamingMessageId: null,
         streamingText: "",
         lastUsage: p.usage,
-        messages: upsertAssistantMessage(state.messages, p.messageId, finalText),
+        // Se streamingText è già vuoto (es. un assistant_done arrivato dopo che un
+        // turn_finished immediato da "cancel" l'ha già azzerato) non creare un
+        // fumetto assistant vuoto in chat: non c'è nulla da mostrare.
+        messages: finalText
+          ? upsertAssistantMessage(state.messages, p.messageId, finalText)
+          : state.messages,
       };
     }
 

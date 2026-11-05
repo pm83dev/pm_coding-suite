@@ -91,6 +91,29 @@ public class WebSocketSink : IAgentSink
 
     public void TurnFinished(string turnId, string reason)
     {
+        // Il core ha diversi percorsi (EmitFinalNotice su errore/rinuncia, eccezioni a
+        // metà streaming) che mandano testo assistente con AssistantDelta ma poi
+        // finiscono il turno SENZA mai chiamare AssistantDone — perché a quel testo
+        // non serve un conteggio token (non è una risposta LLM completa) o perché il
+        // core lo esclude deliberatamente dalla propria history (risposte troncate,
+        // per non rimandarle corrotte al modello). Lato UI però l'assenza di
+        // AssistantDone significa che il testo resta solo in streamingText, che
+        // turn_finished azzera: il messaggio che l'utente ha visto scorrere in chat
+        // sparisce senza mai essere "commesso" in messages. Se c'è un messageId
+        // ancora aperto, lo finalizziamo qui prima di chiudere il turno.
+        if (_currentMessageId != null)
+        {
+            var danglingMessageId = _currentMessageId;
+            _currentMessageId = null;
+            _emit(new AgentEventDto
+            {
+                Type = "assistant_done",
+                TurnId = turnId,
+                MessageId = danglingMessageId,
+                Usage = new UsageInfoDto { PromptTokens = 0, CompletionTokens = 0 }
+            });
+        }
+
         // L'UI valida reason ∈ {completed, cancelled, error, max_steps, timeout, aborted}.
         // Il core emette anche "max_turns" (limite di step): lo mappiamo su "completed"
         // (stesso pattern di ServeSink).

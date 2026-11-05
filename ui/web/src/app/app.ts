@@ -191,29 +191,37 @@ export class App implements AfterViewChecked {
   /**
    * Gestisce il tasto nel textarea del prompt:
    * - Invio: invia il messaggio.
-   * - Ctrl+Invio: va a capo (preventiva il default e inserisce un newline).
-   * - Shift+Invio: va a capo (default).
+   * - Shift+Invio (o Ctrl+Invio): va a capo. Per Shift basta NON prevenire il
+   *   default: il textarea inserisce già il newline da solo. Prima si faceva
+   *   sempre preventDefault() su Enter e si controllava solo ctrlKey, quindi
+   *   Shift+Invio cadeva nel ramo "invia" invece di andare a capo.
    */
   protected onDraftKeydown(event: KeyboardEvent): void {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (event.ctrlKey) {
-        // Ctrl+Invio: inserisce un newline a capo
-        const textarea = event.target as HTMLTextAreaElement;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        const value = textarea.value;
-        const newValue = value.substring(0, start) + "\n" + value.substring(end);
-        this.draft.set(newValue);
-        // Restaura la posizione del cursore dopo il newline
-        setTimeout(() => {
-          textarea.selectionStart = textarea.selectionEnd = start + 1;
-        });
-      } else {
-        // Invio normale: invia il messaggio
-        this.send();
-      }
+    if (event.key !== "Enter") return;
+
+    if (event.shiftKey) {
+      return; // lascia il comportamento di default: newline nel textarea
     }
+
+    if (event.ctrlKey) {
+      // Ctrl+Invio: inserisce un newline a capo (compatibilità con la scorciatoia precedente)
+      event.preventDefault();
+      const textarea = event.target as HTMLTextAreaElement;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const value = textarea.value;
+      const newValue = value.substring(0, start) + "\n" + value.substring(end);
+      this.draft.set(newValue);
+      // Restaura la posizione del cursore dopo il newline
+      setTimeout(() => {
+        textarea.selectionStart = textarea.selectionEnd = start + 1;
+      });
+      return;
+    }
+
+    // Invio da solo: invia il messaggio
+    event.preventDefault();
+    this.send();
   }
 
   protected onApprove(approvalId: string): void {

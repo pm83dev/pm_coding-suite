@@ -38,13 +38,24 @@
   <main class="main">
     <!-- Status bar -->
     <div class="status-bar">
-      <div class="connection-status">
-        <span class="status-indicator"
-              [class.connected]="protocol.connection() === 'open'"
-              [class.connecting]="protocol.connection() === 'connecting'"
-              [class.disconnected]="protocol.connection() === 'closed'">
-        </span>
-        <span>{{ protocol.connection() === 'open' ? 'Connesso' : protocol.connection() === 'connecting' ? 'Connessione...' : 'Disconnesso' }}</span>
+      <div class="status-bar-left">
+        <div class="connection-status">
+          <span class="status-indicator"
+                [class.connected]="protocol.connection() === 'open'"
+                [class.connecting]="protocol.connection() === 'connecting'"
+                [class.disconnected]="protocol.connection() === 'closed'">
+          </span>
+          <span>{{ protocol.connection() === 'open' ? 'Connesso' : protocol.connection() === 'connecting' ? 'Connessione...' : 'Disconnesso' }}</span>
+        </div>
+        <!-- Stato del LLM durante un turno: stesso heartbeat mostrato in chat
+             (Step N: in attesa della risposta…, Generazione 'tool' in corso…),
+             ma sempre visibile in alto anche se si scorre via dal messaggio. -->
+        @if (protocol.currentTurnId()) {
+          <div class="llm-status">
+            <span class="llm-status-spinner" aria-hidden="true"></span>
+            <span class="llm-status-label">{{ protocol.statusText() || 'Elaborazione in corso…' }}</span>
+          </div>
+        }
       </div>
       @if (protocol.error()) {
         <span class="error-badge badge bg-danger"><i class="bi bi-exclamation-triangle"></i> {{ protocol.error() }}</span>
@@ -258,7 +269,7 @@
     <form class="input-bar" (ngSubmit)="send()">
       <textarea name="draft" [ngModel]="draft()" (ngModelChange)="draft.set($event)"
                 (keydown)="onDraftKeydown($event)"
-                placeholder="Scrivi un messaggio... (Invio per inviare, Ctrl+Invio per andare a capo)"
+                placeholder="Scrivi un messaggio... (Invio per inviare, Shift+Invio per andare a capo)"
                 aria-label="Messaggio" [disabled]="!protocol.currentSessionId()"
                 rows="3"></textarea>
       <button type="submit" class="btn btn-primary" [disabled]="!protocol.currentSessionId() || !draft().trim()">
