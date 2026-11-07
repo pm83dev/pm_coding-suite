@@ -107,8 +107,16 @@ public class AgentLoopSession
             RepeatLastN = _config.LlmSettings.RepeatLastN
         };
 
+        // Sotto-agente "explore": se "ExploreLlmSettings" è configurato (BaseUrl+Model), usa un'istanza
+        // llama-server dedicata su un'altra GPU; altrimenti lo stesso client della sessione (comportamento
+        // invariato). Stessi parametri di campionamento del loop principale.
+        var exploreLlm = _config.ExploreLlmSettings.IsConfigured
+            ? new LlamaClient(_config.ExploreLlmSettings.BaseUrl, _config.ExploreLlmSettings.Model) {
+                EndpointOverride = $"{_config.ExploreLlmSettings.BaseUrl}/v1/chat/completions" }
+            : llm;
+
         var exploreAgent = new ExploreSubAgent(
-            llm,
+            exploreLlm,
             new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
             workspace,
             r =>

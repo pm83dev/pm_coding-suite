@@ -43,6 +43,31 @@ public class LlmSettings
 }
 
 /// <summary>
+/// Configurazione opzionale del sotto-agente "explore" (tool di esplorazione in sola
+/// lettura). Se presente, l'ExploreSubAgent usa questo endpoint/modello al posto di
+/// quello principale (LlmSettings): tipicamente un'istanza llama-server dedicata su un'altra
+/// GPU, così le decine di letture/ricerche del sotto-agente non competono con il modello
+/// coordinatore. Se assente (o con BaseUrl/Model vuoti), il sotto-agente usa lo stesso
+/// LlamaClient del loop principale — comportamento invariato.
+/// Mappa il blocco "ExploreLlmSettings" di appsettings.json.
+/// </summary>
+public class ExploreLlmSettings
+{
+    [JsonPropertyName("BaseUrl")]
+    public string BaseUrl { get; set; } = "";
+
+    [JsonPropertyName("Model")]
+    public string Model { get; set; } = "";
+
+    /// <summary>
+    /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
+    /// contrario il chiamante ricade sul client principale.
+    /// </summary>
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(Model);
+}
+
+/// <summary>
 /// Configurazione agente (workspace, limiti di contesto, rollover).
 /// Mappa il blocco "AgentSettings" di appsettings.json.
 /// </summary>
@@ -149,6 +174,13 @@ public class AgentConfig
 {
     [JsonPropertyName("LlmSettings")]
     public LlmSettings LlmSettings { get; set; } = new();
+
+    /// <summary>
+    /// Endpoint/modello opzionali per il sotto-agente "explore" (vedi <see cref="ExploreLlmSettings"/>).
+    /// Se assente o non configurato, il sotto-agente usa <see cref="LlmSettings"/>.
+    /// </summary>
+    [JsonPropertyName("ExploreLlmSettings")]
+    public ExploreLlmSettings ExploreLlmSettings { get; set; } = new();
 
     [JsonPropertyName("AgentSettings")]
     public AgentSettings AgentSettings { get; set; } = new();

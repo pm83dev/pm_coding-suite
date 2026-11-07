@@ -275,8 +275,26 @@ if (dispatcher.ReapOrphanJobs() is { } reaped)
     else UI.Dim($"  [{reaped}]");
 }
 
-// Sotto-agente "explore": dispatcher proprio (vedi ExploreSubAgent) e stessi parametri di campionamento.
-var exploreAgent = new ExploreSubAgent(llm, new ToolDispatcher(workspace, braveApiKey), workspace, r =>
+// Sotto-agente "explore": dispatcher proprio (vedi ExploreSubAgent) e stessi parametri di
+// campionamento. Se "ExploreLlmSettings" è configurato in appsettings.json (BaseUrl+Model),
+// usa un'istanza llama-server dedicata su un'altra GPU: le decine di letture/ricerche del
+// sotto-agente non competono così con il modello coordinatore. Se assente, usa lo stesso
+// client del loop principale (comportamento invariato).
+LlamaClient exploreLlm;
+var exploreBaseUrl = config["ExploreLlmSettings:BaseUrl"];
+var exploreModel   = config["ExploreLlmSettings:Model"];
+if (!string.IsNullOrWhiteSpace(exploreBaseUrl) && !string.IsNullOrWhiteSpace(exploreModel))
+{
+    exploreLlm = new LlamaClient(exploreBaseUrl, exploreModel);
+    exploreLlm.EndpointOverride = $"{exploreBaseUrl}/v1/chat/completions";
+    if (!isMachineMode)
+        UI.Dim($"[explore] sotto-agente su endpoint dedicato: {exploreBaseUrl} (modello '{exploreModel}')");
+}
+else
+{
+    exploreLlm = llm;
+}
+var exploreAgent = new ExploreSubAgent(exploreLlm, new ToolDispatcher(workspace, braveApiKey), workspace, r =>
 {
     r.Temperature = temperature;
     r.FrequencyPenalty = frequencyPenalty;
