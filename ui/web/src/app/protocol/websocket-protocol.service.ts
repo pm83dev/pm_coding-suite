@@ -19,6 +19,7 @@ import {
   type ApprovalState,
   type ConnectionState,
   type ProtocolState,
+  type TimelineEntry,
   type ToolCallState,
 } from './state';
 
@@ -56,6 +57,7 @@ export class WebSocketProtocolService implements OnDestroy {
     () => this.protocolState().currentSessionId,
   );
   readonly messages: Signal<any[]> = computed(() => this.protocolState().messages);
+  readonly timeline: Signal<TimelineEntry[]> = computed(() => this.protocolState().timeline);
   readonly models: Signal<ModelInfo[]> = computed(() => this.protocolState().models);
   readonly activeModelId: Signal<string | null> = computed(
     () => this.protocolState().activeModelId,

@@ -72,64 +72,59 @@
     <div class="chat-area" #chatScroll (scroll)="onChatScroll()">
       @if (protocol.currentSessionId()) {
         <div class="messages-container">
-          @for (m of protocol.messages(); track m.id) {
-            <!-- Mostra il messaggio solo se ha testo (evita messaggi assistant vuoti) -->
-            @if (m.text && m.text.trim().length > 0) {
-              <div class="message" [class.user]="m.role === 'user'" [class.assistant]="m.role === 'assistant'">
-                <div class="message-avatar">{{ m.role === 'user' ? 'U' : 'A' }}</div>
-                <div class="message-content">
-                  <div class="message-role">{{ m.role === 'user' ? 'Utente' : 'Assistente' }}</div>
-                  <div class="mb-0 message-text" [innerHTML]="m.text | markdown"></div>
-                </div>
-              </div>
-            }
-            <!-- Tool calls inline dopo il messaggio assistant che le ha generate -->
-            @if (m.role === 'assistant') {
-              @for (tc of protocol.toolCalls().filter(tc => tc.messageId === m.id); track tc.callId) {
-                <div class="tool-call-item inline" [class.finished]="tc.finished" [class.failed]="!tc.finished && tc.ok === false">
-                  <i class="bi" [class.bi-gear-wide-connected]="!tc.finished" [class.bi-check-circle]="tc.finished && tc.ok" [class.bi-x-circle]="!tc.finished && tc.ok === false"></i>
-                  <span>{{ tc.name }}</span>
-                  @if (tc.finished && tc.summary) {
-                    <span class="text-muted ms-auto">{{ tc.summary }}</span>
-                  }
-                </div>
+          @for (e of protocol.timeline(); track e.key) {
+            @switch (e.kind) {
+              @case ('message') {
+                <!-- Mostra il messaggio solo se ha testo (evita messaggi assistant vuoti) -->
+                @if (e.message.text && e.message.text.trim().length > 0) {
+                  <div class="message" [class.user]="e.message.role === 'user'" [class.assistant]="e.message.role === 'assistant'">
+                    <div class="message-avatar">{{ e.message.role === 'user' ? 'U' : 'A' }}</div>
+                    <div class="message-content">
+                      <div class="message-role">{{ e.message.role === 'user' ? 'Utente' : 'Assistente' }}</div>
+                      <div class="mb-0 message-text" [innerHTML]="e.message.text | markdown"></div>
+                    </div>
+                  </div>
+                }
               }
-              <!-- Approvazioni inline come accordion -->
-              @for (appr of protocol.approvals().filter(a => !!a.outcome && a.messageId === m.id); track appr.approvalId) {
-                <div class="approval-accordion" [class.resolved]="!!appr.outcome">
-                  <div class="approval-accordion-header" (click)="toggleApproval(appr.approvalId)">
-                    <i class="bi" [class.bi-chevron-right]="!isApprovalExpanded(appr.approvalId)" [class.bi-chevron-down]="isApprovalExpanded(appr.approvalId)"></i>
-                    <i class="bi bi-shield-lock me-1"></i>
-                    <strong>{{ appr.title }}</strong>
-                    @if (appr.outcome) {
-                      <span class="approval-outcome ms-auto {{ appr.outcome }}">
-                        <i class="bi" [class.bi-check-circle]="appr.outcome === 'approved'" [class.bi-x-circle]="appr.outcome !== 'approved'"></i>
-                        {{ appr.outcome === 'approved' ? 'Approvata' : appr.outcome === 'rejected' ? 'Rifiutata' : appr.outcome }}
-                      </span>
-                    } @else {
-                      <span class="approval-badge ms-auto">{{ appr.kind }}</span>
+              @case ('tool') {
+                <!-- Tool call nel punto esatto in cui è avvenuta (ordine di arrivo) -->
+                @if (toolCallById().get(e.callId); as tc) {
+                  <div class="tool-call-item inline" [class.finished]="tc.finished" [class.failed]="tc.finished && tc.ok === false">
+                    <i class="bi" [class.bi-gear-wide-connected]="!tc.finished" [class.bi-check-circle]="tc.finished && tc.ok" [class.bi-x-circle]="tc.finished && tc.ok === false"></i>
+                    <span>{{ tc.name }}</span>
+                    @if (tc.finished && tc.summary) {
+                      <span class="text-muted ms-auto">{{ tc.summary }}</span>
                     }
                   </div>
-                  @if (isApprovalExpanded(appr.approvalId)) {
-                    <div class="approval-accordion-body">
-                      @if (appr.kind === 'write') {
-                        <pre class="diff-block" [innerHTML]="appr.unifiedDiff | diff"></pre>
-                      } @else if (appr.kind === 'command') {
-                        <code class="command-block">{{ appr.command }}</code>
-                      }
-                      @if (!appr.outcome) {
-                        <div class="approval-actions">
-                          <button type="button" class="btn btn-success btn-sm" (click)="onApprove(appr.approvalId)">
-                            <i class="bi bi-check-lg"></i> Approva
-                          </button>
-                          <button type="button" class="btn btn-danger btn-sm" (click)="onReject(appr.approvalId)">
-                            <i class="bi bi-x-lg"></i> Rifiuta
-                          </button>
+                }
+              }
+              @case ('approval') {
+                <!-- Approvazione come accordion, solo quando risolta: finché è pendente
+                     compare nel modale (vedi in fondo) -->
+                @if (approvalById().get(e.approvalId); as appr) {
+                  @if (appr.outcome) {
+                    <div class="approval-accordion resolved">
+                      <div class="approval-accordion-header" (click)="toggleApproval(appr.approvalId)">
+                        <i class="bi" [class.bi-chevron-right]="!isApprovalExpanded(appr.approvalId)" [class.bi-chevron-down]="isApprovalExpanded(appr.approvalId)"></i>
+                        <i class="bi bi-shield-lock me-1"></i>
+                        <strong>{{ appr.title }}</strong>
+                        <span class="approval-outcome ms-auto {{ appr.outcome }}">
+                          <i class="bi" [class.bi-check-circle]="appr.outcome === 'approved'" [class.bi-x-circle]="appr.outcome !== 'approved'"></i>
+                          {{ appr.outcome === 'approved' ? 'Approvata' : appr.outcome === 'rejected' ? 'Rifiutata' : appr.outcome }}
+                        </span>
+                      </div>
+                      @if (isApprovalExpanded(appr.approvalId)) {
+                        <div class="approval-accordion-body">
+                          @if (appr.kind === 'write') {
+                            <pre class="diff-block" [innerHTML]="appr.unifiedDiff | diff"></pre>
+                          } @else if (appr.kind === 'command') {
+                            <code class="command-block">{{ appr.command }}</code>
+                          }
                         </div>
                       }
                     </div>
                   }
-                </div>
+                }
               }
             }
           }
@@ -141,53 +136,6 @@
                 <div class="mb-0 message-text" [innerHTML]="protocol.streamingText() | markdown"><span class="typing-dot">...</span></div>
               </div>
             </div>
-            <!-- Tool calls in corso (streaming) -->
-            @for (tc of protocol.toolCalls().filter(tc => tc.messageId === protocol.streamingMessageId()); track tc.callId) {
-              <div class="tool-call-item inline" [class.finished]="tc.finished" [class.failed]="!tc.finished && tc.ok === false">
-                <i class="bi" [class.bi-gear-wide-connected]="!tc.finished" [class.bi-check-circle]="tc.finished && tc.ok" [class.bi-x-circle]="!tc.finished && tc.ok === false"></i>
-                <span>{{ tc.name }}</span>
-                @if (tc.finished && tc.summary) {
-                  <span class="text-muted ms-auto">{{ tc.summary }}</span>
-                }
-              </div>
-            }
-            <!-- Approvazioni in corso (streaming) come accordion -->
-            @for (appr of protocol.approvals().filter(a => !!a.outcome && a.messageId === protocol.streamingMessageId()); track appr.approvalId) {
-              <div class="approval-accordion" [class.resolved]="!!appr.outcome">
-                <div class="approval-accordion-header" (click)="toggleApproval(appr.approvalId)">
-                  <i class="bi" [class.bi-chevron-right]="!isApprovalExpanded(appr.approvalId)" [class.bi-chevron-down]="isApprovalExpanded(appr.approvalId)"></i>
-                  <i class="bi bi-shield-lock me-1"></i>
-                  <strong>{{ appr.title }}</strong>
-                  @if (appr.outcome) {
-                    <span class="approval-outcome ms-auto {{ appr.outcome }}">
-                      <i class="bi" [class.bi-check-circle]="appr.outcome === 'approved'" [class.bi-x-circle]="appr.outcome !== 'approved'"></i>
-                      {{ appr.outcome === 'approved' ? 'Approvata' : appr.outcome === 'rejected' ? 'Rifiutata' : appr.outcome }}
-                    </span>
-                  } @else {
-                    <span class="approval-badge ms-auto">{{ appr.kind }}</span>
-                  }
-                </div>
-                @if (isApprovalExpanded(appr.approvalId)) {
-                  <div class="approval-accordion-body">
-                    @if (appr.kind === 'write') {
-                      <pre class="diff-block" [innerHTML]="appr.unifiedDiff | diff"></pre>
-                    } @else if (appr.kind === 'command') {
-                      <code class="command-block">{{ appr.command }}</code>
-                    }
-                    @if (!appr.outcome) {
-                      <div class="approval-actions">
-                        <button type="button" class="btn btn-success btn-sm" (click)="onApprove(appr.approvalId)">
-                          <i class="bi bi-check-lg"></i> Approva
-                        </button>
-                        <button type="button" class="btn btn-danger btn-sm" (click)="onReject(appr.approvalId)">
-                          <i class="bi bi-x-lg"></i> Rifiuta
-                        </button>
-                      </div>
-                    }
-                  </div>
-                }
-              </div>
-            }
           } @else if (protocol.statusText() && protocol.currentTurnId()) {
             <!-- Heartbeat: nessun testo ancora in streaming (es. tool call lunga) —
                  mostra che l'agente sta lavorando. -->

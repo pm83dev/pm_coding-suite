@@ -42,6 +42,18 @@ export interface ApprovalState {
   messageId?: string;
 }
 
+/**
+ * Voce della timeline della chat, nell'ORDINE DI ARRIVO degli eventi. La chat disegna
+ * questa lista così com'è: testo, tool call e approvazioni restano nel punto in cui sono
+ * successi, senza dipendere dal messageId (che il backend riusa tra più step del loop).
+ * Tool call e approvazioni sono referenziate per id: il loro stato (finished, outcome)
+ * si aggiorna in toolCalls/approvals.
+ */
+export type TimelineEntry =
+  | { kind: "message"; key: string; message: ChatMessage }
+  | { kind: "tool"; key: string; callId: string }
+  | { kind: "approval"; key: string; approvalId: string };
+
 /** Stato completo dell'app, aggiornato dal reducer. */
 export interface ProtocolState {
   connection: ConnectionState;
@@ -50,6 +62,8 @@ export interface ProtocolState {
   sessions: SessionInfo[];
   currentSessionId: string | null;
   messages: ChatMessage[];
+  /** Conversazione in ordine cronologico (messaggi + tool call + approvazioni). */
+  timeline: TimelineEntry[];
   models: ModelInfo[];
   activeModelId: string | null;
   permissionMode: PermissionMode | null;
@@ -79,6 +93,7 @@ export const initialProtocolState: ProtocolState = {
   sessions: [],
   currentSessionId: null,
   messages: [],
+  timeline: [],
   models: [],
   activeModelId: null,
   permissionMode: null,
@@ -92,22 +107,35 @@ export const initialProtocolState: ProtocolState = {
   lastTurnReason: null,
 };
 
-/** Aggiunge un messaggio assistant (o lo aggiorna se già presente per id). */
-function upsertAssistantMessage(
-  messages: ChatMessage[],
-  messageId: string,
-  text: string,
-): ChatMessage[] {
-  const idx = messages.findIndex((m) => m.id === messageId);
-  if (idx === -1) {
-    return [
-      ...messages,
-      { id: messageId, role: "assistant", text, ts: new Date().toISOString() },
-    ];
-  }
-  const next = messages.slice();
-  next[idx] = { ...next[idx]!, text };
-  return next;
+function messageEntry(message: ChatMessage): TimelineEntry {
+  return { kind: "message", key: `m:${message.id}`, message };
+}
+
+/**
+ * Chiude il testo in streaming accumulato finora: lo "committa" come messaggio assistant
+ * in coda a messages e alla timeline, e svuota streamingText. No-op se non c'è testo.
+ * Il backend riusa lo stesso messageId per più step del loop (si azzera solo su
+ * assistant_done): se l'id è già usato da un messaggio committato, ne deriva uno univoco
+ * così i segmenti di testo non si sovrascrivono a vicenda.
+ */
+function commitStreamingText(state: ProtocolState, messageId: string | null): ProtocolState {
+  if (!state.streamingText) return state;
+  const baseId = messageId ?? state.streamingMessageId ?? "assistant";
+  const id = state.messages.some((m) => m.id === baseId)
+    ? `${baseId}:${state.timeline.length}`
+    : baseId;
+  const message: ChatMessage = {
+    id,
+    role: "assistant",
+    text: state.streamingText,
+    ts: new Date().toISOString(),
+  };
+  return {
+    ...state,
+    streamingText: "",
+    messages: [...state.messages, message],
+    timeline: [...state.timeline, messageEntry(message)],
+  };
 }
 
 /**
@@ -175,6 +203,7 @@ export function applyServerMessage(
               ...state,
               currentSessionId: null,
               messages: [],
+              timeline: [],
               currentTurnId: null,
               streamingMessageId: null,
               streamingText: "",
@@ -189,10 +218,25 @@ export function applyServerMessage(
 
     case "session_state": {
       const p = msg.payload;
+      const pending = (p.pendingApprovals ?? []).map((a) => ({
+        approvalId: a.approvalId,
+        turnId: a.turnId,
+        kind: a.kind,
+        title: a.title,
+        path: a.path,
+        unifiedDiff: a.unifiedDiff,
+        command: a.command,
+        expiresAt: a.expiresAt,
+      }));
       return {
         ...state,
         currentSessionId: p.session.id,
         messages: p.messages,
+        // Storico + eventuali approvazioni ancora pendenti (in coda: sono le più recenti).
+        timeline: [
+          ...p.messages.map(messageEntry),
+          ...pending.map((a): TimelineEntry => ({ kind: "approval", key: `a:${a.approvalId}`, approvalId: a.approvalId })),
+        ],
         activeModelId: p.model,
         permissionMode: p.permission,
         // Aprire una sessione azzera lo stato di turno in corso.
@@ -205,16 +249,7 @@ export function applyServerMessage(
         // disconnesso (refresh/riconnessione), viene perso per sempre. Il campo
         // pendingApprovals in session_state è l'unico modo per ripristinarlo.
         // Se il backend non lo manda (vecchia versione) si azzera a [].
-        approvals: (p.pendingApprovals ?? []).map((a) => ({
-          approvalId: a.approvalId,
-          turnId: a.turnId,
-          kind: a.kind,
-          title: a.title,
-          path: a.path,
-          unifiedDiff: a.unifiedDiff,
-          command: a.command,
-          expiresAt: a.expiresAt,
-        })),
+        approvals: pending,
       };
     }
 
@@ -228,6 +263,7 @@ export function applyServerMessage(
         currentSessionId:
           state.currentSessionId === id ? null : state.currentSessionId,
         messages: state.currentSessionId === id ? [] : state.messages,
+        timeline: state.currentSessionId === id ? [] : state.timeline,
       };
     }
 
@@ -244,8 +280,10 @@ export function applyServerMessage(
         streamingMessageId: null,
         streamingText: "",
         statusText: null,
-        toolCalls: [],
-        approvals: [],
+        // Le tool call dei turni precedenti restano: la timeline le referenzia per id e
+        // la chat deve continuare a mostrarle. Le approvazioni ancora pendenti di un
+        // turno precedente, invece, non sono più azionabili: si tengono solo le risolte.
+        approvals: state.approvals.filter((a) => a.outcome),
         lastTurnReason: null,
       };
 
@@ -267,26 +305,24 @@ export function applyServerMessage(
 
     case "assistant_done": {
       const p = msg.payload;
-      const finalText = state.streamingText;
+      // Se streamingText è già vuoto (testo già chiuso da una tool call, oppure un
+      // assistant_done arrivato dopo che un turn_finished da "cancel" l'ha già azzerato)
+      // non si crea un fumetto assistant vuoto: commitStreamingText è un no-op.
       return {
-        ...state,
+        ...commitStreamingText(state, p.messageId),
         streamingMessageId: null,
-        streamingText: "",
         lastUsage: p.usage,
-        // Se streamingText è già vuoto (es. un assistant_done arrivato dopo che un
-        // turn_finished immediato da "cancel" l'ha già azzerato) non creare un
-        // fumetto assistant vuoto in chat: non c'è nulla da mostrare.
-        messages: finalText
-          ? upsertAssistantMessage(state.messages, p.messageId, finalText)
-          : state.messages,
       };
     }
 
     case "tool_call_started": {
       const p = msg.payload;
       const messageId = p.messageId ?? state.streamingMessageId ?? undefined;
+      // Il testo scritto PRIMA di questa tool call va chiuso qui, così la scheda compare
+      // dopo di esso nella timeline e l'eventuale testo successivo dopo la scheda.
+      const base = commitStreamingText(state, messageId ?? null);
       return {
-        ...state,
+        ...base,
         // Se questo tool è il primo evento del turno (nessun assistant_delta ancora),
         // streamingMessageId è ancora null: senza impostarlo qui la card non comparirebbe
         // nella vista "in corso" (filtrata su streamingMessageId), solo dopo che il turno
@@ -294,7 +330,7 @@ export function applyServerMessage(
         // dello streaming.
         streamingMessageId: state.streamingMessageId ?? messageId ?? null,
         toolCalls: [
-          ...state.toolCalls,
+          ...base.toolCalls,
           {
             callId: p.callId,
             name: p.name,
@@ -304,6 +340,7 @@ export function applyServerMessage(
             messageId,
           },
         ],
+        timeline: [...base.timeline, { kind: "tool", key: `t:${p.callId}`, callId: p.callId }],
       };
     }
 
@@ -321,10 +358,12 @@ export function applyServerMessage(
 
     case "approval_request": {
       const p = msg.payload;
+      const base = commitStreamingText(state, state.streamingMessageId);
       return {
-        ...state,
+        ...base,
+        timeline: [...base.timeline, { kind: "approval", key: `a:${p.approvalId}`, approvalId: p.approvalId }],
         approvals: [
-          ...state.approvals,
+          ...base.approvals,
           {
             approvalId: p.approvalId,
             turnId: p.turnId,
@@ -352,8 +391,10 @@ export function applyServerMessage(
 
     case "turn_finished": {
       const p = msg.payload;
+      // Testo rimasto in streaming senza assistant_done (il backend normalmente lo
+      // emette, ma non per ogni percorso): lo si chiude in chat invece di perderlo.
       return {
-        ...state,
+        ...commitStreamingText(state, state.streamingMessageId),
         currentTurnId: null,
         streamingMessageId: null,
         streamingText: "",
@@ -387,5 +428,9 @@ export function withUserMessage(state: ProtocolState, text: string): ProtocolSta
     text,
     ts: new Date().toISOString(),
   };
-  return { ...state, messages: [...state.messages, msg] };
+  return {
+    ...state,
+    messages: [...state.messages, msg],
+    timeline: [...state.timeline, messageEntry(msg)],
+  };
 }

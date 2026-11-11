@@ -2,6 +2,7 @@
   AfterViewChecked,
   ChangeDetectionStrategy,
   Component,
+  computed,
   ElementRef,
   effect,
   inject,
@@ -51,6 +52,14 @@ export class App implements AfterViewChecked {
   /** Segnale per mostrare il bottone "vai in fondo" quando non siamo in fondo. */
   protected readonly showJumpToBottom = signal(false);
 
+  /** Lookup per id: la timeline referenzia tool call e approvazioni, il cui stato cambia. */
+  protected readonly toolCallById = computed(
+    () => new Map(this.protocol.toolCalls().map((tc) => [tc.callId, tc])),
+  );
+  protected readonly approvalById = computed(
+    () => new Map(this.protocol.approvals().map((a) => [a.approvalId, a])),
+  );
+
   constructor() {
     // Avvio esplicito della connessione (il servizio non si connette da solo).
     this.protocol.connect();
@@ -77,7 +86,7 @@ export class App implements AfterViewChecked {
       // Consumo dei segnali per creare le dipendenze (i valori non servono,
       // contano i mutamenti).
       void this.protocol.streamingText();
-      void this.protocol.messages();
+      void this.protocol.timeline();
       void this.protocol.toolCalls();
       void this.protocol.approvals();
       void this.protocol.statusText();

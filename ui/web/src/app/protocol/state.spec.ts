@@ -74,12 +74,41 @@ describe("applyServerMessage (reducer)", () => {
     expect(s.messages).toEqual([]);
   });
 
-  it("turn_started azzera streaming e tool call", () => {
+  it("turn_started azzera lo streaming ma conserva le tool call dei turni precedenti", () => {
     let s: ProtocolState = { ...initialProtocolState, streamingText: "vecchio", toolCalls: [{ callId: "c0", name: "x", args: {}, startedAt: "", finished: false }] };
     s = applyServerMessage(s, msg("turn_started", { turnId: "t1" }, "s1"));
     expect(s.currentTurnId).toBe("t1");
     expect(s.streamingText).toBe("");
-    expect(s.toolCalls).toEqual([]);
+    expect(s.toolCalls).toHaveLength(1);
+  });
+
+  it("la timeline rispetta l'ordine di arrivo: testo, tool call, testo, approvazione", () => {
+    let s = applyServerMessage(initialProtocolState, msg("turn_started", { turnId: "t1" }, "s1"));
+    s = applyServerMessage(s, msg("assistant_delta", { turnId: "t1", messageId: "m1", text: "Leggo il file" }, "s1"));
+    s = applyServerMessage(s, msg("tool_call_started", { turnId: "t1", messageId: "m1", callId: "c1", name: "read_file", args: {} }, "s1"));
+    s = applyServerMessage(s, msg("tool_call_finished", { turnId: "t1", callId: "c1", ok: true, summary: "ok", durationMs: 1 }, "s1"));
+    // Step senza testo: stessa messageId riusata dal backend, solo tool call.
+    s = applyServerMessage(s, msg("tool_call_started", { turnId: "t1", messageId: "m1", callId: "c2", name: "search_in_files", args: {} }, "s1"));
+    s = applyServerMessage(s, msg("assistant_delta", { turnId: "t1", messageId: "m1", text: "Modifico" }, "s1"));
+    s = applyServerMessage(s, msg("approval_request", {
+      turnId: "t1", approvalId: "a1", kind: "command", title: "cmd", command: "ls", expiresAt: "2026-01-01T01:00:00Z",
+    }, "s1"));
+    s = applyServerMessage(s, msg("assistant_done", { turnId: "t1", messageId: "m1", usage: { promptTokens: 1, completionTokens: 1 } }, "s1"));
+
+    expect(s.timeline.map((e) => e.kind)).toEqual(["message", "tool", "tool", "message", "approval"]);
+    const texts = s.messages.map((m) => m.text);
+    expect(texts).toEqual(["Leggo il file", "Modifico"]);
+    // Segmenti con lo stesso messageId del backend: id univoci, nessuna sovrascrittura.
+    expect(new Set(s.messages.map((m) => m.id)).size).toBe(2);
+  });
+
+  it("turn_finished chiude il testo rimasto in streaming senza assistant_done", () => {
+    let s = applyServerMessage(initialProtocolState, msg("turn_started", { turnId: "t1" }, "s1"));
+    s = applyServerMessage(s, msg("assistant_delta", { turnId: "t1", messageId: "m1", text: "interrotto" }, "s1"));
+    s = applyServerMessage(s, msg("turn_finished", { turnId: "t1", reason: "error" }, "s1"));
+    expect(s.streamingText).toBe("");
+    expect(s.messages.map((m) => m.text)).toEqual(["interrotto"]);
+    expect(s.timeline).toHaveLength(1);
   });
 
   it("assistant_delta accumula solo il testo in streaming (nessun messaggio finché non c'è assistant_done)", () => {
