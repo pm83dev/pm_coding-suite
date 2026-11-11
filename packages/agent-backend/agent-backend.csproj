@@ -15,4 +15,14 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
   </ItemGroup>
 
+  <!-- Compila la UI Angular prima della build/publish: `npm run build` esegue anche lo
+       script postbuild che copia dist/web/browser in wwwroot. Disattivabile con -p:SkipUiBuild=true. -->
+  <PropertyGroup>
+    <UiWebDir>$(MSBuildProjectDirectory)/../../ui/web/</UiWebDir>
+  </PropertyGroup>
+  <Target Name="BuildAngularUi" BeforeTargets="BeforeBuild" Condition="'$(SkipUiBuild)' != 'true' And Exists('$(UiWebDir)package.json')">
+    <Exec Command="npm install --no-audit --no-fund" WorkingDirectory="$(UiWebDir)" Condition="!Exists('$(UiWebDir)node_modules')" />
+    <Exec Command="npm run build" WorkingDirectory="$(UiWebDir)" />
+  </Target>
+
 </Project>

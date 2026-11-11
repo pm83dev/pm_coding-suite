@@ -51,29 +51,47 @@ public static class SessionPersistence
         [JsonPropertyName("history")] public List<ChatMessage> History { get; set; } = [];
     }
 
-    /// <summary>Salva una sessione su disco. Best-effort: non deve mai rompere il flusso.</summary>
+    /// <summary>
+    /// Salva una sessione su disco. Best-effort: non deve mai rompere il flusso.
+    /// Scrittura atomica (.tmp + File.Move): se la Move fallisce per un lock
+    /// transitorio (antivirus/indicizzazione/un lettore esterno che tiene aperto
+    /// il file di destinazione — osservato in pratica), ritenta un paio di volte
+    /// prima di arrendersi, invece di lasciare silenziosamente .tmp orfano e la
+    /// history dell'ultimo turno mai persistita (il turno in sé non è perso: è
+    /// già stato consegnato via WebSocket, resta solo non recuperabile a un
+    /// riavvio/reconnessione finché non viene ri-salvato).
+    /// </summary>
     public static void Save(string dir, AgentSession session)
     {
-        try
+        var dto = new SessionFile
         {
-            var dto = new SessionFile
+            SessionId = session.SessionId,
+            Title = session.Title,
+            WorkspaceRoot = session.WorkspaceRoot,
+            Model = session.Model,
+            PermissionMode = session.PermissionMode,
+            UpdatedAt = session.UpdatedAt,
+            History = session.History,
+        };
+        var path = SessionPath(dir, session.SessionId);
+        var tmp = path + ".tmp";
+        var json = JsonSerializer.Serialize(dto, JsonOpts);
+
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
             {
-                SessionId = session.SessionId,
-                Title = session.Title,
-                WorkspaceRoot = session.WorkspaceRoot,
-                Model = session.Model,
-                PermissionMode = session.PermissionMode,
-                UpdatedAt = session.UpdatedAt,
-                History = session.History,
-            };
-            var path = SessionPath(dir, session.SessionId);
-            // Scrittura atomica: scrivo in .tmp e poi sposto, così un crash a metà
-            // non lascia un file JSON corrotto che poi fallirebbe il load.
-            var tmp = path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(dto, JsonOpts));
-            File.Move(tmp, path, overwrite: true);
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, path, overwrite: true);
+                return;
+            }
+            catch when (attempt < maxAttempts)
+            {
+                Thread.Sleep(50 * attempt);
+            }
+            catch { /* ultimo tentativo fallito: la persistenza non deve mai rompere il turno */ }
         }
-        catch { /* la persistenza non deve mai rompere il turno */ }
     }
 
     /// <summary>Elimina il file di una sessione (best-effort).</summary>
@@ -91,11 +109,38 @@ public static class SessionPersistence
     /// Carica tutte le sessioni da disco. Restituisce le DTO; chi chiama (AgentSessionService)
     /// ricrea gli oggetti di runtime e le inserisce nel dizionario in memoria.
     /// I file corrotti vengono saltati (e rinominati in .corrupt per non bloccare).
+    /// Prima recupera eventuali ".json.tmp" orfani (una Save interrotta prima della Move,
+    /// es. per un lock transitorio sul file di destinazione): se il contenuto è JSON valido
+    /// lo promuove a ".json", altrimenti lo scarta — non deve mai bloccare l'avvio.
     /// </summary>
     public static List<SessionFile> LoadAll(string dir)
     {
         var result = new List<SessionFile>();
         if (!Directory.Exists(dir)) return result;
+
+        foreach (var tmpFile in Directory.GetFiles(dir, "*.json.tmp"))
+        {
+            var finalPath = tmpFile[..^".tmp".Length];
+
+            // Validazione JSON separata dalla Move: solo un .tmp illeggibile va scartato.
+            // Se invece è valido ma la Move fallisce ancora (stesso lock transitorio di
+            // Save), il .tmp resta lì intatto per il prossimo avvio — non va MAI cancellato
+            // in quel caso, sarebbe perdita silenziosa dell'ultimo turno della sessione.
+            bool validJson;
+            try { JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(tmpFile), JsonOpts); validJson = true; }
+            catch { validJson = false; }
+
+            if (!validJson) { try { File.Delete(tmpFile); } catch { } continue; }
+
+            const int maxAttempts = 3;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try { File.Move(tmpFile, finalPath, overwrite: true); break; }
+                catch when (attempt < maxAttempts) { Thread.Sleep(50 * attempt); }
+                catch { /* resta orfano: ritentato al prossimo avvio, non lo elimino */ }
+            }
+        }
+
         foreach (var file in Directory.GetFiles(dir, "*.json"))
         {
             try

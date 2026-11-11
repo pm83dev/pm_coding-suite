@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using LocalCodeAgent.Models;
 using LocalCodeAgent.Tools;
 
@@ -7,7 +6,6 @@ namespace LocalCodeAgent.Core;
 
 /// <summary>
 /// Registro e dispatcher centralizzato per tutti i tool dell'agente.
-/// Include soft-block su read_file duplicati e invalidazione cache su write/edit.
 /// </summary>
 public class ToolDispatcher
 {
@@ -19,10 +17,7 @@ public class ToolDispatcher
     private readonly TodoTools _todo;
     private readonly ProjectNotesTools _notes;
     private readonly ProjectNotesTools _lessons;
-
-    // Cache read_file: path → contenuto già letto (soft-block su duplicati)
-    private readonly Dictionary<string, string> _fileCache =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly AskQuestionTool _ask;
 
     public ToolDispatcher(WorkspaceContext workspace, string? braveApiKey = null, Func<string, string, bool>? proposeWrite = null)
     {
@@ -35,6 +30,7 @@ public class ToolDispatcher
         _todo.Reload();
         _notes = ProjectNotesTools.ForProject(workspace);
         _lessons = ProjectNotesTools.GlobalLessons();
+        _ask = new AskQuestionTool();
     }
 
     public List<ToolDefinition> AllDefinitions =>
@@ -46,7 +42,8 @@ public class ToolDispatcher
         .._web.Definitions,
         .._todo.Definitions,
         .._notes.Definitions,
-        .._lessons.Definitions
+        .._lessons.Definitions,
+        .._ask.Definitions
     ];
 
     public List<ToolDefinition> GetDefinitionsByCategory(string category) =>
@@ -89,6 +86,7 @@ public class ToolDispatcher
         defs.AddRange(_todo.Definitions);
         defs.AddRange(_notes.Definitions);
         defs.AddRange(_lessons.Definitions);
+        defs.AddRange(_ask.Definitions);
 
         // Git in sola lettura — sempre inclusi: con un prompt tipo "prosegui" (nessuna parola
         // chiave git) il modello non li aveva e ripiegava su run_command "git diff | Select-Object
@@ -128,11 +126,7 @@ public class ToolDispatcher
     private static bool Has(string s, params string[] kw) =>
         kw.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase));
 
-    public void ClearCache()
-    {
-        _fileCache.Clear();
-        _fs.ClearReadCache();
-    }
+    public void ClearCache() => _fs.ClearReadCache();
 
     public void ResetCwd() => _terminal.ResetCwd();
 
@@ -170,6 +164,9 @@ public class ToolDispatcher
         if (toolName == "lessons")
             return _lessons.Execute(argumentsJson);
 
+        if (toolName == AskQuestionTool.ToolName)
+            return _ask.Execute(argumentsJson);
+
         // ── Gestione read_file_range ──────────────────────────────────────
         if (toolName == "read_file_range")
         {
@@ -184,21 +181,6 @@ public class ToolDispatcher
                 return result;
             }
             catch { /* Passa al routing normale */ }
-        }
-
-        // ── Invalidazione cache su write/edit ─────────────────────────────────
-        if (toolName is "write_file" or "edit_file" or "delete_file" or "move_file")
-        {
-            try
-            {
-                var el = JsonDocument.Parse(argumentsJson).RootElement;
-                if (el.TryGetProperty("path", out var pathProp))
-                    _fileCache.Remove(pathProp.GetString() ?? "");
-                // move_file: invalida anche sorgente
-                if (toolName == "move_file" && el.TryGetProperty("source", out var srcProp))
-                    _fileCache.Remove(srcProp.GetString() ?? "");
-            }
-            catch { }
         }
 
         // ── Validazione JSON pre-dispatch ────────────────────────────────────
@@ -240,52 +222,5 @@ public class ToolDispatcher
             return _web.Execute(toolName, argumentsJson, ct);
 
         return $"Tool '{toolName}' non registrato nel dispatcher.";
-    }
-
-    private static string BuildFileSummary(string path, string cachedContent)
-    {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        var lines = cachedContent.Split('\n');
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"File già letto: '{path}' ({lines.Length} righe)");
-        sb.AppendLine("Riepilogo:");
-
-        if (ext == ".cs")
-        {
-            var types = Regex.Matches(cachedContent,
-                @"(?:public|private|protected|internal|static|abstract|sealed)\s+(?:class|interface|enum|record|struct)\s+(\w+)",
-                RegexOptions.Multiline)
-                .Cast<Match>()
-                .Select(m => m.Groups[1].Value)
-                .Distinct();
-
-            var typesStr = string.Join(", ", types);
-            if (!string.IsNullOrEmpty(typesStr))
-                sb.AppendLine($"- Tipi: {typesStr}");
-
-            var methods = Regex.Matches(cachedContent,
-                @"(?:public|private|protected|internal|static|async|override|virtual)\s+[\w<>\[\]?]+\s+(\w+)\s*\(",
-                RegexOptions.Multiline)
-                .Cast<Match>()
-                .Select(m => m.Groups[1].Value)
-                .Where(n => n is not ("if" or "while" or "for" or "foreach" or "switch" or "return"))
-                .Distinct()
-                .Take(15);
-
-            var methodsStr = string.Join(", ", methods);
-            if (!string.IsNullOrEmpty(methodsStr))
-                sb.AppendLine($"- Metodi: {methodsStr}");
-        }
-        else
-        {
-            var preview = lines
-                .Where(l => !string.IsNullOrWhiteSpace(l))
-                .Take(4)
-                .Select(l => $"  {l.Trim()[..Math.Min(80, l.Trim().Length)]}");
-            sb.AppendLine(string.Join('\n', preview));
-        }
-
-        sb.AppendLine("Usa edit_file per modificarlo, o read_file con start_line/end_line per una sezione.");
-        return sb.ToString().TrimEnd();
     }
 }

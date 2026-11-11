@@ -284,8 +284,15 @@ export function applyServerMessage(
 
     case "tool_call_started": {
       const p = msg.payload;
+      const messageId = p.messageId ?? state.streamingMessageId ?? undefined;
       return {
         ...state,
+        // Se questo tool è il primo evento del turno (nessun assistant_delta ancora),
+        // streamingMessageId è ancora null: senza impostarlo qui la card non comparirebbe
+        // nella vista "in corso" (filtrata su streamingMessageId), solo dopo che il turno
+        // finisce e il messaggio viene "commesso" — restava invisibile per tutta la durata
+        // dello streaming.
+        streamingMessageId: state.streamingMessageId ?? messageId ?? null,
         toolCalls: [
           ...state.toolCalls,
           {
@@ -294,7 +301,7 @@ export function applyServerMessage(
             args: p.args,
             startedAt: msg.ts,
             finished: false,
-            messageId: state.streamingMessageId ?? undefined,
+            messageId,
           },
         ],
       };

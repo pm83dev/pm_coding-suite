@@ -61,11 +61,17 @@ public class WebSocketSink : IAgentSink
 
     public void ToolCallStarted(string turnId, string toolName, object? arguments)
     {
+        // Come AssistantDelta: se questo tool call è il primo evento del turno (il modello
+        // chiama un tool senza scrivere prima nulla di testo — il caso più comune in un loop
+        // ReAct), serve comunque un messageId per agganciare la card in UI. Senza questo, la
+        // card restava orfana (nessun assistant_delta precedente) e non veniva mai mostrata.
+        _currentMessageId ??= Guid.NewGuid().ToString("N");
         _currentCallId = Guid.NewGuid().ToString("N");
         _emit(new AgentEventDto
         {
             Type = "tool_call_started",
             TurnId = turnId,
+            MessageId = _currentMessageId,
             CallId = _currentCallId,
             ToolName = toolName,
             Args = ToJsonObject(arguments)
@@ -80,6 +86,7 @@ public class WebSocketSink : IAgentSink
         {
             Type = "tool_call_finished",
             TurnId = turnId,
+            MessageId = _currentMessageId,
             CallId = callId,
             ToolName = toolName,
             Success = success,

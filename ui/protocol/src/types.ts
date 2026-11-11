@@ -187,6 +187,8 @@ export interface AssistantDonePayload {
 
 export interface ToolCallStartedPayload {
   turnId: string;
+  /** Id del messaggio assistant del turno (per agganciare la card anche se il tool è il primo evento, senza testo prima). */
+  messageId?: string;
   callId: string;
   name: string;
   args: Record<string, unknown>;
@@ -194,6 +196,8 @@ export interface ToolCallStartedPayload {
 
 export interface ToolCallFinishedPayload {
   turnId: string;
+  /** Vedi ToolCallStartedPayload.messageId. */
+  messageId?: string;
   callId: string;
   ok: boolean;
   summary: string;

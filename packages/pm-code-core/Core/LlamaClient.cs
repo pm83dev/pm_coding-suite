@@ -91,8 +91,13 @@ public class LlamaClient
         Model = model;
         var handler = new SocketsHttpHandler
         {
-            PooledConnectionLifetime    = TimeSpan.FromMinutes(10),
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+            // Connessioni idle oltre pochi secondi vengono scartate invece che riusate: su
+            // tunnel Tailscale/WAN una connessione ferma puo' essere interrotta in silenzio nel
+            // mezzo (nessun FIN/RST visto dal client), e riusarla con Timeout=Infinite sotto
+            // blocca la richiesta per sempre (osservato: gap di ~11 min tra due turni → richiesta
+            // mai arrivata al server, bloccata finche' non interviene il watchdog a 5 min).
+            PooledConnectionLifetime    = TimeSpan.FromSeconds(30),
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(10),
             MaxConnectionsPerServer     = 1
         };
         _http = new HttpClient(handler)

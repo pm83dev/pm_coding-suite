@@ -11,6 +11,8 @@ builder.Configuration.GetSection("LlmSettings").Bind(config.LlmSettings);
 builder.Configuration.GetSection("AgentSettings").Bind(config.AgentSettings);
 builder.Configuration.GetSection("WebSearchSettings").Bind(config.WebSearchSettings);
 builder.Configuration.GetSection("ServeSettings").Bind(config.ServeSettings);
+builder.Configuration.GetSection("ExploreLlmSettings").Bind(config.ExploreLlmSettings);
+builder.Configuration.GetSection("CoderLlmSettings").Bind(config.CoderLlmSettings);
 
 // Services
 builder.Services.AddSingleton(config);

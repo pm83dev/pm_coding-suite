@@ -131,6 +131,49 @@ public class AgentLoopSession
                 r.RepeatLastN = _config.LlmSettings.RepeatLastN;
             });
 
+        // Sotto-agente "review_changes": stesso schema di "explore" ma su un endpoint dedicato
+        // separato (vedi CoderLlmSettings), tipicamente un modello "coder" forte per la revisione
+        // del diff pendente. Se non configurato, ricade sullo stesso client della sessione.
+        var coderLlm = _config.CoderLlmSettings.IsConfigured
+            ? new LlamaClient(_config.CoderLlmSettings.BaseUrl, _config.CoderLlmSettings.Model) {
+                EndpointOverride = $"{_config.CoderLlmSettings.BaseUrl}/v1/chat/completions" }
+            : llm;
+
+        var reviewAgent = new ReviewSubAgent(
+            coderLlm,
+            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
+            workspace,
+            r =>
+            {
+                r.Temperature = _config.LlmSettings.Temperature;
+                r.FrequencyPenalty = _config.LlmSettings.FrequencyPenalty;
+                r.PresencePenalty = _config.LlmSettings.PresencePenalty;
+                r.TopP = _config.LlmSettings.TopP;
+                r.TopK = _config.LlmSettings.TopK;
+                r.MinP = _config.LlmSettings.MinP;
+                r.RepeatPenalty = _config.LlmSettings.RepeatPenalty;
+                r.RepeatLastN = _config.LlmSettings.RepeatLastN;
+            });
+
+        // Sotto-agente "ask_second_opinion": stesso endpoint "coder" di review_changes (un modello
+        // indipendente dal loop principale) ma per un parere su qualunque problema su cui l'agente
+        // è bloccato, non solo sul diff pendente.
+        var consultAgent = new ConsultSubAgent(
+            coderLlm,
+            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
+            workspace,
+            r =>
+            {
+                r.Temperature = _config.LlmSettings.Temperature;
+                r.FrequencyPenalty = _config.LlmSettings.FrequencyPenalty;
+                r.PresencePenalty = _config.LlmSettings.PresencePenalty;
+                r.TopP = _config.LlmSettings.TopP;
+                r.TopK = _config.LlmSettings.TopK;
+                r.MinP = _config.LlmSettings.MinP;
+                r.RepeatPenalty = _config.LlmSettings.RepeatPenalty;
+                r.RepeatLastN = _config.LlmSettings.RepeatLastN;
+            });
+
         var loop = new AgentLoop(
             llm,
             dispatcher,
@@ -138,6 +181,8 @@ public class AgentLoopSession
             sink,
             workspace,
             exploreAgent,
+            reviewAgent,
+            consultAgent,
             options,
             _ => { }, // ui: no-op (gli eventi vanno via sink)
             _ => { }, // trace: no-op
@@ -186,7 +231,8 @@ public class AgentLoopSession
             "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
             "list_directory", "get_workspace_tree", "dir_info",
             "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
-            "manage_todo", "project_notes", "lessons"
+            "manage_todo", "project_notes", "lessons", "ask_question",
+            "explore", "review_changes", "ask_second_opinion"
         };
         if (readOnlyTools.Contains(toolName)) return null;
 

@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using LocalCodeAgent.Models;
+using LocalCodeAgent.Tools;
 
 namespace LocalCodeAgent.Core
 {
@@ -36,6 +37,8 @@ namespace LocalCodeAgent.Core
         private readonly SessionManager _sessionManager;
         private readonly WorkspaceContext _workspace;
         private readonly ExploreSubAgent? _exploreAgent;
+        private readonly ReviewSubAgent? _reviewAgent;
+        private readonly ConsultSubAgent? _consultAgent;
         private readonly IAgentSink _sink;
         private readonly AgentLoopOptions _options;
         private readonly Action<string> _ui;
@@ -57,7 +60,7 @@ namespace LocalCodeAgent.Core
             "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
             "list_directory", "get_workspace_tree", "dir_info",
             "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
-            ExploreSubAgent.ToolName,
+            ExploreSubAgent.ToolName, ReviewSubAgent.ToolName, ConsultSubAgent.ToolName,
         ];
         private readonly HashSet<string> _codeExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -93,6 +96,8 @@ namespace LocalCodeAgent.Core
             IAgentSink sink,
             WorkspaceContext workspace,
             ExploreSubAgent? exploreAgent,
+            ReviewSubAgent? reviewAgent,
+            ConsultSubAgent? consultAgent,
             AgentLoopOptions options,
             Action<string> ui,
             Action<string> trace,
@@ -106,6 +111,8 @@ namespace LocalCodeAgent.Core
             _sink = sink;
             _workspace = workspace;
             _exploreAgent = exploreAgent;
+            _reviewAgent = reviewAgent;
+            _consultAgent = consultAgent;
             _options = options;
             _ui = ui;
             _trace = trace;
@@ -187,6 +194,15 @@ namespace LocalCodeAgent.Core
             bool restrictReadOnly = false;
             int readBlocks = 0;
             const int maxReadBlocks = 3;
+            // CheckLineBudget rifiuta read_file/read_file_range quando il file ha già superato
+            // MaxLinesPerFile nel turno — ma lo fa restituendo il rifiuto PRIMA che
+            // consecutiveReadOnly++ scatti più sotto, quindi quel contatore non lo vede. Se il
+            // modello varia il range ad ogni tentativo (chiave "nome|argsJson" sempre diversa),
+            // anche i guard di ripetizione esatta/quasi-identica (quest'ultimo copre solo
+            // run_command/run_dotnet) non lo intercettano: senza un contatore dedicato il rifiuto
+            // si ripete all'infinito.
+            int lineBudgetBlocks = 0;
+            const int maxLineBudgetBlocks = 3;
             const string readBlockedPrefix = "⚠️ LETTURA BLOCCATA";
             const string verifyMissingPrefix = "⚠️ VERIFICA MANCANTE";
             string? stopReason = null;
@@ -242,7 +258,9 @@ namespace LocalCodeAgent.Core
                         return $"{readBlockedPrefix}: in questo turno hai già letto {already} righe di {Path.GetFileName(full)} " +
                                $"(limite {_options.MaxLinesPerFile} per file). Non leggere il file a pezzi per intero: usa search_in_files o " +
                                "sym_search per trovare il punto preciso che serve al passo corrente e leggi solo quelle poche righe, " +
-                               "oppure procedi con la modifica in base a quello che hai già letto.";
+                               "oppure delega a explore (ha un contesto separato, il limite non si applica a lui) — non ritentare " +
+                               "read_file_range su questo file cambiando solo il range. Altrimenti procedi con la modifica in base a " +
+                               "quello che hai già letto.";
                     linesReadPerFile[full] = already + requested;
                 }
                 catch { }
@@ -350,7 +368,7 @@ namespace LocalCodeAgent.Core
             static bool Has(string s, params string[] kw) =>
                 kw.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase));
 
-            string ExecuteToolGuarded(string name, string argsJson)
+            async Task<string> ExecuteToolGuarded(string name, string argsJson)
             {
                 // In --serve nessuna scrittura né comando shell viene eseguita: niente write/edit/delete
                 // su disco, niente processi avviati, a prescindere da autoApprove. Le approvazioni
@@ -397,7 +415,11 @@ namespace LocalCodeAgent.Core
                                          "cambiando solo numeri o nomi. Rilanciarla non darà informazioni nuove. Verifica l'ESITO REALE " +
                                          "dell'ultima esecuzione (es. il file è stato creato DOVE ti aspettavi? Test-Path sul percorso " +
                                          "atteso, contenuto, messaggi d'errore nell'output) e, se non coincide, cerca la causa nel codice " +
-                                         "e correggila. Se non sai come proseguire, fermati e spiega all'utente cosa hai osservato.";
+                                         "e correggila. Se devi capire come/dove il codice gestisce qualcosa, usa explore invece di " +
+                                         "rilanciare comandi — delega la ricerca multi-file a lui. Se non sai come interpretare il " +
+                                         "risultato o ti manca un'idea diversa da quella già tentata, chiama ask_second_opinion con " +
+                                         "cosa hai osservato: un modello indipendente può darti una pista diversa. Se invece manca " +
+                                         "una decisione dell'utente, chiama ask_question — ma non ritentare ancora lo stesso comando.";
                 }
                 if (name == "manage_todo")
                 {
@@ -461,11 +483,25 @@ namespace LocalCodeAgent.Core
                         return $"{readBlockedPrefix}: hai già fatto troppe letture senza agire e hai ignorato l'ordine di passare all'azione " +
                                $"(rifiuto {readBlocks}/{maxReadBlocks}). Questa lettura NON è stata eseguita. Hai già abbastanza informazioni: " +
                                "ora puoi SOLO (1) applicare la modifica del passo corrente con edit_file/write_file, (2) verificare con " +
-                               "sol_analyze o un comando di build/test, (3) aggiornare il piano con manage_todo, oppure (4) rispondere " +
-                               "SUBITO all'utente: se la richiesta era una domanda/analisi, rispondi con quello che hai già letto " +
-                               "(dichiarando cosa non hai potuto vedere); se ti manca una decisione, fai una domanda precisa.";
+                               "sol_analyze o un comando di build/test, (3) aggiornare il piano con manage_todo, oppure (4) chiamare " +
+                               "ask_question SUBITO: se la richiesta era una domanda/analisi, passa in 'message' la risposta con quello " +
+                               "che hai già letto (dichiarando cosa non hai potuto vedere); se ti manca una decisione, passa in 'message' " +
+                               "una domanda precisa.";
                     }
-                    if (CheckLineBudget(name, argsJson) is { } overBudget) return overBudget;
+                    if (CheckLineBudget(name, argsJson) is { } overBudget)
+                    {
+                        lineBudgetBlocks++;
+                        if (lineBudgetBlocks >= maxLineBudgetBlocks)
+                        {
+                            loopDetected = true;
+                            stopReason = "⚠️ Mi fermo: hai ripetuto più volte una lettura già bloccata per limite di righe sullo stesso " +
+                                         "file, cambiando solo il range. Usa search_in_files/sym_search per il punto preciso, delega a " +
+                                         "explore, oppure chiama ask_question con quello che hai già letto.";
+                            return $"[LOOP-BLOCK] {overBudget}";
+                        }
+                        return overBudget;
+                    }
+                    lineBudgetBlocks = 0;
                     consecutiveReadOnly++;
                 }
                 else
@@ -475,12 +511,17 @@ namespace LocalCodeAgent.Core
                     readOnlyNudgeGiven = false;
                     restrictReadOnly = false;
                     readBlocks = 0;
+                    lineBudgetBlocks = 0;
                 }
                 // explore conta come UNA lettura (è in readOnlyTools): le sue letture interne non
                 // passano dai guard del turno, che riguardano la history principale.
                 var execResult = name == ExploreSubAgent.ToolName
-                    ? _exploreAgent!.RunAsync(argsJson, _onStatus, ct).GetAwaiter().GetResult()
-                    : _dispatcher.Execute(name, argsJson, ct);
+                    ? await _exploreAgent!.RunAsync(argsJson, _onStatus, ct)
+                    : name == ReviewSubAgent.ToolName
+                        ? await _reviewAgent!.RunAsync(argsJson, _onStatus, ct)
+                        : name == ConsultSubAgent.ToolName
+                            ? await _consultAgent!.RunAsync(argsJson, _onStatus, ct)
+                            : _dispatcher.Execute(name, argsJson, ct);
                 if (similarWarning != null) execResult += similarWarning;
 
                 var hash = HashCode.Combine(execResult.Length, execResult);
@@ -530,10 +571,10 @@ namespace LocalCodeAgent.Core
 
             // Wrapper additivo di tracing attorno a ExecuteToolGuarded: stesso risultato, stesso
             // comportamento, misura solo durata ed esito.
-            (string, double) ExecuteToolGuardedTraced(string name, string argsJson)
+            async Task<(string, double)> ExecuteToolGuardedTraced(string name, string argsJson)
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var result = ExecuteToolGuarded(name, argsJson);
+                var result = await ExecuteToolGuarded(name, argsJson);
                 sw.Stop();
 
                 var guard = result.StartsWith("[LOOP-BLOCK]", StringComparison.Ordinal) ? "anti-loop"
@@ -575,7 +616,7 @@ namespace LocalCodeAgent.Core
                         return (blocked, (double)ms);
                     }
                 }
-                return ExecuteToolGuardedTraced(name, argsJson);
+                return await ExecuteToolGuardedTraced(name, argsJson);
             }
 
             // Esegue un'operazione (tipicamente un tool) in background e, ogni
@@ -651,6 +692,19 @@ namespace LocalCodeAgent.Core
                 catch { }
                 return found;
             }
+
+            static string ExtractAskQuestionMessage(string argsJson)
+            {
+                try
+                {
+                    var el = JsonDocument.Parse(argsJson).RootElement;
+                    if (el.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String)
+                        return m.GetString() ?? "";
+                }
+                catch { }
+                return argsJson;
+            }
+
             var turnRequest = history.LastOrDefault(m => m.Role == "user")?.Content;
 
             // Trace strutturato: un turno = una chiamata a RunTurnAsync, qualunque sia la modalità
@@ -661,6 +715,8 @@ namespace LocalCodeAgent.Core
             // Set di tool fisso per tutto il turno, scelto sulla richiesta dell'utente.
             var turnTools = _dispatcher.GetRelevantDefinitions(turnRequest ?? "");
             turnTools.Add(ExploreSubAgent.Definition);
+            turnTools.Add(ReviewSubAgent.Definition);
+            turnTools.Add(ConsultSubAgent.Definition);
 
             // null se promptTokens non è noto (server che non manda usage, o eccezione prima che
             // arrivi): mai calcolato su un valore mancante, vedi StructuredTrace.LlmRequest.
@@ -1000,7 +1056,16 @@ namespace LocalCodeAgent.Core
 
                         _sink.ToolCallStarted(turnId, tc.Function.Name, tc.Function.Arguments);
 
-
+                        if (tc.Function.Name == AskQuestionTool.ToolName)
+                        {
+                            var askMessage = ExtractAskQuestionMessage(tc.Function.Arguments);
+                            _sink.ToolCallFinished(turnId, tc.Function.Name, true, "Mostrato all'utente.", 0);
+                            history.Add(ChatMessage.ToolResult(tc.Id, "Mostrato all'utente. Il turno finisce qui."));
+                            EmitFinalNotice(askMessage);
+                            StructuredTrace.EndTurn("completed");
+                            _sink.TurnFinished(turnId, "completed");
+                            return true;
+                        }
 
                         var (result, toolDurationMs) = await ExecuteWithHeartbeatAsync(
                             tc.Function.Name, tc.Function.Arguments, ct,
@@ -1073,7 +1138,7 @@ namespace LocalCodeAgent.Core
 
                                           "(1) applicare ORA la modifica del passo corrente con edit_file/write_file, (2) verificare con sol_analyze o un comando di build/test, " +
 
-                                          "(3) se ti manca davvero una decisione, chiederla all'utente con una domanda precisa. " +
+                                          "(3) chiamare ask_question con una domanda precisa se ti manca davvero una decisione, oppure con la risposta se la richiesta era una domanda/analisi e hai già abbastanza informazioni. " +
 
                                           "Se il passo corrente è troppo grande per farlo subito, spezzalo con manage_todo in passi più piccoli e inizia dal primo. " +
 
@@ -1142,7 +1207,16 @@ namespace LocalCodeAgent.Core
 
                             _sink.ToolCallStarted(turnId, name, argsJson);
 
-
+                            if (name == AskQuestionTool.ToolName)
+                            {
+                                var askMessage = ExtractAskQuestionMessage(argsJson);
+                                _sink.ToolCallFinished(turnId, name, true, "Mostrato all'utente.", 0);
+                                history.Add(ChatMessage.ToolResult($"rescued-{step}", "Mostrato all'utente. Il turno finisce qui."));
+                                EmitFinalNotice(askMessage);
+                                StructuredTrace.EndTurn("completed");
+                                _sink.TurnFinished(turnId, "completed");
+                                return true;
+                            }
 
                             var (result, rescuedDurationMs) = await ExecuteWithHeartbeatAsync(
                                 name, argsJson, ct,

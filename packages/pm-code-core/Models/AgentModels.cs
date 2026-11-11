@@ -68,6 +68,25 @@ public class ExploreLlmSettings
 }
 
 /// <summary>
+/// Configurazione opzionale del sotto-agente "review_changes" (revisione in sola lettura
+/// del diff pendente). Stesso schema di <see cref="ExploreLlmSettings"/>: se presente, usa
+/// un'istanza llama-server dedicata (tipicamente un modello "coder" su un'altra GPU/porta);
+/// se assente, il sotto-agente usa lo stesso LlamaClient del loop principale.
+/// Mappa il blocco "CoderLlmSettings" di appsettings.json.
+/// </summary>
+public class CoderLlmSettings
+{
+    [JsonPropertyName("BaseUrl")]
+    public string BaseUrl { get; set; } = "";
+
+    [JsonPropertyName("Model")]
+    public string Model { get; set; } = "";
+
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(Model);
+}
+
+/// <summary>
 /// Configurazione agente (workspace, limiti di contesto, rollover).
 /// Mappa il blocco "AgentSettings" di appsettings.json.
 /// </summary>
@@ -181,6 +200,13 @@ public class AgentConfig
     /// </summary>
     [JsonPropertyName("ExploreLlmSettings")]
     public ExploreLlmSettings ExploreLlmSettings { get; set; } = new();
+
+    /// <summary>
+    /// Endpoint/modello opzionali per il sotto-agente "review_changes" (vedi <see cref="CoderLlmSettings"/>).
+    /// Se assente o non configurato, il sotto-agente usa <see cref="LlmSettings"/>.
+    /// </summary>
+    [JsonPropertyName("CoderLlmSettings")]
+    public CoderLlmSettings CoderLlmSettings { get; set; } = new();
 
     [JsonPropertyName("AgentSettings")]
     public AgentSettings AgentSettings { get; set; } = new();
