@@ -276,6 +276,9 @@ public sealed record AgentLoopOptions
 
     /// <summary>Soglia "troppe letture senza agire" oltre la quale si suggerisce ask_second_opinion.</summary>
     public int SecondOpinionReadWithoutActionThreshold { get; init; } = 6;
+
+    /// <summary>Troncamento nel trace diagnostico (argomenti/risultato) SOLO per ask_second_opinion.</summary>
+    public int SecondOpinionTraceMaxChars { get; init; } = 2000;
 }
 
 /// <summary>

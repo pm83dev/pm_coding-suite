@@ -114,6 +114,7 @@ public class AgentLoopSession
             SecondOpinionMaxCallsPerTurn = _config.SecondOpinionSettings.MaxCallsPerTurn,
             SecondOpinionSameErrorThreshold = _config.SecondOpinionSettings.SameErrorThreshold,
             SecondOpinionReadWithoutActionThreshold = _config.SecondOpinionSettings.ReadWithoutActionThreshold,
+            SecondOpinionTraceMaxChars = _config.SecondOpinionSettings.TraceMaxChars,
         };
 
         // Sotto-agente "explore": se "ExploreLlmSettings" è configurato (BaseUrl+Model), usa un'istanza
