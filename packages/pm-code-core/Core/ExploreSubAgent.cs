@@ -130,9 +130,17 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
             Messages = history,
             Tools = tools,
             ToolChoice = tools == null ? null : "auto",
-            MaxTokens = 4096,
+            MaxTokens = settings.MaxTokens,
         };
         applySampling(request);
+
+        // ReasoningMode: "auto" = nessun campo extra (decide il server/chat-template). "on"/"off" =
+        // chat_template_kwargs.enable_thinking, stessa convenzione di ConsultSubAgent (non
+        // specifica di un modello).
+        if (string.Equals(settings.ReasoningMode, "on", StringComparison.OrdinalIgnoreCase))
+            request.ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = true };
+        else if (string.Equals(settings.ReasoningMode, "off", StringComparison.OrdinalIgnoreCase))
+            request.ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false };
 
         // Timeout dedicato alla chiamata del sotto-agente, collegato al ct del turno: l'HttpClient
         // condiviso (LlamaClient) resta a timeout infinito per gli altri usi, ma qui una richiesta
@@ -159,12 +167,32 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
             throw new ExploreCallException($"risposta non valida (JSON malformato: {ex.Message})");
         }
 
-        var message = response?.Choices.FirstOrDefault()?.Message ?? new ChatMessage { Role = "assistant" };
+        var choice = response?.Choices.FirstOrDefault();
+        var message = choice?.Message ?? new ChatMessage { Role = "assistant" };
         message.TryExtractFallbackToolCalls();
-        // Come nel loop principale: un assistant senza content né tool_calls viene rifiutato
-        // dal server al giro successivo.
-        if (string.IsNullOrEmpty(message.Content) && message.ToolCalls is not { Count: > 0 })
-            message.Content = "(nessuna risposta dal modello)";
+
+        var hasToolCalls = message.ToolCalls is { Count: > 0 };
+        var isLengthTruncated = string.Equals(choice?.FinishReason, "length", StringComparison.OrdinalIgnoreCase);
+
+        // Leggi SOLO 'content'. Se è vuoto ma il modello ha prodotto 'reasoning_content' (alcuni
+        // modelli reasoning separano i due campi), non restituire mai una stringa vuota: è un
+        // segnale di configurazione/endpoint da segnalare chiaramente, non un "nessuna risposta"
+        // generico. Se il troncamento è per limite di token (finish_reason "length"), questo è
+        // più specifico e prevale sul caso reasoning-only.
+        if (string.IsNullOrWhiteSpace(message.Content) && !hasToolCalls)
+        {
+            message.Content = isLengthTruncated
+                ? "ERRORE: il modello di lettura ha raggiunto il limite di token (MaxTokens) senza produrre alcuna " +
+                  "risposta finale in 'content'. Aumenta ExploreLlmSettings.MaxTokens o imposta ReasoningMode=off."
+                : !string.IsNullOrWhiteSpace(message.ReasoningContent)
+                    ? "ERRORE: il modello di lettura ha prodotto solo ragionamento interno ('reasoning_content'), nessuna " +
+                      "risposta finale in 'content'. Verifica ReasoningMode/la configurazione del server di lettura."
+                    : "(nessuna risposta dal modello)";
+        }
+        else if (isLengthTruncated && !hasToolCalls)
+        {
+            message.Content += "\n\n[EXPLORE TRONCATO: limite di token raggiunto]";
+        }
         return message;
     }
 

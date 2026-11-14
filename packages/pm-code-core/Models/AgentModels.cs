@@ -72,6 +72,20 @@ public class ExploreLlmSettings
     [JsonPropertyName("SystemPromptPath")]
     public string? SystemPromptPath { get; set; }
 
+    [JsonPropertyName("MaxTokens")]
+    public int MaxTokens { get; set; } = 4096;
+
+    /// <summary>
+    /// "auto" (nessun campo extra inviato — decide il server/template), "on"/"off" (inviati come
+    /// "chat_template_kwargs": {"enable_thinking": true|false} — stessa convenzione di
+    /// <see cref="SecondOpinionSettings.ReasoningMode"/>, non specifica di un modello). Default
+    /// "off": per un lettore che deve restituire citazioni verbatim e numeri di riga, il
+    /// ragionamento interno aggiunge solo latenza e rischio di esaurire MaxTokens prima della
+    /// risposta finale (visto in pratica con ask_second_opinion).
+    /// </summary>
+    [JsonPropertyName("ReasoningMode")]
+    public string ReasoningMode { get; set; } = "off";
+
     /// <summary>
     /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
     /// contrario il chiamante ricade sul client principale.

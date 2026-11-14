@@ -121,6 +121,59 @@ public class ExploreSubAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task SoloReasoningContent_RestituisceErroreChiaroNonStringaVuota()
+    {
+        await using var server = new FakeLlmServer([() => FakeResponse.ReasoningOnly("sto pensando...")]);
+        var agent = AgentFor(server, _dispatcher, _workspace, Settings());
+
+        var result = await agent.RunAsync("""{"question":"test"}""");
+
+        Assert.False(string.IsNullOrWhiteSpace(result));
+        Assert.Contains("reasoning_content", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ERRORE", result);
+    }
+
+    [Fact]
+    public async Task ContentVuotoSenzaReasoning_UsaFallbackGenerico()
+    {
+        await using var server = new FakeLlmServer([() => FakeResponse.Empty()]);
+        var agent = AgentFor(server, _dispatcher, _workspace, Settings());
+
+        var result = await agent.RunAsync("""{"question":"test"}""");
+
+        Assert.Contains("(nessuna risposta dal modello)", result);
+    }
+
+    [Fact]
+    public async Task FinishReasonLength_ConContentNonVuoto_AggiungeAvvisoTroncamento()
+    {
+        await using var server = new FakeLlmServer([
+            () => new FakeResponse { Content = "conclusione parziale", FinishReason = "length" }
+        ]);
+        var agent = AgentFor(server, _dispatcher, _workspace, Settings());
+
+        var result = await agent.RunAsync("""{"question":"test"}""");
+
+        Assert.Contains("conclusione parziale", result);
+        Assert.Contains("[EXPLORE TRONCATO: limite di token raggiunto]", result);
+    }
+
+    [Fact]
+    public async Task FinishReasonLength_ConContentVuoto_RestituisceErroreChiaro()
+    {
+        await using var server = new FakeLlmServer([
+            () => new FakeResponse { Content = "", FinishReason = "length" }
+        ]);
+        var agent = AgentFor(server, _dispatcher, _workspace, Settings());
+
+        var result = await agent.RunAsync("""{"question":"test"}""");
+
+        Assert.Contains("ERRORE", result);
+        Assert.Contains("limite di token", result, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("TRONCATO", result);
+    }
+
+    [Fact]
     public async Task CancellazioneUtenteReale_PropagaSenzaEssereInghiottita()
     {
         await using var server = new FakeLlmServer([
