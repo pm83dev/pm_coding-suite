@@ -327,12 +327,9 @@ public class WebSocketHub
                         }
                     });
 
-                    // Watchdog: se il Task non è terminato dopo 5 minuti (molto più
-                    // dei 300 s di AwaitApprovalAsync + margine per gli step, ma molto
-                    // meno dei 10 min precedenti), forza EndTurn. La sessione torna
-                    // "idle" e un nuovo send_message può partire. 5 min è un compromesso:
-                    // abbastanza per un turno lungo con molte approvazioni, poco abbastanza
-                    // da non bloccare l'utente a lungo se un turno resta appeso (es. bug nel loop).
+                    // Watchdog: se il Task non è terminato dopo TurnTimeoutSeconds (default 300s = 5 minuti,
+                    // configurabile in AgentSettings), forza EndTurn. La sessione torna "idle" e un nuovo
+                    // send_message può partire. Aumentare per build/test lunghi.
                     //
                     // Il Task di turno NON viene cancellato se è in attesa di un'approvazione
                     // (il comportamento normale, non un blocco: AwaitApprovalAsync ha il proprio
@@ -344,11 +341,12 @@ public class WebSocketHub
                     // ConsultSubAgent in avanti, il CancellationToken del turno arriva fino alla
                     // richiesta HTTP e la cancellazione la chiude per davvero invece di lasciarla
                     // orfana a girare in background.
-                    _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(async t =>
+                    var turnTimeoutSec = _config.AgentSettings?.TurnTimeoutSeconds ?? 300;
+                    _ = Task.Delay(TimeSpan.FromSeconds(turnTimeoutSec)).ContinueWith(async t =>
                     {
                         if (!turnTask.IsCompleted)
                         {
-                            DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo 5 min — forza EndTurn");
+                            DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo {turnTimeoutSec}s — forza EndTurn");
                             // Se il turno è bloccato in attesa di un'approvazione, emetti
                             // approval_resolved con outcome "expired" così il client (se
                             // connesso) pulisce il bottone e lo stato non resta incoerente.

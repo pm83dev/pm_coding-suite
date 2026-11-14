@@ -298,6 +298,14 @@ public class AgentSettings
 
     [JsonPropertyName("AllowedWorkspaceRoots")]
     public List<string> AllowedWorkspaceRoots { get; set; } = [];
+
+    /// <summary>
+    /// Timeout in secondi per il watchdog del turno nel backend (default 300 = 5 minuti).
+    /// Se un turno non termina entro questo tempo e non è in attesa di approvazione,
+    /// viene cancellato tramite CancelTurn(). Aumentare per build/test lunghi.
+    /// </summary>
+    [JsonPropertyName("TurnTimeoutSeconds")]
+    public int TurnTimeoutSeconds { get; set; } = 300;
 }
 
 /// <summary>
