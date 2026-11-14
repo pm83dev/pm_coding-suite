@@ -293,4 +293,32 @@ public class AgentLoopSecondOpinionTests : IDisposable
         Assert.DoesNotContain(runCommandResults, r => r.Contains("[STESSO ERRORE"));
         Assert.DoesNotContain(runCommandResults, r => r.Contains("ask_second_opinion"));
     }
+
+    [Fact]
+    public async Task ExploreAgentNull_NonOffreIlToolExploreAlModello()
+    {
+        // Se exploreAgent è null (nessun caso reale oggi: entrambi i runtime lo costruiscono
+        // sempre), il tool "explore" non deve nemmeno essere offerto al modello — altrimenti,
+        // se il modello lo chiamasse comunque, AgentLoop farebbe _exploreAgent!.RunAsync su un
+        // riferimento null.
+        await using var mainServer = new FakeLlmServer([() => FakeResponse.Text("fatto.")]);
+        var mainLlm = new LlamaClient(mainServer.BaseUrl, "fake-main") { EndpointOverride = $"{mainServer.BaseUrl}/v1/chat/completions" };
+        var dispatcher = new ToolDispatcher(_workspace);
+        var sessionManager = new SessionManager(mainLlm, maxTokens: 128000, rolloverTokens: 64000, () => "test system prompt");
+        var consultAgent = new ConsultSubAgent(mainLlm, new ToolDispatcher(_workspace), _workspace, new SecondOpinionSettings());
+
+        var sink = new RecordingSink();
+        var options = new AgentLoopOptions { IsMachineMode = true, MaxSteps = 10, MaxContextTokens = 128000 };
+        var loop = new AgentLoop(
+            mainLlm, dispatcher, sessionManager, sink, _workspace,
+            exploreAgent: null, reviewAgent: null, consultAgent,
+            options,
+            ui: _ => { }, trace: _ => { }, notice: _ => { }, onStatus: _ => { });
+
+        var history = new List<ChatMessage> { ChatMessage.System("test"), ChatMessage.User("qualunque cosa") };
+        var success = await loop.RunTurnAsync(history, CancellationToken.None, maxTokens: 4096, turnId: "test-turn-6");
+
+        Assert.True(success);
+        Assert.DoesNotContain("\"explore\"", mainServer.LastRequestBody);
+    }
 }

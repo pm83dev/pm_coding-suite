@@ -805,7 +805,7 @@ namespace LocalCodeAgent.Core
 
             // Set di tool fisso per tutto il turno, scelto sulla richiesta dell'utente.
             var turnTools = _dispatcher.GetRelevantDefinitions(turnRequest ?? "");
-            turnTools.Add(ExploreSubAgent.Definition);
+            if (_exploreAgent != null) turnTools.Add(ExploreSubAgent.Definition);
             turnTools.Add(ReviewSubAgent.Definition);
             turnTools.Add(ConsultSubAgent.Definition);
 
