@@ -4,6 +4,19 @@ using LocalCodeAgent.Models;
 namespace LocalCodeAgent.Core;
 
 /// <summary>
+/// Eccezione interna: la chiamata al modello di lettura ha superato <see cref="ExploreLlmSettings.TimeoutSeconds"/>.
+/// Distinta da una cancellazione reale dell'utente (vedi <see cref="ExploreSubAgent.AskAsync"/>): solo questa produce
+/// il messaggio di fallback "non disponibile (timeout)", una cancellazione vera deve invece propagare.
+/// </summary>
+internal sealed class ExploreTimeoutException : Exception;
+
+/// <summary>
+/// Eccezione interna: errore di rete/HTTP/parsing verso il modello di lettura (connessione rifiutata,
+/// 5xx, risposta non JSON valido, ecc.) — mai un'eccezione non gestita che risale al loop principale.
+/// </summary>
+internal sealed class ExploreCallException(string message) : Exception(message);
+
+/// <summary>
 /// Sotto-agente di esplorazione in sola lettura (tool "explore"). Risponde a una domanda sul
 /// codice ("dove si gestisce X", "come passa Y da A a B") con una conversazione PROPRIA: le
 /// decine di letture e ricerche restano qui e all'agente principale torna solo la conclusione,
@@ -11,7 +24,7 @@ namespace LocalCodeAgent.Core;
 /// non devono contare come "file già letto" per l'agente principale, che altrimenti potrebbe
 /// modificare codice mai visto (vedi FileSystemTools.RequireRead).
 /// </summary>
-public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, WorkspaceContext workspace, Action<ChatRequest> applySampling)
+public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, WorkspaceContext workspace, Action<ChatRequest> applySampling, ExploreLlmSettings settings)
 {
     public const string ToolName = "explore";
 
@@ -48,9 +61,6 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         }
     };
 
-    // ct: CancellationToken del turno corrente (vedi Program.cs/RunAgentLoopAsync) — oggi non
-    // annulla nessuna richiesta LLM/tool in corso (nessun chiamante lo annulla mai): plumbing
-    // per un futuro comando "cancel" lato UI/estensione, non cambia alcun comportamento.
     public async Task<string> RunAsync(string argumentsJson, Action<string>? onStatus = null, CancellationToken ct = default)
     {
         string question;
@@ -92,6 +102,21 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
                                          "trovato, nel formato richiesto, indicando cosa non sei riuscito a verificare."));
             return Finish((await AskAsync(history, null, ct)).Content);
         }
+        catch (ExploreTimeoutException)
+        {
+            return "[EXPLORE] non disponibile (timeout). Usa direttamente search_in_files/read_file_range.";
+        }
+        catch (ExploreCallException ex)
+        {
+            return $"[EXPLORE] non disponibile (errore: {ex.Message}). Usa direttamente search_in_files/read_file_range.";
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Cancellazione reale del turno (utente): deve propagare, non essere inghiottita come
+            // un errore qualunque — altrimenti un "Annulla" durante explore risulterebbe in un
+            // tool_result di errore invece che in un turno davvero cancellato.
+            throw;
+        }
         catch (Exception ex)
         {
             return $"ERRORE: il sotto-agente explore si è interrotto ({ex.Message}). Procedi con search_in_files/read_file_range.";
@@ -109,7 +134,31 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         };
         applySampling(request);
 
-        var response = await llm.ChatAsync(request, ct);
+        // Timeout dedicato alla chiamata del sotto-agente, collegato al ct del turno: l'HttpClient
+        // condiviso (LlamaClient) resta a timeout infinito per gli altri usi, ma qui una richiesta
+        // che supera ExploreLlmSettings.TimeoutSeconds viene annullata DAVVERO (il CancellationToken
+        // arriva fino a PostAsJsonAsync in LlamaClient.ChatAsync), non resta orfana.
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, settings.TimeoutSeconds)));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+        ChatResponse? response;
+        try
+        {
+            response = await llm.ChatAsync(request, linkedCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new ExploreTimeoutException();
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new ExploreCallException($"errore di rete ({ex.Message})");
+        }
+        catch (JsonException ex)
+        {
+            throw new ExploreCallException($"risposta non valida (JSON malformato: {ex.Message})");
+        }
+
         var message = response?.Choices.FirstOrDefault()?.Message ?? new ChatMessage { Role = "assistant" };
         message.TryExtractFallbackToolCalls();
         // Come nel loop principale: un assistant senza content né tool_calls viene rifiutato

@@ -60,6 +60,15 @@ public class ExploreLlmSettings
     public string Model { get; set; } = "";
 
     /// <summary>
+    /// Timeout della singola chiamata HTTP al modello di lettura (secondi). Applicato SOLO a
+    /// livello di chiamata del sotto-agente (CancellationTokenSource collegato al ct del turno) —
+    /// non cambia <see cref="LlamaClient"/>, il cui HttpClient resta a timeout infinito per gli
+    /// altri usi. Default: 120s.
+    /// </summary>
+    [JsonPropertyName("TimeoutSeconds")]
+    public int TimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
     /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
     /// contrario il chiamante ricade sul client principale.
     /// </summary>

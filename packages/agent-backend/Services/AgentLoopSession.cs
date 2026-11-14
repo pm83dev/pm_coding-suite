@@ -139,7 +139,8 @@ public class AgentLoopSession
                 r.MinP = _config.LlmSettings.MinP;
                 r.RepeatPenalty = _config.LlmSettings.RepeatPenalty;
                 r.RepeatLastN = _config.LlmSettings.RepeatLastN;
-            });
+            },
+            _config.ExploreLlmSettings);
 
         // Sotto-agente "review_changes": stesso schema di "explore" ma su un endpoint dedicato
         // separato (vedi CoderLlmSettings), tipicamente un modello "coder" forte per la revisione

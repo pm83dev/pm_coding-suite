@@ -281,14 +281,13 @@ if (dispatcher.ReapOrphanJobs() is { } reaped)
 // sotto-agente non competono così con il modello coordinatore. Se assente, usa lo stesso
 // client del loop principale (comportamento invariato).
 LlamaClient exploreLlm;
-var exploreBaseUrl = config["ExploreLlmSettings:BaseUrl"];
-var exploreModel   = config["ExploreLlmSettings:Model"];
-if (!string.IsNullOrWhiteSpace(exploreBaseUrl) && !string.IsNullOrWhiteSpace(exploreModel))
+var exploreSettings = config.GetSection("ExploreLlmSettings").Get<ExploreLlmSettings>() ?? new ExploreLlmSettings();
+if (exploreSettings.IsConfigured)
 {
-    exploreLlm = new LlamaClient(exploreBaseUrl, exploreModel);
-    exploreLlm.EndpointOverride = $"{exploreBaseUrl}/v1/chat/completions";
+    exploreLlm = new LlamaClient(exploreSettings.BaseUrl, exploreSettings.Model);
+    exploreLlm.EndpointOverride = $"{exploreSettings.BaseUrl}/v1/chat/completions";
     if (!isMachineMode)
-        UI.Dim($"[explore] sotto-agente su endpoint dedicato: {exploreBaseUrl} (modello '{exploreModel}')");
+        UI.Dim($"[explore] sotto-agente su endpoint dedicato: {exploreSettings.BaseUrl} (modello '{exploreSettings.Model}')");
 }
 else
 {
@@ -304,7 +303,7 @@ var exploreAgent = new ExploreSubAgent(exploreLlm, new ToolDispatcher(workspace,
     r.MinP = minP;
     r.RepeatPenalty = repeatPenalty;
     r.RepeatLastN = repeatLastN;
-});
+}, exploreSettings);
 
 if (!isMachineMode)
 {
