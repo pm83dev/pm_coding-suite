@@ -181,6 +181,9 @@ namespace LocalCodeAgent.Core
             // troppe volte; il contatore conta le chiamate identiche CHE DANNO LO STESSO RISULTATO e
             // viene azzerato dopo ogni edit/write riuscito (TrackBuildState). Soglia: MaxRepeats.
             var repeatCounts = new Dictionary<string, (int Count, int ResultHash)>();
+            // Chiavi per cui è già stato dato l'avviso "LOOP IMMINENTE" (una sola volta, poi si passa
+            // al blocco vero e proprio alla ripetizione successiva): azzerata insieme a repeatCounts.
+            var repeatHintGivenKeys = new HashSet<string>();
             // Chiamate uguali a meno dei numeri (vedi ExecuteToolGuarded): avviso dalla 3ª, blocco oltre maxSimilarCalls.
             var similarCounts = new Dictionary<string, int>();
             const int maxSimilarCalls = 5;
@@ -323,6 +326,7 @@ namespace LocalCodeAgent.Core
                         // Il disco è cambiato: qualunque rilettura/verifica successiva si riferisce a
                         // uno stato diverso, quindi i conteggi anti-loop precedenti non valgono più.
                         repeatCounts.Clear();
+                        repeatHintGivenKeys.Clear();
                         // Solo un file di codice: scrivere un nuovo file di input per il test non è una correzione.
                         if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || _codeExtensions.Contains(Path.GetExtension(path)))
                             similarCounts.Clear();
@@ -413,22 +417,35 @@ namespace LocalCodeAgent.Core
                 if (_verificationTools.Contains(name) && successfulEditSinceLastVerify)
                 {
                     repeatCounts.Remove(key);
+                    repeatHintGivenKeys.Remove(key);
                     successfulEditSinceLastVerify = false;
                 }
 
                 // Blocca solo se questa stessa chiamata ha già prodotto maxRepeats volte lo STESSO risultato.
+                // Alla ripetizione che farebbe scattare il blocco, la prima volta per questa chiave non
+                // blocchiamo ancora: restituiamo un avviso forte con ask_second_opinion e concediamo
+                // l'esecuzione (un ultimo step in cui il modello può reagire nello stesso turno). Solo se
+                // ripete ANCORA la stessa identica chiamata blocchiamo davvero e terminiamo il turno.
+                string? repeatHint = null;
                 if (repeatCounts.TryGetValue(key, out var state) && state.Count >= _options.MaxRepeats)
                 {
-                    loopDetected = true;
-                    // Questo guard ferma il turno immediatamente dopo (vedi loopDetected più sotto):
-                    // il modello non ha un altro step in cui agire su un suggerimento di tool, quindi
-                    // qui il rimando ad ask_second_opinion è solo informativo per l'utente (prossimo
-                    // turno) — comportamento di stop invariato, nessuna regressione.
-                    stopReason = $"⚠️ Mi fermo: ho ripetuto {state.Count + 1} volte la stessa chiamata ('{name}') con argomenti " +
-                                 "identici ottenendo lo stesso risultato. Dimmi come proseguire, oppure fammi chiedere un secondo " +
-                                 "parere (ask_second_opinion) nel prossimo messaggio con un riepilogo di cosa ho già provato.";
-                    return $"[LOOP-BLOCK] Tool '{name}' chiamato {state.Count + 1} volte con argomenti identici " +
-                           "e risultato identico. Interrotto per evitare un loop infinito.";
+                    if (repeatHintGivenKeys.Add(key))
+                    {
+                        repeatHint = $"\n\n[LOOP IMMINENTE] Hai ripetuto {state.Count + 1} volte la stessa chiamata ('{name}') con " +
+                                     "argomenti identici ottenendo sempre lo stesso risultato: ripeterla ancora non darà nulla di " +
+                                     "nuovo. Sintetizza ORA i tentativi falliti e chiama ask_second_opinion con il briefing " +
+                                     "strutturato (GOAL/CONSTRAINTS/ATTEMPTS/EXACT ERROR/QUESTION) prima di ripetere ancora questa " +
+                                     "chiamata, oppure fermati e chiedi all'utente come proseguire.";
+                    }
+                    else
+                    {
+                        loopDetected = true;
+                        stopReason = $"⚠️ Mi fermo: ho ripetuto {state.Count + 1} volte la stessa chiamata ('{name}') con argomenti " +
+                                     "identici ottenendo lo stesso risultato. Dimmi come proseguire, oppure fammi chiedere un secondo " +
+                                     "parere (ask_second_opinion) nel prossimo messaggio con un riepilogo di cosa ho già provato.";
+                        return $"[LOOP-BLOCK] Tool '{name}' chiamato {state.Count + 1} volte con argomenti identici " +
+                               "e risultato identico. Interrotto per evitare un loop infinito.";
+                    }
                 }
 
                 // Chiamate QUASI identiche: stessi argomenti a meno dei numeri. Solo i tool che ESEGUONO.
@@ -558,11 +575,18 @@ namespace LocalCodeAgent.Core
                         : name == ConsultSubAgent.ToolName
                             ? await _consultAgent!.RunAsync(argsJson, _onStatus, ct)
                             : _dispatcher.Execute(name, argsJson, ct);
-                if (similarWarning != null) execResult += similarWarning;
 
+                // L'hash per il conteggio delle ripetizioni ESATTE va calcolato sul risultato GREZZO
+                // del tool, prima di appendere avvisi (similarWarning/repeatHint) il cui testo varia
+                // da una chiamata all'altra (es. il contatore "3/5"): altrimenti un avviso diverso a
+                // ogni chiamata farebbe apparire ogni risultato "diverso dal precedente" e azzererebbe
+                // il conteggio invece di farlo progredire.
                 var hash = HashCode.Combine(execResult.Length, execResult);
                 var count = repeatCounts.TryGetValue(key, out var prev) && prev.ResultHash == hash ? prev.Count + 1 : 1;
                 repeatCounts[key] = (count, hash);
+
+                if (similarWarning != null) execResult += similarWarning;
+                if (repeatHint != null) execResult += repeatHint;
 
                 // Stesso ERRORE dallo stesso tool con argomenti DIVERSI: il guard sopra non lo vede.
                 var looksLikeError = execResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase)

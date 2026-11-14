@@ -138,4 +138,58 @@ public class AgentLoopSecondOpinionTests : IDisposable
         Assert.Equal(1, withHint); // iniettato una sola volta, non a ogni step sopra soglia
         Assert.True(runCommandResults.Count(r => r.Contains("[STESSO ERRORE")) >= 2); // il guard base continua a scattare più volte
     }
+
+    [Fact]
+    public async Task RipetizioneEsatta_SuggerisceAskSecondOpinionPrimaDiBloccareDavvero()
+    {
+        // Tool inesistente con argomenti identici: risultato deterministico identico a ogni
+        // chiamata ("Tool '...' non registrato nel dispatcher."), SENZA passare per il guard di
+        // "ripetizione quasi identica" (quello si applica solo a run_command/run_dotnet) — così
+        // il guard di ripetizione ESATTA qui sotto test non viene disturbato da un altro guard che
+        // farebbe variare il testo (e quindi l'hash) a ogni chiamata.
+        const string toolName = "nonexistent_tool_for_test";
+        await using var mainServer = new FakeLlmServer([
+            () => FakeResponse.ToolCall(toolName, "{}"),
+            () => FakeResponse.ToolCall(toolName, "{}"),
+            () => FakeResponse.ToolCall(toolName, "{}"),
+            () => FakeResponse.ToolCall(toolName, "{}"),
+        ]);
+        var mainLlm = new LlamaClient(mainServer.BaseUrl, "fake-main") { EndpointOverride = $"{mainServer.BaseUrl}/v1/chat/completions" };
+        var dispatcher = new ToolDispatcher(_workspace);
+        var sessionManager = new SessionManager(mainLlm, maxTokens: 128000, rolloverTokens: 64000, () => "test system prompt");
+        var consultAgent = new ConsultSubAgent(mainLlm, new ToolDispatcher(_workspace), _workspace, new SecondOpinionSettings());
+
+        var sink = new RecordingSink();
+        var options = new AgentLoopOptions
+        {
+            IsMachineMode = true,
+            MaxSteps = 10,
+            MaxContextTokens = 128000,
+            MaxRepeats = 2,
+        };
+        var loop = new AgentLoop(
+            mainLlm, dispatcher, sessionManager, sink, _workspace,
+            exploreAgent: null, reviewAgent: null, consultAgent,
+            options,
+            ui: _ => { }, trace: _ => { }, notice: _ => { }, onStatus: _ => { });
+
+        var history = new List<ChatMessage> { ChatMessage.System("test"), ChatMessage.User("esegui questo comando") };
+        var success = await loop.RunTurnAsync(history, CancellationToken.None, maxTokens: 4096, turnId: "test-turn-3");
+
+        Assert.True(success);
+        var runCommandResults = sink.ToolCallsFinished
+            .Where(t => t.Name == toolName)
+            .Select(t => t.Result?.ToString() ?? "")
+            .ToList();
+
+        // 3 esecuzioni reali (count 1, 2, 3 — la 3ª porta l'avviso "LOOP IMMINENTE" ma viene
+        // comunque eseguita) + 1 blocco vero (4ª, mai eseguita) = 4 eventi tool_call_finished.
+        Assert.Equal(4, runCommandResults.Count);
+        Assert.Equal(1, runCommandResults.Count(r => r.Contains("[LOOP IMMINENTE]") && r.Contains("ask_second_opinion")));
+        Assert.Equal(1, runCommandResults.Count(r => r.StartsWith("[LOOP-BLOCK]")));
+        // L'avviso precede il blocco vero (non sono la stessa chiamata).
+        var hintIndex = runCommandResults.FindIndex(r => r.Contains("[LOOP IMMINENTE]"));
+        var blockIndex = runCommandResults.FindIndex(r => r.StartsWith("[LOOP-BLOCK]"));
+        Assert.True(hintIndex >= 0 && blockIndex >= 0 && hintIndex < blockIndex);
+    }
 }
