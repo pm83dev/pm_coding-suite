@@ -78,11 +78,22 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         var tools = dispatcher.AllDefinitions.Where(t => AllowedTools.Contains(t.Function.Name)).ToList();
         var history = new List<ChatMessage> { ChatMessage.System(BuildSystemPrompt()), ChatMessage.User(question) };
         var seenCalls = new HashSet<string>();
+        var contextExceeded = false;
 
         try
         {
             for (var step = 1; step <= MaxSteps; step++)
             {
+                // Guardia semplice sul contesto interno: nessun rollover/compressione, solo uno
+                // stop anticipato se la history (stima grezza caratteri/4) supera la soglia
+                // configurata — pensata per un'esplorazione fuori controllo, non il caso normale
+                // (vedi ExploreLlmSettings.MaxHistoryTokensEstimate).
+                if (EstimateTokens(history) > settings.MaxHistoryTokensEstimate)
+                {
+                    contextExceeded = true;
+                    break;
+                }
+
                 onStatus?.Invoke($"explore: step {step}/{MaxSteps}…");
                 var message = await AskAsync(history, tools, ct);
                 history.Add(message);
@@ -97,9 +108,14 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
                 }
             }
 
-            // Step finiti: si chiede la conclusione senza tool, invece di restituire il nulla.
-            history.Add(ChatMessage.User("Limite di step raggiunto: non puoi più usare tool. Rispondi ORA con quello che hai " +
-                                         "trovato, nel formato richiesto, indicando cosa non sei riuscito a verificare."));
+            // Step finiti O contesto troppo grande: si chiede la conclusione senza tool, invece
+            // di restituire il nulla.
+            history.Add(ChatMessage.User(contextExceeded
+                ? $"Il contesto di questa esplorazione ha superato la soglia configurata (~{settings.MaxHistoryTokensEstimate} " +
+                  "token stimati): non puoi più usare tool. Rispondi ORA con quello che hai trovato finora, indicando cosa non " +
+                  "sei riuscito a verificare."
+                : "Limite di step raggiunto: non puoi più usare tool. Rispondi ORA con quello che hai " +
+                  "trovato, nel formato richiesto, indicando cosa non sei riuscito a verificare."));
             return Finish((await AskAsync(history, null, ct)).Content);
         }
         catch (ExploreTimeoutException)
@@ -307,5 +323,20 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
     {
         var flat = s.Replace("\r", "").Replace('\n', ' ');
         return flat.Length <= max ? flat : flat[..max] + "…";
+    }
+
+    // Stima grezza (caratteri/4) della history interna: non serve precisione, solo rilevare
+    // un'esplorazione che sta accumulando troppo contesto (vedi ExploreLlmSettings.MaxHistoryTokensEstimate).
+    private static int EstimateTokens(List<ChatMessage> history)
+    {
+        var chars = 0;
+        foreach (var m in history)
+        {
+            chars += m.Content?.Length ?? 0;
+            if (m.ToolCalls != null)
+                foreach (var tc in m.ToolCalls)
+                    chars += tc.Function.Arguments?.Length ?? 0;
+        }
+        return chars / 4;
     }
 }

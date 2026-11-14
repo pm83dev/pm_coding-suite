@@ -120,6 +120,18 @@ public class ExploreLlmSettings
     public int MaxLinesPerReadCall { get; set; } = 300;
 
     /// <summary>
+    /// Soglia (stima di token, ~caratteri/4) sulla history INTERNA del sotto-agente explore oltre
+    /// la quale l'esplorazione si ferma e restituisce quanto trovato finora con un avviso, invece
+    /// di continuare ad accumulare contesto. Non è un rollover: nessuna compressione, solo uno
+    /// stop anticipato. Default 20000 token stimati — verificato contro n_ctx=128000 del server
+    /// di lettura attuale (Qwen3.5-9B-Q4_K_M.gguf su :9005, controllato via GET /props): ampio
+    /// margine sotto il limite reale, pensato per intercettare un'esplorazione fuori controllo,
+    /// non il caso normale.
+    /// </summary>
+    [JsonPropertyName("MaxHistoryTokensEstimate")]
+    public int MaxHistoryTokensEstimate { get; set; } = 20000;
+
+    /// <summary>
     /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
     /// contrario il chiamante ricade sul client principale.
     /// </summary>

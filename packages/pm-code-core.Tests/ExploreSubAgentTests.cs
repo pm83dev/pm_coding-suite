@@ -148,6 +148,37 @@ public class ExploreSubAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task ContestoOltreSoglia_FermaLEsplorazioneEAvvisa()
+    {
+        var path = Path.Combine(_workspaceDir, "big.txt");
+        File.WriteAllLines(path, Enumerable.Range(1, 500).Select(i => $"line {i}"));
+
+        // 1° step: una read_file_range (righe 1-300) fa crescere la history di alcune migliaia
+        // di caratteri. La soglia (500 token stimati ~= 2000 caratteri) è più del prompt di
+        // sistema+domanda iniziali (passa il 1° controllo, ~450 token stimati) ma meno della
+        // history dopo il 1° risultato: il 2° controllo (prima del 2° step) deve fermare
+        // l'esplorazione.
+        await using var server = new FakeLlmServer([
+            () => FakeResponse.ToolCall("read_file_range", """{"path":"big.txt","start_line":1,"end_line":300}"""),
+            () => FakeResponse.Text("conclusione forzata dal limite di contesto"),
+        ]);
+        var settings = Settings();
+        settings.MaxLinesPerReadCall = 10_000; // non deve interferire con la guardia di contesto
+        settings.MaxHistoryTokensEstimate = 500;
+        var agent = AgentFor(server, _dispatcher, _workspace, settings);
+
+        var result = await agent.RunAsync("""{"question":"leggi big.txt"}""");
+
+        Assert.StartsWith("[EXPLORE]", result);
+        Assert.Contains("conclusione forzata dal limite di contesto", result);
+        // Il modello non deve arrivare a fare tutti e 12 gli step: la guardia di contesto
+        // interrompe l'esplorazione dopo il 1° tool result (2 chiamate totali: 1 tool call + 1
+        // richiesta di conclusione forzata).
+        Assert.Equal(2, server.CallCount);
+        Assert.Contains("ha superato la soglia configurata", server.LastRequestBody);
+    }
+
+    [Fact]
     public async Task SamplingDedicato_InviatoSoloSeConfigurato()
     {
         await using var server = new FakeLlmServer([() => FakeResponse.Text("ok")]);
