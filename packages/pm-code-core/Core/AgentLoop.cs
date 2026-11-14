@@ -81,6 +81,16 @@ namespace LocalCodeAgent.Core
             @"^(dotnet (build|run)|npm run (build|start)|make|cmake|gradle|mvn|swift build|cargo build|tsc|vite build|webpack)\b" +
             @"|\b(build|compile|tsc)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // Messaggi di errore comuni che run_command/run_dotnet non marcano sempre con "ERRORE"/
+        // "[ESITO: FALLITO" (es. PowerShell non propaga sempre l'exit code del comando interno):
+        // riconosciuti qui perché looksLikeError (vedi ExecuteToolGuarded) non li vedrebbe altrimenti.
+        private static readonly Regex _commonCliErrorRegex = new(
+            string.Join("|", new[]
+            {
+                "is not recognized as", "CommandNotFound", "No such file or directory", "cannot find",
+                "error CS", "error MSB", "Traceback", "fatal:", "npm ERR!",
+            }.Select(Regex.Escape)),
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // Ogni quanti secondi (min) inviare un ping di stato MENTRE un tool è in esecuzione.
         // Senza questo, durante tool lenti (run_command con timeout fino a 60s, sol_analyze
@@ -181,6 +191,9 @@ namespace LocalCodeAgent.Core
             // troppe volte; il contatore conta le chiamate identiche CHE DANNO LO STESSO RISULTATO e
             // viene azzerato dopo ogni edit/write riuscito (TrackBuildState). Soglia: MaxRepeats.
             var repeatCounts = new Dictionary<string, (int Count, int ResultHash)>();
+            // Chiavi per cui è già stato dato l'avviso "LOOP IMMINENTE" (una sola volta, poi si passa
+            // al blocco vero e proprio alla ripetizione successiva): azzerata insieme a repeatCounts.
+            var repeatHintGivenKeys = new HashSet<string>();
             // Chiamate uguali a meno dei numeri (vedi ExecuteToolGuarded): avviso dalla 3ª, blocco oltre maxSimilarCalls.
             var similarCounts = new Dictionary<string, int>();
             const int maxSimilarCalls = 5;
@@ -189,6 +202,16 @@ namespace LocalCodeAgent.Core
             string? lastErrorTool = null;
             bool loopDetected = false;
             bool successfulEditSinceLastVerify = false;
+            // Limite dedicato ad ask_second_opinion, indipendente dal budget di letture generico
+            // (ConsultSubAgent.ToolName è comunque in _readOnlyTools e continua a contribuire a
+            // quel budget): evita che il modello chieda un secondo parere senza limite nello
+            // stesso turno. Resettato ad ogni turno (variabile locale di RunTurnAsync).
+            int secondOpinionCallsThisTurn = 0;
+            // Una sola iniezione del suggerimento "chiama ask_second_opinion" per episodio di
+            // "stesso errore ripetuto", per non intasare il contesto ripetendolo ad ogni step
+            // mentre lo streak resta sopra soglia. Si riazzera quando lo streak si interrompe
+            // (vedi il ramo "else" dopo il calcolo di sameErrorStreak).
+            bool secondOpinionSuggestedForErrorStreak = false;
             int consecutiveReadOnly = 0;
             bool readOnlyNudgeGiven = false;
             bool restrictReadOnly = false;
@@ -313,6 +336,7 @@ namespace LocalCodeAgent.Core
                         // Il disco è cambiato: qualunque rilettura/verifica successiva si riferisce a
                         // uno stato diverso, quindi i conteggi anti-loop precedenti non valgono più.
                         repeatCounts.Clear();
+                        repeatHintGivenKeys.Clear();
                         // Solo un file di codice: scrivere un nuovo file di input per il test non è una correzione.
                         if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || _codeExtensions.Contains(Path.GetExtension(path)))
                             similarCounts.Clear();
@@ -368,6 +392,14 @@ namespace LocalCodeAgent.Core
             static bool Has(string s, params string[] kw) =>
                 kw.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase));
 
+            // ask_second_opinion ha un troncamento dedicato nel trace (TraceMaxChars, di solito
+            // più alto del default 300): il valore diagnostico sta proprio nel 'problem'/risposta,
+            // spesso più lunghi degli argomenti/risultati tipici degli altri tool. Nessun altro
+            // tool è toccato da questo helper.
+            int TraceCharsFor(string toolName) =>
+                toolName == ConsultSubAgent.ToolName ? _options.SecondOpinionTraceMaxChars :
+                toolName == ExploreSubAgent.ToolName ? _options.ExploreTraceMaxChars : 300;
+
             async Task<string> ExecuteToolGuarded(string name, string argsJson)
             {
                 // In --serve nessuna scrittura né comando shell viene eseguita: niente write/edit/delete
@@ -379,20 +411,52 @@ namespace LocalCodeAgent.Core
                 if (_pollableTools.Contains(name))
                     return _dispatcher.Execute(name, argsJson, ct);
 
+                // Limite dedicato per turno su ask_second_opinion (indipendente dal budget di
+                // letture generico più sotto, che lo riguarda comunque in quanto tool di sola
+                // lettura): controllato PRIMA di eseguirlo, per non sostenere il costo della
+                // chiamata al modello di supporto se il limite è già superato.
+                if (name == ConsultSubAgent.ToolName)
+                {
+                    if (secondOpinionCallsThisTurn >= _options.SecondOpinionMaxCallsPerTurn)
+                        return $"[LOOP-BLOCK] Hai già chiesto un secondo parere {secondOpinionCallsThisTurn} volte in questo turno: " +
+                               "procedi con le tue conclusioni o chiedi all'utente.";
+                    secondOpinionCallsThisTurn++;
+                }
+
                 var key = $"{name}|{argsJson}";
 
                 if (_verificationTools.Contains(name) && successfulEditSinceLastVerify)
                 {
                     repeatCounts.Remove(key);
+                    repeatHintGivenKeys.Remove(key);
                     successfulEditSinceLastVerify = false;
                 }
 
                 // Blocca solo se questa stessa chiamata ha già prodotto maxRepeats volte lo STESSO risultato.
+                // Alla ripetizione che farebbe scattare il blocco, la prima volta per questa chiave non
+                // blocchiamo ancora: restituiamo un avviso forte con ask_second_opinion e concediamo
+                // l'esecuzione (un ultimo step in cui il modello può reagire nello stesso turno). Solo se
+                // ripete ANCORA la stessa identica chiamata blocchiamo davvero e terminiamo il turno.
+                string? repeatHint = null;
                 if (repeatCounts.TryGetValue(key, out var state) && state.Count >= _options.MaxRepeats)
                 {
-                    loopDetected = true;
-                    return $"[LOOP-BLOCK] Tool '{name}' chiamato {state.Count + 1} volte con argomenti identici " +
-                           "e risultato identico. Interrotto per evitare un loop infinito.";
+                    if (repeatHintGivenKeys.Add(key))
+                    {
+                        repeatHint = $"\n\n[LOOP IMMINENTE] Hai ripetuto {state.Count + 1} volte la stessa chiamata ('{name}') con " +
+                                     "argomenti identici ottenendo sempre lo stesso risultato: ripeterla ancora non darà nulla di " +
+                                     "nuovo. Sintetizza ORA i tentativi falliti e chiama ask_second_opinion con il briefing " +
+                                     "strutturato (GOAL/CONSTRAINTS/ATTEMPTS/EXACT ERROR/QUESTION) prima di ripetere ancora questa " +
+                                     "chiamata, oppure fermati e chiedi all'utente come proseguire.";
+                    }
+                    else
+                    {
+                        loopDetected = true;
+                        stopReason = $"⚠️ Mi fermo: ho ripetuto {state.Count + 1} volte la stessa chiamata ('{name}') con argomenti " +
+                                     "identici ottenendo lo stesso risultato. Dimmi come proseguire, oppure fammi chiedere un secondo " +
+                                     "parere (ask_second_opinion) nel prossimo messaggio con un riepilogo di cosa ho già provato.";
+                        return $"[LOOP-BLOCK] Tool '{name}' chiamato {state.Count + 1} volte con argomenti identici " +
+                               "e risultato identico. Interrotto per evitare un loop infinito.";
+                    }
                 }
 
                 // Chiamate QUASI identiche: stessi argomenti a meno dei numeri. Solo i tool che ESEGUONO.
@@ -522,42 +586,69 @@ namespace LocalCodeAgent.Core
                         : name == ConsultSubAgent.ToolName
                             ? await _consultAgent!.RunAsync(argsJson, _onStatus, ct)
                             : _dispatcher.Execute(name, argsJson, ct);
-                if (similarWarning != null) execResult += similarWarning;
 
+                // L'hash per il conteggio delle ripetizioni ESATTE va calcolato sul risultato GREZZO
+                // del tool, prima di appendere avvisi (similarWarning/repeatHint) il cui testo varia
+                // da una chiamata all'altra (es. il contatore "3/5"): altrimenti un avviso diverso a
+                // ogni chiamata farebbe apparire ogni risultato "diverso dal precedente" e azzererebbe
+                // il conteggio invece di farlo progredire.
                 var hash = HashCode.Combine(execResult.Length, execResult);
                 var count = repeatCounts.TryGetValue(key, out var prev) && prev.ResultHash == hash ? prev.Count + 1 : 1;
                 repeatCounts[key] = (count, hash);
 
+                if (similarWarning != null) execResult += similarWarning;
+                if (repeatHint != null) execResult += repeatHint;
+
                 // Stesso ERRORE dallo stesso tool con argomenti DIVERSI: il guard sopra non lo vede.
                 var looksLikeError = execResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase)
                     || execResult.Contains("Exception") || execResult.Contains("[ESITO: FALLITO")
-                    || Regex.IsMatch(execResult, @"\b(4\d\d|5\d\d)\b.{0,40}(Bad Request|Unauthorized|Not Found|Internal Server Error|validation errors)", RegexOptions.IgnoreCase);
-                if (looksLikeError)
+                    || Regex.IsMatch(execResult, @"\b(4\d\d|5\d\d)\b.{0,40}(Bad Request|Unauthorized|Not Found|Internal Server Error|validation errors)", RegexOptions.IgnoreCase)
+                    || _commonCliErrorRegex.IsMatch(execResult);
+                // Exit code 1 con output vuoto (vedi TerminalTools.RunProcess): grep/findstr/git diff
+                // --quiet lo usano per "nessuna corrispondenza/differenza", non un errore reale. Non
+                // deve contare né come errore né come successo nei guard "stesso errore": lo stato
+                // (sameErrorStreak/lastErrorHash/lastErrorTool) resta esattamente com'era prima.
+                var isAmbiguousExitOne = execResult.Contains(TerminalTools.AmbiguousExitOneMarker);
+                if (!isAmbiguousExitOne)
                 {
-                    var signature = Regex.Replace(execResult.Length > 400 ? execResult[^400..] : execResult, @"\s+", " ");
-                    var errHash = HashCode.Combine(name, signature);
-                    sameErrorStreak = errHash == lastErrorHash ? sameErrorStreak + 1 : 1;
-                    lastErrorHash = errHash;
-                    if (sameErrorStreak >= 3)
-                        execResult += $"\n\n[STESSO ERRORE {sameErrorStreak} VOLTE] '{name}' ha restituito lo stesso errore {sameErrorStreak} volte di fila " +
-                                      "anche cambiando gli argomenti: ritoccare il comando non funziona. Cambia APPROCCIO: usa uno script/strumento " +
-                                      "già esistente nel progetto, un metodo diverso (es. altro cmdlet/API), oppure leggi la documentazione dello " +
-                                      "strumento; se non vedi alternative, fermati e spiega all'utente l'errore.";
-                }
-                else
-                {
-                    // Successo dopo almeno 2 errori di fila sullo stesso tool: salva la lezione.
-                    if (sameErrorStreak >= 2 && name == lastErrorTool)
+                    if (looksLikeError)
                     {
-                        execResult += $"\n\n[LEZIONE] Hai superato un errore che si era ripetuto {sameErrorStreak} volte. Se la soluzione è " +
-                                      "una regola GENERALE (non specifica di questo progetto), salvala ORA con lessons action=\"add\" in una " +
-                                      "frase: cosa non funzionava e cosa fare invece. Poi prosegui con il task.";
-                        _notice($"errore ripetuto {sameErrorStreak} volte poi superato: chiedo di salvare la lezione");
+                        var signature = Regex.Replace(execResult.Length > 400 ? execResult[^400..] : execResult, @"\s+", " ");
+                        var errHash = HashCode.Combine(name, signature);
+                        sameErrorStreak = errHash == lastErrorHash ? sameErrorStreak + 1 : 1;
+                        lastErrorHash = errHash;
+                        if (sameErrorStreak >= _options.SecondOpinionSameErrorThreshold)
+                        {
+                            // Una sola iniezione del suggerimento per episodio (fino a che lo streak non
+                            // si interrompe, ramo "else" sotto): altrimenti si ripeterebbe a ogni step
+                            // mentre il modello resta sopra soglia, intasando il contesto.
+                            var secondOpinionHint = secondOpinionSuggestedForErrorStreak
+                                ? ""
+                                : " Sei in loop: sintetizza i tentativi falliti e chiama ask_second_opinion con il briefing " +
+                                  "strutturato (GOAL/CONSTRAINTS/ATTEMPTS/EXACT ERROR/QUESTION) PRIMA di fermarti.";
+                            secondOpinionSuggestedForErrorStreak = true;
+                            execResult += $"\n\n[STESSO ERRORE {sameErrorStreak} VOLTE] '{name}' ha restituito lo stesso errore {sameErrorStreak} volte di fila " +
+                                          "anche cambiando gli argomenti: ritoccare il comando non funziona. Cambia APPROCCIO: usa uno script/strumento " +
+                                          "già esistente nel progetto, un metodo diverso (es. altro cmdlet/API), oppure leggi la documentazione dello " +
+                                          $"strumento;{secondOpinionHint} se non vedi alternative, fermati e spiega all'utente l'errore.";
+                        }
                     }
-                    sameErrorStreak = 0;
-                    lastErrorHash = 0;
+                    else
+                    {
+                        // Successo dopo almeno 2 errori di fila sullo stesso tool: salva la lezione.
+                        if (sameErrorStreak >= 2 && name == lastErrorTool)
+                        {
+                            execResult += $"\n\n[LEZIONE] Hai superato un errore che si era ripetuto {sameErrorStreak} volte. Se la soluzione è " +
+                                          "una regola GENERALE (non specifica di questo progetto), salvala ORA con lessons action=\"add\" in una " +
+                                          "frase: cosa non funzionava e cosa fare invece. Poi prosegui con il task.";
+                            _notice($"errore ripetuto {sameErrorStreak} volte poi superato: chiedo di salvare la lezione");
+                        }
+                        sameErrorStreak = 0;
+                        lastErrorHash = 0;
+                        secondOpinionSuggestedForErrorStreak = false;
+                    }
+                    lastErrorTool = name;
                 }
-                lastErrorTool = name;
 
                 // Avviso già dalla seconda ripetizione identica, prima del blocco.
                 if (count >= 2)
@@ -714,7 +805,7 @@ namespace LocalCodeAgent.Core
 
             // Set di tool fisso per tutto il turno, scelto sulla richiesta dell'utente.
             var turnTools = _dispatcher.GetRelevantDefinitions(turnRequest ?? "");
-            turnTools.Add(ExploreSubAgent.Definition);
+            if (_exploreAgent != null) turnTools.Add(ExploreSubAgent.Definition);
             turnTools.Add(ReviewSubAgent.Definition);
             turnTools.Add(ConsultSubAgent.Definition);
 
@@ -1052,7 +1143,7 @@ namespace LocalCodeAgent.Core
                             continue;
                         }
 
-                        if (_options.IsMachineMode) _trace($"  -> {tc.Function.Name}({OneLine(tc.Function.Arguments, 300)})");
+                        if (_options.IsMachineMode) _trace($"  -> {tc.Function.Name}({OneLine(tc.Function.Arguments, TraceCharsFor(tc.Function.Name))})");
 
                         _sink.ToolCallStarted(turnId, tc.Function.Name, tc.Function.Arguments);
 
@@ -1093,7 +1184,7 @@ namespace LocalCodeAgent.Core
 
 
 
-                        if (_options.IsMachineMode) _trace($"  <- {tc.Function.Name}: {OneLine(result, 300)}");
+                        if (_options.IsMachineMode) _trace($"  <- {tc.Function.Name}: {OneLine(result, TraceCharsFor(tc.Function.Name))}");
 
                         _sink.ToolCallFinished(turnId, tc.Function.Name, !isError, result, toolDurationMs);
 
@@ -1132,13 +1223,21 @@ namespace LocalCodeAgent.Core
 
                         {
 
+                            // "Troppe letture senza agire": oltre SecondOpinionReadWithoutActionThreshold
+                            // (soglia dedicata, volutamente indipendente da MaxConsecutiveReadOnly — vedi
+                            // SecondOpinionSettings) si aggiunge anche il suggerimento di un secondo
+                            // parere, non solo l'ordine di passare all'azione.
+                            var secondOpinionReadHint = consecutiveReadOnly >= _options.SecondOpinionReadWithoutActionThreshold
+                                ? " (4) se non sai più come procedere, chiama ask_second_opinion con un riepilogo di cosa hai già scoperto."
+                                : "";
                             pendingReflections.Add($"[INTERNAL_REFLECTION]: Hai eseguito {consecutiveReadOnly} letture consecutive (file, ricerche, diff, comandi di sola lettura) senza nessuna azione concreta. " +
 
                                           "STOP ANALISI: hai già abbastanza informazioni per il passo corrente. Nel prossimo step devi fare SOLO una di queste cose — " +
 
                                           "(1) applicare ORA la modifica del passo corrente con edit_file/write_file, (2) verificare con sol_analyze o un comando di build/test, " +
 
-                                          "(3) chiamare ask_question con una domanda precisa se ti manca davvero una decisione, oppure con la risposta se la richiesta era una domanda/analisi e hai già abbastanza informazioni. " +
+                                          "(3) chiamare ask_question con una domanda precisa se ti manca davvero una decisione, oppure con la risposta se la richiesta era una domanda/analisi e hai già abbastanza informazioni." +
+                                          secondOpinionReadHint + " " +
 
                                           "Se il passo corrente è troppo grande per farlo subito, spezzalo con manage_todo in passi più piccoli e inizia dal primo. " +
 
@@ -1203,7 +1302,7 @@ namespace LocalCodeAgent.Core
 
                         {
 
-                            if (_options.IsMachineMode) _trace($"  -> {name}({OneLine(argsJson, 300)})");
+                            if (_options.IsMachineMode) _trace($"  -> {name}({OneLine(argsJson, TraceCharsFor(name))})");
 
                             _sink.ToolCallStarted(turnId, name, argsJson);
 
@@ -1228,7 +1327,7 @@ namespace LocalCodeAgent.Core
 
                             var rescuedIsError = result.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase);
 
-                            if (_options.IsMachineMode) _trace($"  <- {name}: {OneLine(result, 300)}");
+                            if (_options.IsMachineMode) _trace($"  <- {name}: {OneLine(result, TraceCharsFor(name))}");
 
                             _sink.ToolCallFinished(turnId, name, !rescuedIsError, result, rescuedDurationMs);
 

@@ -13,6 +13,7 @@ builder.Configuration.GetSection("WebSearchSettings").Bind(config.WebSearchSetti
 builder.Configuration.GetSection("ServeSettings").Bind(config.ServeSettings);
 builder.Configuration.GetSection("ExploreLlmSettings").Bind(config.ExploreLlmSettings);
 builder.Configuration.GetSection("CoderLlmSettings").Bind(config.CoderLlmSettings);
+builder.Configuration.GetSection("SecondOpinionSettings").Bind(config.SecondOpinionSettings);
 
 // Services
 builder.Services.AddSingleton(config);

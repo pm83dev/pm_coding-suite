@@ -42,7 +42,13 @@ public class AgentSessionService
             llm,
             _config.AgentSettings.MaxContextTokens,
             _config.AgentSettings.RolloverTokens,
-            () => $"Sei un agente AI in {workspaceRoot}."
+            // NB: questo system prompt è usato solo come placeholder iniziale/dopo un rollover di
+            // contesto (SessionManager) — AgentLoopSession.RunTurnAsync lo SOVRASCRIVE con quello
+            // completo ad ogni turno (dove vive la guida reale su ask_second_opinion). Aggiunto
+            // qui per coerenza anche se raramente resta in vigore oltre il primo turno.
+            () => $"Sei un agente AI in {workspaceRoot}. Se sei bloccato (stesso errore ripetuto, " +
+                  "tentativi diversi senza progresso, riletture senza modifiche), usa ask_second_opinion " +
+                  "con un briefing sintetico PRIMA di chiedere all'utente o arrenderti; verifica il parere, non applicarlo alla cieca."
         );
         return (llm, workspace, dispatcher, sessionManager);
     }

@@ -75,6 +75,18 @@ public class AgentLoopSession
             "- La build dice solo che compila. Esegui il programma e controlla il comportamento.\n" +
             "- Se il programma richiede input: usa run_command con timeout e input via pipeline.\n" +
             "- Se non riesci a eseguirlo: dichiaralo esplicitamente nella risposta.\n" +
+            "\nESPLORAZIONE (explore):\n" +
+            "- Usalo per domande che richiederebbero molte letture su più file (\"dove viene gestito X e chi lo " +
+            "chiama\", \"come arriva il dato Y dal controller al DB\"), non per una singola ricerca o un file già " +
+            "noto — in quel caso usa direttamente search_in_files/read_file_range.\n" +
+            "- Il suo output è una SINTESI da un sotto-agente con contesto separato: prima di modificare un file " +
+            "sulla base di quella sintesi, leggilo comunque tu con read_file_range (richiesto anche tecnicamente).\n" +
+            "\nSECONDO PARERE (ask_second_opinion):\n" +
+            "- Usalo quando sei bloccato: stesso errore ripetuto, tentativi diversi senza progresso, o " +
+            "riletture dello stesso codice senza arrivare a una modifica. PRIMA di chiedere all'utente o di arrenderti.\n" +
+            "- Prepara il briefing sintetizzando TU i tentativi falliti (motivo di ciascuno, non solo l'elenco) e " +
+            "l'errore ESATTO — non incollare la cronologia intera.\n" +
+            "- Il parere è un'ipotesi da VERIFICARE, non un fix da applicare alla cieca: controllala prima di agire.\n" +
             "\nSTILE: risposte brevi e dirette. Non ripetere il piano a ogni passo.\n";
 
         // Aggiorna il system prompt nella history (primo messaggio)
@@ -104,12 +116,17 @@ public class AgentLoopSession
             TopK = _config.LlmSettings.TopK,
             MinP = _config.LlmSettings.MinP,
             RepeatPenalty = _config.LlmSettings.RepeatPenalty,
-            RepeatLastN = _config.LlmSettings.RepeatLastN
+            RepeatLastN = _config.LlmSettings.RepeatLastN,
+            SecondOpinionMaxCallsPerTurn = _config.SecondOpinionSettings.MaxCallsPerTurn,
+            SecondOpinionSameErrorThreshold = _config.SecondOpinionSettings.SameErrorThreshold,
+            SecondOpinionReadWithoutActionThreshold = _config.SecondOpinionSettings.ReadWithoutActionThreshold,
+            SecondOpinionTraceMaxChars = _config.SecondOpinionSettings.TraceMaxChars,
+            ExploreTraceMaxChars = _config.ExploreLlmSettings.TraceMaxChars,
         };
 
         // Sotto-agente "explore": se "ExploreLlmSettings" è configurato (BaseUrl+Model), usa un'istanza
         // llama-server dedicata su un'altra GPU; altrimenti lo stesso client della sessione (comportamento
-        // invariato). Stessi parametri di campionamento del loop principale.
+        // invariato). Sampling dedicato (ExploreLlmSettings): nessun parametro ereditato dal coordinatore.
         var exploreLlm = _config.ExploreLlmSettings.IsConfigured
             ? new LlamaClient(_config.ExploreLlmSettings.BaseUrl, _config.ExploreLlmSettings.Model) {
                 EndpointOverride = $"{_config.ExploreLlmSettings.BaseUrl}/v1/chat/completions" }
@@ -119,17 +136,7 @@ public class AgentLoopSession
             exploreLlm,
             new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
             workspace,
-            r =>
-            {
-                r.Temperature = _config.LlmSettings.Temperature;
-                r.FrequencyPenalty = _config.LlmSettings.FrequencyPenalty;
-                r.PresencePenalty = _config.LlmSettings.PresencePenalty;
-                r.TopP = _config.LlmSettings.TopP;
-                r.TopK = _config.LlmSettings.TopK;
-                r.MinP = _config.LlmSettings.MinP;
-                r.RepeatPenalty = _config.LlmSettings.RepeatPenalty;
-                r.RepeatLastN = _config.LlmSettings.RepeatLastN;
-            });
+            _config.ExploreLlmSettings);
 
         // Sotto-agente "review_changes": stesso schema di "explore" ma su un endpoint dedicato
         // separato (vedi CoderLlmSettings), tipicamente un modello "coder" forte per la revisione
@@ -155,24 +162,24 @@ public class AgentLoopSession
                 r.RepeatLastN = _config.LlmSettings.RepeatLastN;
             });
 
-        // Sotto-agente "ask_second_opinion": stesso endpoint "coder" di review_changes (un modello
-        // indipendente dal loop principale) ma per un parere su qualunque problema su cui l'agente
-        // è bloccato, non solo sul diff pendente.
+        // Sotto-agente "ask_second_opinion": endpoint DEDICATO e indipendente da quello di
+        // review_changes (SecondOpinionSettings, separato da CoderLlmSettings — vedi la classe).
+        // Se SecondOpinionSettings non è configurato, ricade su "coderLlm" (comportamento storico,
+        // stesso endpoint di review_changes) e poi, a cascata, sul client della sessione — ma
+        // review_changes/reviewAgent qui sopra continua a usare SOLO coderLlm, mai questo ramo:
+        // nessuna regressione sul suo comportamento. Nessun parametro di sampling è ereditato dal
+        // loop principale: solo quelli espliciti in SecondOpinionSettings (tutti opzionali).
+        var secondOpinionLlm = _config.SecondOpinionSettings.IsConfigured
+            ? new LlamaClient(_config.SecondOpinionSettings.BaseUrl, _config.SecondOpinionSettings.ModelName) {
+                EndpointOverride = $"{_config.SecondOpinionSettings.BaseUrl}/v1/chat/completions",
+                ApiKey = _config.SecondOpinionSettings.ApiKey }
+            : coderLlm;
+
         var consultAgent = new ConsultSubAgent(
-            coderLlm,
+            secondOpinionLlm,
             new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
             workspace,
-            r =>
-            {
-                r.Temperature = _config.LlmSettings.Temperature;
-                r.FrequencyPenalty = _config.LlmSettings.FrequencyPenalty;
-                r.PresencePenalty = _config.LlmSettings.PresencePenalty;
-                r.TopP = _config.LlmSettings.TopP;
-                r.TopK = _config.LlmSettings.TopK;
-                r.MinP = _config.LlmSettings.MinP;
-                r.RepeatPenalty = _config.LlmSettings.RepeatPenalty;
-                r.RepeatLastN = _config.LlmSettings.RepeatLastN;
-            });
+            _config.SecondOpinionSettings);
 
         var loop = new AgentLoop(
             llm,

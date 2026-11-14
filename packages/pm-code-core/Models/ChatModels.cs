@@ -22,14 +22,20 @@ public class ChatRequest
     [JsonPropertyName("max_tokens")]
     public int MaxTokens { get; set; } = 4096;
 
+    // Nullable (con JsonIgnore su null) per permettere ad ask_second_opinion di NON inviare
+    // affatto il campo quando non configurato esplicitamente (SecondOpinionSettings): tutti
+    // gli altri chiamanti (loop principale, explore, review_changes) assegnano sempre un
+    // valore non-null, quindi per loro il JSON prodotto resta identico a prima.
     [JsonPropertyName("temperature")]
-    public float Temperature { get; set; } = 0.0f;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? Temperature { get; set; } = 0.0f;
 
     // Con temperature 0 (greedy) un modello locale quantizzato può entrare in un loop di
     // ripetizione (token più probabile = continuare la frase già detta). Una penalità sulla
     // frequenza rompe il loop senza introdurre randomicità nelle scelte di tool call.
     [JsonPropertyName("frequency_penalty")]
-    public float FrequencyPenalty { get; set; } = 0.3f;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? FrequencyPenalty { get; set; } = 0.3f;
 
     // Parametri di campionamento opzionali (LlmSettings in appsettings.json): se null non
     // vengono inviati e llama-server usa i propri default (quelli di avvio del server).
@@ -68,6 +74,15 @@ public class ChatRequest
     [JsonPropertyName("stream_options")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public StreamOptions? StreamOptions { get; set; }
+
+    // Usato SOLO da ConsultSubAgent (ask_second_opinion) per il campo "ReasoningMode" di
+    // SecondOpinionSettings: convenzione "enable_thinking" nel chat template (Qwen3, GLM-4.5+,
+    // Hunyuan, ...), passata via chat_template_kwargs come fanno llama-server/vLLM. Nessun
+    // altro chiamante lo imposta, quindi per tutti gli altri usi resta null e non viene
+    // serializzato (comportamento invariato).
+    [JsonPropertyName("chat_template_kwargs")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, object>? ChatTemplateKwargs { get; set; }
 }
 
 public class StreamOptions
@@ -92,6 +107,17 @@ public class ChatMessage
     [JsonPropertyName("tool_call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolCallId { get; set; }
+
+    // Alcuni modelli "reasoning" (DeepSeek-R1 e derivati, alcuni Qwen3) separano il
+    // ragionamento dalla risposta finale in questo campo (non standard OpenAI, ma comune
+    // su endpoint OpenAI-compatibili come llama-server/vLLM). Mai impostato dai costruttori
+    // di questa classe (ChatMessage.System/User/ToolResult): compare SOLO quando deserializziamo
+    // una risposta che lo porta, quindi non viene mai rinviato al server (JsonIgnore su null).
+    // Usato da ConsultSubAgent per distinguere "il modello ha solo ragionato, Content è vuoto"
+    // da "il modello non ha risposto affatto".
+    [JsonPropertyName("reasoning_content")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReasoningContent { get; set; }
 
     public static ChatMessage System(string content) => new() { Role = "system", Content = content };
     public static ChatMessage User(string content) => new() { Role = "user", Content = content };

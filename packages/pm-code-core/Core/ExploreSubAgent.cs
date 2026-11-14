@@ -1,7 +1,21 @@
+using System.Diagnostics;
 using System.Text.Json;
 using LocalCodeAgent.Models;
 
 namespace LocalCodeAgent.Core;
+
+/// <summary>
+/// Eccezione interna: la chiamata al modello di lettura ha superato <see cref="ExploreLlmSettings.TimeoutSeconds"/>.
+/// Distinta da una cancellazione reale dell'utente (vedi <see cref="ExploreSubAgent.AskAsync"/>): solo questa produce
+/// il messaggio di fallback "non disponibile (timeout)", una cancellazione vera deve invece propagare.
+/// </summary>
+internal sealed class ExploreTimeoutException : Exception;
+
+/// <summary>
+/// Eccezione interna: errore di rete/HTTP/parsing verso il modello di lettura (connessione rifiutata,
+/// 5xx, risposta non JSON valido, ecc.) — mai un'eccezione non gestita che risale al loop principale.
+/// </summary>
+internal sealed class ExploreCallException(string message) : Exception(message);
 
 /// <summary>
 /// Sotto-agente di esplorazione in sola lettura (tool "explore"). Risponde a una domanda sul
@@ -11,7 +25,7 @@ namespace LocalCodeAgent.Core;
 /// non devono contare come "file già letto" per l'agente principale, che altrimenti potrebbe
 /// modificare codice mai visto (vedi FileSystemTools.RequireRead).
 /// </summary>
-public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, WorkspaceContext workspace, Action<ChatRequest> applySampling)
+public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, WorkspaceContext workspace, ExploreLlmSettings settings)
 {
     public const string ToolName = "explore";
 
@@ -48,9 +62,6 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         }
     };
 
-    // ct: CancellationToken del turno corrente (vedi Program.cs/RunAgentLoopAsync) — oggi non
-    // annulla nessuna richiesta LLM/tool in corso (nessun chiamante lo annulla mai): plumbing
-    // per un futuro comando "cancel" lato UI/estensione, non cambia alcun comportamento.
     public async Task<string> RunAsync(string argumentsJson, Action<string>? onStatus = null, CancellationToken ct = default)
     {
         string question;
@@ -68,17 +79,29 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         var tools = dispatcher.AllDefinitions.Where(t => AllowedTools.Contains(t.Function.Name)).ToList();
         var history = new List<ChatMessage> { ChatMessage.System(BuildSystemPrompt()), ChatMessage.User(question) };
         var seenCalls = new HashSet<string>();
+        var contextExceeded = false;
+        var sw = Stopwatch.StartNew();
 
         try
         {
             for (var step = 1; step <= MaxSteps; step++)
             {
+                // Guardia semplice sul contesto interno: nessun rollover/compressione, solo uno
+                // stop anticipato se la history (stima grezza caratteri/4) supera la soglia
+                // configurata — pensata per un'esplorazione fuori controllo, non il caso normale
+                // (vedi ExploreLlmSettings.MaxHistoryTokensEstimate).
+                if (EstimateTokens(history) > settings.MaxHistoryTokensEstimate)
+                {
+                    contextExceeded = true;
+                    break;
+                }
+
                 onStatus?.Invoke($"explore: step {step}/{MaxSteps}…");
                 var message = await AskAsync(history, tools, ct);
                 history.Add(message);
 
                 if (message.ToolCalls is not { Count: > 0 })
-                    return Finish(message.Content);
+                    return Finish(message.Content, sw.ElapsedMilliseconds, "ok");
 
                 foreach (var tc in message.ToolCalls)
                 {
@@ -87,13 +110,37 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
                 }
             }
 
-            // Step finiti: si chiede la conclusione senza tool, invece di restituire il nulla.
-            history.Add(ChatMessage.User("Limite di step raggiunto: non puoi più usare tool. Rispondi ORA con quello che hai " +
-                                         "trovato, nel formato richiesto, indicando cosa non sei riuscito a verificare."));
-            return Finish((await AskAsync(history, null, ct)).Content);
+            // Step finiti O contesto troppo grande: si chiede la conclusione senza tool, invece
+            // di restituire il nulla.
+            history.Add(ChatMessage.User(contextExceeded
+                ? $"Il contesto di questa esplorazione ha superato la soglia configurata (~{settings.MaxHistoryTokensEstimate} " +
+                  "token stimati): non puoi più usare tool. Rispondi ORA con quello che hai trovato finora, indicando cosa non " +
+                  "sei riuscito a verificare."
+                : "Limite di step raggiunto: non puoi più usare tool. Rispondi ORA con quello che hai " +
+                  "trovato, nel formato richiesto, indicando cosa non sei riuscito a verificare."));
+            var finalMessage = await AskAsync(history, null, ct);
+            return Finish(finalMessage.Content, sw.ElapsedMilliseconds, contextExceeded ? "context-limit" : "ok");
+        }
+        catch (ExploreTimeoutException)
+        {
+            LogOutcome("timeout", sw.ElapsedMilliseconds, 0);
+            return "[EXPLORE] non disponibile (timeout). Usa direttamente search_in_files/read_file_range.";
+        }
+        catch (ExploreCallException ex)
+        {
+            LogOutcome("errore", sw.ElapsedMilliseconds, 0);
+            return $"[EXPLORE] non disponibile (errore: {ex.Message}). Usa direttamente search_in_files/read_file_range.";
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Cancellazione reale del turno (utente): deve propagare, non essere inghiottita come
+            // un errore qualunque — altrimenti un "Annulla" durante explore risulterebbe in un
+            // tool_result di errore invece che in un turno davvero cancellato.
+            throw;
         }
         catch (Exception ex)
         {
+            LogOutcome("errore", sw.ElapsedMilliseconds, 0);
             return $"ERRORE: il sotto-agente explore si è interrotto ({ex.Message}). Procedi con search_in_files/read_file_range.";
         }
     }
@@ -105,17 +152,77 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
             Messages = history,
             Tools = tools,
             ToolChoice = tools == null ? null : "auto",
-            MaxTokens = 4096,
+            MaxTokens = settings.MaxTokens,
+            // Nessun parametro di sampling ereditato dall'agente coordinatore: solo quelli
+            // esplicitamente configurati in ExploreLlmSettings vengono inviati.
+            Temperature = settings.Temperature,
+            FrequencyPenalty = settings.FrequencyPenalty,
+            PresencePenalty = settings.PresencePenalty,
+            TopP = settings.TopP,
+            TopK = settings.TopK,
+            MinP = settings.MinP,
+            RepeatPenalty = settings.RepeatPenalty,
         };
-        applySampling(request);
 
-        var response = await llm.ChatAsync(request, ct);
-        var message = response?.Choices.FirstOrDefault()?.Message ?? new ChatMessage { Role = "assistant" };
+        // ReasoningMode: "auto" = nessun campo extra (decide il server/chat-template). "on"/"off" =
+        // chat_template_kwargs.enable_thinking, stessa convenzione di ConsultSubAgent (non
+        // specifica di un modello).
+        if (string.Equals(settings.ReasoningMode, "on", StringComparison.OrdinalIgnoreCase))
+            request.ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = true };
+        else if (string.Equals(settings.ReasoningMode, "off", StringComparison.OrdinalIgnoreCase))
+            request.ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false };
+
+        // Timeout dedicato alla chiamata del sotto-agente, collegato al ct del turno: l'HttpClient
+        // condiviso (LlamaClient) resta a timeout infinito per gli altri usi, ma qui una richiesta
+        // che supera ExploreLlmSettings.TimeoutSeconds viene annullata DAVVERO (il CancellationToken
+        // arriva fino a PostAsJsonAsync in LlamaClient.ChatAsync), non resta orfana.
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, settings.TimeoutSeconds)));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+        ChatResponse? response;
+        try
+        {
+            response = await llm.ChatAsync(request, linkedCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new ExploreTimeoutException();
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new ExploreCallException($"errore di rete ({ex.Message})");
+        }
+        catch (JsonException ex)
+        {
+            throw new ExploreCallException($"risposta non valida (JSON malformato: {ex.Message})");
+        }
+
+        var choice = response?.Choices.FirstOrDefault();
+        var message = choice?.Message ?? new ChatMessage { Role = "assistant" };
         message.TryExtractFallbackToolCalls();
-        // Come nel loop principale: un assistant senza content né tool_calls viene rifiutato
-        // dal server al giro successivo.
-        if (string.IsNullOrEmpty(message.Content) && message.ToolCalls is not { Count: > 0 })
-            message.Content = "(nessuna risposta dal modello)";
+
+        var hasToolCalls = message.ToolCalls is { Count: > 0 };
+        var isLengthTruncated = string.Equals(choice?.FinishReason, "length", StringComparison.OrdinalIgnoreCase);
+
+        // Leggi SOLO 'content'. Se è vuoto ma il modello ha prodotto 'reasoning_content' (alcuni
+        // modelli reasoning separano i due campi), non restituire mai una stringa vuota: è un
+        // segnale di configurazione/endpoint da segnalare chiaramente, non un "nessuna risposta"
+        // generico. Se il troncamento è per limite di token (finish_reason "length"), questo è
+        // più specifico e prevale sul caso reasoning-only.
+        if (string.IsNullOrWhiteSpace(message.Content) && !hasToolCalls)
+        {
+            message.Content = isLengthTruncated
+                ? "ERRORE: il modello di lettura ha raggiunto il limite di token (MaxTokens) senza produrre alcuna " +
+                  "risposta finale in 'content'. Aumenta ExploreLlmSettings.MaxTokens o imposta ReasoningMode=off."
+                : !string.IsNullOrWhiteSpace(message.ReasoningContent)
+                    ? "ERRORE: il modello di lettura ha prodotto solo ragionamento interno ('reasoning_content'), nessuna " +
+                      "risposta finale in 'content'. Verifica ReasoningMode/la configurazione del server di lettura."
+                    : "(nessuna risposta dal modello)";
+        }
+        else if (isLengthTruncated && !hasToolCalls)
+        {
+            message.Content += "\n\n[EXPLORE TRONCATO: limite di token raggiunto]";
+        }
         return message;
     }
 
@@ -126,21 +233,84 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         if (!seenCalls.Add($"{name}|{argsJson}"))
             return "ERRORE: chiamata identica già eseguita, il risultato è più sopra. Cerca altrove o concludi.";
 
-        var result = dispatcher.Execute(name, argsJson, ct);
+        var (effectiveArgsJson, clampNote) = name == "read_file_range" ? ClampReadRange(argsJson) : (argsJson, null);
+
+        var result = dispatcher.Execute(name, effectiveArgsJson, ct);
+        if (clampNote != null) result += clampNote;
         return result.Length <= MaxToolResultChars
             ? result
             : result[..MaxToolResultChars] + $"\n…(troncato: {result.Length - MaxToolResultChars} caratteri omessi — restringi la ricerca o il range)";
     }
 
-    private static string Finish(string? answer)
+    // Limita read_file_range a settings.MaxLinesPerReadCall righe per chiamata, SOLO dentro
+    // questo sotto-agente: il ToolDispatcher/FileSystemTools del loop principale non viene
+    // toccato, quindi read_file_range resta senza limite per l'agente principale (comportamento
+    // invariato) — questa clamp riscrive solo gli argomenti passati al dispatcher PROPRIO di explore.
+    private (string ArgsJson, string? ClampNote) ClampReadRange(string argsJson)
+    {
+        try
+        {
+            var el = JsonDocument.Parse(argsJson).RootElement;
+            if (!el.TryGetProperty("path", out var pathProp)) return (argsJson, null);
+            if (!el.TryGetProperty("start_line", out var s) || !el.TryGetProperty("end_line", out var e)
+                || s.ValueKind != JsonValueKind.Number || e.ValueKind != JsonValueKind.Number)
+                return (argsJson, null);
+
+            var start = s.GetInt32();
+            var end = e.GetInt32();
+            var requested = end - start + 1;
+            if (requested <= settings.MaxLinesPerReadCall) return (argsJson, null);
+
+            var clampedEnd = start + settings.MaxLinesPerReadCall - 1;
+            var clamped = JsonSerializer.Serialize(new { path = pathProp.GetString(), start_line = start, end_line = clampedEnd });
+            var remaining = end - clampedEnd;
+            return (clamped, $"\n[LIMITE RIGHE] Richieste {requested} righe, restituite solo {settings.MaxLinesPerReadCall} " +
+                              $"({start}-{clampedEnd}): ne restano {remaining}. Richiama read_file_range con start_line={clampedEnd + 1}, " +
+                              $"end_line={end} per continuare.");
+        }
+        catch { return (argsJson, null); }
+    }
+
+    private string Finish(string? answer, long durationMs, string outcome)
     {
         var text = string.IsNullOrWhiteSpace(answer) ? "(il sotto-agente non ha prodotto una conclusione)" : answer.Trim();
         if (text.Length > MaxAnswerChars) text = text[..MaxAnswerChars] + "…(troncato)";
+        LogOutcome(outcome, durationMs, text.Length);
         return "[EXPLORE] " + text +
                "\n\n(Conclusione del sotto-agente: prima di modificare un file leggi comunque le righe interessate con read_file_range.)";
     }
 
-    private string BuildSystemPrompt() => $"""
+    /// <summary>
+    /// Log a livello "info" (su stderr, come le altre righe diagnostiche di questo backend — non
+    /// esiste un framework di logging strutturato qui): endpoint/modello usati, durata, esito,
+    /// lunghezza risposta. Stesso pattern di ConsultSubAgent.LogOutcome.
+    /// </summary>
+    private void LogOutcome(string outcome, long durationMs, int answerLength) =>
+        Console.Error.WriteLine($"[EXPLORE] endpoint={llm.EndpointOverride ?? "(default)"} model={llm.Model} " +
+                                 $"outcome={outcome} durationMs={durationMs} answerLen={answerLength}");
+
+    private string BuildSystemPrompt()
+    {
+        if (!string.IsNullOrWhiteSpace(settings.SystemPromptPath))
+        {
+            try
+            {
+                var fromFile = File.ReadAllText(settings.SystemPromptPath).Trim();
+                if (fromFile.Length > 0) return fromFile;
+                Console.Error.WriteLine($"[EXPLORE] SystemPromptPath '{settings.SystemPromptPath}' è vuoto, uso il prompt di default.");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[EXPLORE] SystemPromptPath '{settings.SystemPromptPath}' non leggibile ({ex.Message}), uso il prompt di default.");
+            }
+        }
+        return DefaultSystemPrompt;
+    }
+
+    // Default in italiano (lingua dell'agente coordinatore e dell'utente — vedi risposta finale):
+    // la regola di fedeltà è la più importante per un lettore, perché il chiamante può modificare
+    // codice basandosi sulla sua risposta senza rileggerlo (vedi Finish, che lo ricorda comunque).
+    private string DefaultSystemPrompt => $"""
         Sei un sotto-agente di ESPLORAZIONE del codice, in sola lettura. Workspace: {workspace.Root}
         Il tuo compito è rispondere alla domanda dell'utente cercando nel codice. Non puoi modificare nulla né eseguire comandi.
 
@@ -150,10 +320,18 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         - Segui il filo: definizione → chiamanti → dove finisce il dato. Fermati appena hai la risposta.
         - Hai al massimo {MaxSteps} step: puoi fare più tool call nello stesso step se sono indipendenti.
 
+        FEDELTÀ (regola più importante: chi ti ha chiamato può modificare codice basandosi sulla tua risposta):
+        - Cita VERBATIM, tra backtick, firme di funzione/metodo, nomi esatti, messaggi d'errore e le poche righe
+          decisive — mai parafrasate — insieme al percorso:riga da cui vengono.
+        - Non inventare nomi di funzioni, API, parametri o file che non hai visto nei risultati dei tool: se non
+          l'hai letto, non esiste per te.
+        - Se qualcosa è plausibile ma non l'hai verificato leggendo il codice, dillo esplicitamente ("non verificato").
+
         RISPOSTA FINALE (testo, niente tool call), max 25 righe, in italiano:
         - La conclusione in 1-3 frasi.
-        - I punti rilevanti come "percorso:riga — cosa fa", con i numeri di riga restituiti dai tool (mai stimati).
-        - Separa ciò che hai VERIFICATO leggendo il codice da ciò che è un'ipotesi.
+        - I punti rilevanti come "percorso:riga — cosa fa", con citazioni verbatim tra backtick dove rilevante,
+          e i numeri di riga restituiti dai tool (mai stimati).
+        - Separa ciò che hai VERIFICATO leggendo il codice da ciò che è un'ipotesi o non hai controllato.
         - Se non hai trovato la risposta, dillo e indica dove hai cercato.
         """;
 
@@ -161,5 +339,20 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
     {
         var flat = s.Replace("\r", "").Replace('\n', ' ');
         return flat.Length <= max ? flat : flat[..max] + "…";
+    }
+
+    // Stima grezza (caratteri/4) della history interna: non serve precisione, solo rilevare
+    // un'esplorazione che sta accumulando troppo contesto (vedi ExploreLlmSettings.MaxHistoryTokensEstimate).
+    private static int EstimateTokens(List<ChatMessage> history)
+    {
+        var chars = 0;
+        foreach (var m in history)
+        {
+            chars += m.Content?.Length ?? 0;
+            if (m.ToolCalls != null)
+                foreach (var tc in m.ToolCalls)
+                    chars += tc.Function.Arguments?.Length ?? 0;
+        }
+        return chars / 4;
     }
 }

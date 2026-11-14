@@ -116,6 +116,20 @@ public class LlamaClient
     // di modificarlo, quindi resta sicuro chiamarlo ad ogni turno.
     public string? EndpointOverride { get; set; }
 
+    // Opzionale: solo chi lo imposta esplicitamente (oggi: ConsultSubAgent via
+    // SecondOpinionSettings.ApiKey) lo invia; gli altri usi di LlamaClient restano senza
+    // header Authorization, comportamento invariato. Impostabile una sola volta per istanza:
+    // come EndpointOverride, HttpClient.DefaultRequestHeaders non va mutato dopo che una
+    // richiesta è già partita su quell'istanza.
+    public string? ApiKey
+    {
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", value);
+        }
+    }
+
     public async Task<bool> HealthCheckAsync()
     {
         try { return (await _http.GetAsync("/v1/models")).IsSuccessStatusCode; }
