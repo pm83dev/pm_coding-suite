@@ -89,6 +89,13 @@ public static class SystemPromptBuilder
             - Quando hai capito come si avvia/testa il progetto (comando, endpoint, login, file di prova, esito atteso),
               salvalo con project_notes action="add": nella prossima sessione lo troverai già pronto.
     
+            ESPLORAZIONE (explore):
+            - Usalo per domande che richiederebbero molte letture su più file (dove viene gestito X e chi lo
+              chiama, come arriva il dato Y dal controller al DB, capire come funziona un meccanismo prima di
+              toccarlo), non per una singola ricerca o un file già noto — in quel caso search_in_files/read_file_range.
+            - Il suo output è una SINTESI da un sotto-agente con contesto separato: prima di modificare un file
+              sulla base di quella sintesi, leggilo comunque tu con read_file_range (richiesto anche tecnicamente).
+
             REGOLE OPERATIVE:
             - Una risposta di solo testo CHIUDE il task e l'utente la vede come finale: se devi leggere, eseguire o modificare
               qualcosa, chiama il tool nella stessa risposta invece di annunciarlo ("Ora leggo X", "Procedo con Y").

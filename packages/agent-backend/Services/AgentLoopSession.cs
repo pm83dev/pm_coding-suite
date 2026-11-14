@@ -75,6 +75,12 @@ public class AgentLoopSession
             "- La build dice solo che compila. Esegui il programma e controlla il comportamento.\n" +
             "- Se il programma richiede input: usa run_command con timeout e input via pipeline.\n" +
             "- Se non riesci a eseguirlo: dichiaralo esplicitamente nella risposta.\n" +
+            "\nESPLORAZIONE (explore):\n" +
+            "- Usalo per domande che richiederebbero molte letture su più file (\"dove viene gestito X e chi lo " +
+            "chiama\", \"come arriva il dato Y dal controller al DB\"), non per una singola ricerca o un file già " +
+            "noto — in quel caso usa direttamente search_in_files/read_file_range.\n" +
+            "- Il suo output è una SINTESI da un sotto-agente con contesto separato: prima di modificare un file " +
+            "sulla base di quella sintesi, leggilo comunque tu con read_file_range (richiesto anche tecnicamente).\n" +
             "\nSECONDO PARERE (ask_second_opinion):\n" +
             "- Usalo quando sei bloccato: stesso errore ripetuto, tentativi diversi senza progresso, o " +
             "riletture dello stesso codice senza arrivare a una modifica. PRIMA di chiedere all'utente o di arrenderti.\n" +
