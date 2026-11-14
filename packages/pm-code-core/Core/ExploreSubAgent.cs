@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using LocalCodeAgent.Models;
 
@@ -79,6 +80,7 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         var history = new List<ChatMessage> { ChatMessage.System(BuildSystemPrompt()), ChatMessage.User(question) };
         var seenCalls = new HashSet<string>();
         var contextExceeded = false;
+        var sw = Stopwatch.StartNew();
 
         try
         {
@@ -99,7 +101,7 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
                 history.Add(message);
 
                 if (message.ToolCalls is not { Count: > 0 })
-                    return Finish(message.Content);
+                    return Finish(message.Content, sw.ElapsedMilliseconds, "ok");
 
                 foreach (var tc in message.ToolCalls)
                 {
@@ -116,14 +118,17 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
                   "sei riuscito a verificare."
                 : "Limite di step raggiunto: non puoi più usare tool. Rispondi ORA con quello che hai " +
                   "trovato, nel formato richiesto, indicando cosa non sei riuscito a verificare."));
-            return Finish((await AskAsync(history, null, ct)).Content);
+            var finalMessage = await AskAsync(history, null, ct);
+            return Finish(finalMessage.Content, sw.ElapsedMilliseconds, contextExceeded ? "context-limit" : "ok");
         }
         catch (ExploreTimeoutException)
         {
+            LogOutcome("timeout", sw.ElapsedMilliseconds, 0);
             return "[EXPLORE] non disponibile (timeout). Usa direttamente search_in_files/read_file_range.";
         }
         catch (ExploreCallException ex)
         {
+            LogOutcome("errore", sw.ElapsedMilliseconds, 0);
             return $"[EXPLORE] non disponibile (errore: {ex.Message}). Usa direttamente search_in_files/read_file_range.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -135,6 +140,7 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         }
         catch (Exception ex)
         {
+            LogOutcome("errore", sw.ElapsedMilliseconds, 0);
             return $"ERRORE: il sotto-agente explore si è interrotto ({ex.Message}). Procedi con search_in_files/read_file_range.";
         }
     }
@@ -265,13 +271,23 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         catch { return (argsJson, null); }
     }
 
-    private static string Finish(string? answer)
+    private string Finish(string? answer, long durationMs, string outcome)
     {
         var text = string.IsNullOrWhiteSpace(answer) ? "(il sotto-agente non ha prodotto una conclusione)" : answer.Trim();
         if (text.Length > MaxAnswerChars) text = text[..MaxAnswerChars] + "…(troncato)";
+        LogOutcome(outcome, durationMs, text.Length);
         return "[EXPLORE] " + text +
                "\n\n(Conclusione del sotto-agente: prima di modificare un file leggi comunque le righe interessate con read_file_range.)";
     }
+
+    /// <summary>
+    /// Log a livello "info" (su stderr, come le altre righe diagnostiche di questo backend — non
+    /// esiste un framework di logging strutturato qui): endpoint/modello usati, durata, esito,
+    /// lunghezza risposta. Stesso pattern di ConsultSubAgent.LogOutcome.
+    /// </summary>
+    private void LogOutcome(string outcome, long durationMs, int answerLength) =>
+        Console.Error.WriteLine($"[EXPLORE] endpoint={llm.EndpointOverride ?? "(default)"} model={llm.Model} " +
+                                 $"outcome={outcome} durationMs={durationMs} answerLen={answerLength}");
 
     private string BuildSystemPrompt()
     {

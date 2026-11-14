@@ -131,6 +131,10 @@ public class ExploreLlmSettings
     [JsonPropertyName("MaxHistoryTokensEstimate")]
     public int MaxHistoryTokensEstimate { get; set; } = 20000;
 
+    /// <summary>Troncamento nel trace diagnostico (argomenti/risultato) SOLO per explore.</summary>
+    [JsonPropertyName("TraceMaxChars")]
+    public int TraceMaxChars { get; set; } = 1000;
+
     /// <summary>
     /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
     /// contrario il chiamante ricade sul client principale.
@@ -351,6 +355,9 @@ public sealed record AgentLoopOptions
 
     /// <summary>Troncamento nel trace diagnostico (argomenti/risultato) SOLO per ask_second_opinion.</summary>
     public int SecondOpinionTraceMaxChars { get; init; } = 2000;
+
+    /// <summary>Troncamento nel trace diagnostico (argomenti/risultato) SOLO per explore.</summary>
+    public int ExploreTraceMaxChars { get; init; } = 1000;
 }
 
 /// <summary>

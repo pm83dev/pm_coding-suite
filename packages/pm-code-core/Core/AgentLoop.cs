@@ -397,7 +397,8 @@ namespace LocalCodeAgent.Core
             // spesso più lunghi degli argomenti/risultati tipici degli altri tool. Nessun altro
             // tool è toccato da questo helper.
             int TraceCharsFor(string toolName) =>
-                toolName == ConsultSubAgent.ToolName ? _options.SecondOpinionTraceMaxChars : 300;
+                toolName == ConsultSubAgent.ToolName ? _options.SecondOpinionTraceMaxChars :
+                toolName == ExploreSubAgent.ToolName ? _options.ExploreTraceMaxChars : 300;
 
             async Task<string> ExecuteToolGuarded(string name, string argsJson)
             {
