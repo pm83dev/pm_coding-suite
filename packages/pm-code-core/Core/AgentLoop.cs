@@ -81,6 +81,16 @@ namespace LocalCodeAgent.Core
             @"^(dotnet (build|run)|npm run (build|start)|make|cmake|gradle|mvn|swift build|cargo build|tsc|vite build|webpack)\b" +
             @"|\b(build|compile|tsc)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // Messaggi di errore comuni che run_command/run_dotnet non marcano sempre con "ERRORE"/
+        // "[ESITO: FALLITO" (es. PowerShell non propaga sempre l'exit code del comando interno):
+        // riconosciuti qui perché looksLikeError (vedi ExecuteToolGuarded) non li vedrebbe altrimenti.
+        private static readonly Regex _commonCliErrorRegex = new(
+            string.Join("|", new[]
+            {
+                "is not recognized as", "CommandNotFound", "No such file or directory", "cannot find",
+                "error CS", "error MSB", "Traceback", "fatal:", "npm ERR!",
+            }.Select(Regex.Escape)),
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // Ogni quanti secondi (min) inviare un ping di stato MENTRE un tool è in esecuzione.
         // Senza questo, durante tool lenti (run_command con timeout fino a 60s, sol_analyze
@@ -591,7 +601,8 @@ namespace LocalCodeAgent.Core
                 // Stesso ERRORE dallo stesso tool con argomenti DIVERSI: il guard sopra non lo vede.
                 var looksLikeError = execResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase)
                     || execResult.Contains("Exception") || execResult.Contains("[ESITO: FALLITO")
-                    || Regex.IsMatch(execResult, @"\b(4\d\d|5\d\d)\b.{0,40}(Bad Request|Unauthorized|Not Found|Internal Server Error|validation errors)", RegexOptions.IgnoreCase);
+                    || Regex.IsMatch(execResult, @"\b(4\d\d|5\d\d)\b.{0,40}(Bad Request|Unauthorized|Not Found|Internal Server Error|validation errors)", RegexOptions.IgnoreCase)
+                    || _commonCliErrorRegex.IsMatch(execResult);
                 if (looksLikeError)
                 {
                     var signature = Regex.Replace(execResult.Length > 400 ? execResult[^400..] : execResult, @"\s+", " ");

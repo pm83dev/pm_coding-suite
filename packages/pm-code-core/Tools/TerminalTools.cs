@@ -405,7 +405,14 @@ public class TerminalTools(WorkspaceContext workspace)
     // l'eccezione e la forza comunque a testo.
     private string RunCommandWindows(string command, int timeoutMs)
     {
-        const string scriptTemplate = "$ProgressPreference = 'SilentlyContinue'\r\nSet-Location '{0}'\r\ntry {{ & {{ {1} }} *>&1 | Out-String -Stream -Width 300 }} catch {{ $_ | Out-String -Stream }}\r\nWrite-Output \"\n{2}{3}\"";
+        // PowerShell non propaga di default l'esito del comando interno all'exit code del
+        // processo powershell.exe (il try/catch sopra lo intercetta e lo rende testo): senza
+        // questo, RunProcess marcava sempre [ESITO: SUCCESSO] anche quando il comando falliva.
+        // Qui catturiamo l'errore (eccezione terminante intercettata dal catch, o $LASTEXITCODE
+        // diverso da zero per un eseguibile nativo) e usciamo con un exit code non-zero di
+        // conseguenza — "dove disponibile": un errore non terminante (scritto nello stream degli
+        // errori senza throw né $LASTEXITCODE) resta invisibile all'exit code, come prima.
+        const string scriptTemplate = "$ProgressPreference = 'SilentlyContinue'\r\nSet-Location '{0}'\r\n$__pmExitCode = 0\r\ntry {{ & {{ {1} }} *>&1 | Out-String -Stream -Width 300; if ($LASTEXITCODE) {{ $__pmExitCode = $LASTEXITCODE }} }} catch {{ $_ | Out-String -Stream; $__pmExitCode = 1 }}\r\nWrite-Output \"\n{2}{3}\"\r\nexit $__pmExitCode";
         var script = string.Format(scriptTemplate, _cwd.Replace("'", "''"), command, Sentinel, (Directory.Exists(_cwd) ? _cwd : "UNKNOWN"));
         var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
 
@@ -422,8 +429,10 @@ public class TerminalTools(WorkspaceContext workspace)
     // cronologico dell'output, come *>&1 fa lato PowerShell.
     private string RunCommandUnix(string command, int timeoutMs)
     {
+        // Senza catturare l'exit code PRIMA del printf del sentinel, il processo bash terminava
+        // sempre con l'exit code del printf (sempre 0, successo) a prescindere dal comando.
         var cwdEscaped = _cwd.Replace("'", "'\\''");
-        var script = $"cd '{cwdEscaped}' || exit 1\n{{ {command}\n}} 2>&1\nprintf '\\n%s%s' '{Sentinel}' '{(Directory.Exists(_cwd) ? _cwd : "UNKNOWN")}'";
+        var script = $"cd '{cwdEscaped}' || exit 1\n{{ {command}\n}} 2>&1\n__pm_exit=$?\nprintf '\\n%s%s' '{Sentinel}' '{(Directory.Exists(_cwd) ? _cwd : "UNKNOWN")}'\nexit $__pm_exit";
 
         return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs, maxChars: int.MaxValue, killLeftovers: true);
     }

@@ -192,4 +192,53 @@ public class AgentLoopSecondOpinionTests : IDisposable
         var blockIndex = runCommandResults.FindIndex(r => r.StartsWith("[LOOP-BLOCK]"));
         Assert.True(hintIndex >= 0 && blockIndex >= 0 && hintIndex < blockIndex);
     }
+
+    [Fact]
+    public async Task ComandoInesistenteRipetuto_RiconosciutoComeErroreESuggerisceAskSecondOpinion()
+    {
+        // run_command con un comando che NON esiste: PowerShell non lancia un'eccezione
+        // terminante né imposta sempre $LASTEXITCODE in modo ovvio per questo caso — prima della
+        // correzione il wrapper PowerShell restituiva comunque [ESITO: SUCCESSO] e looksLikeError
+        // non riconosceva il testo "is not recognized as" come errore, quindi il guard "stesso
+        // errore" non scattava mai per questo caso reale. argsJson varia con una LETTERA (non un
+        // numero, vedi StessoErroreRipetuto) per non interferire con il guard "quasi identica".
+        const string badCommand = "thiscommanddoesnotexist987xyz";
+        await using var mainServer = new FakeLlmServer([
+            () => FakeResponse.ToolCall("run_command", $$"""{"command":"{{badCommand}}","note":"a"}"""),
+            () => FakeResponse.ToolCall("run_command", $$"""{"command":"{{badCommand}}","note":"b"}"""),
+            () => FakeResponse.ToolCall("run_command", $$"""{"command":"{{badCommand}}","note":"c"}"""),
+            () => FakeResponse.Text("mi arrendo."),
+        ]);
+        var mainLlm = new LlamaClient(mainServer.BaseUrl, "fake-main") { EndpointOverride = $"{mainServer.BaseUrl}/v1/chat/completions" };
+        var dispatcher = new ToolDispatcher(_workspace);
+        var sessionManager = new SessionManager(mainLlm, maxTokens: 128000, rolloverTokens: 64000, () => "test system prompt");
+        var consultAgent = new ConsultSubAgent(mainLlm, new ToolDispatcher(_workspace), _workspace, new SecondOpinionSettings());
+
+        var sink = new RecordingSink();
+        var options = new AgentLoopOptions
+        {
+            IsMachineMode = true,
+            MaxSteps = 10,
+            MaxContextTokens = 128000,
+            SecondOpinionSameErrorThreshold = 3,
+        };
+        var loop = new AgentLoop(
+            mainLlm, dispatcher, sessionManager, sink, _workspace,
+            exploreAgent: null, reviewAgent: null, consultAgent,
+            options,
+            ui: _ => { }, trace: _ => { }, notice: _ => { }, onStatus: _ => { });
+
+        var history = new List<ChatMessage> { ChatMessage.System("test"), ChatMessage.User("esegui questo comando") };
+        await loop.RunTurnAsync(history, CancellationToken.None, maxTokens: 4096, turnId: "test-turn-4");
+
+        var runCommandResults = sink.ToolCallsFinished
+            .Where(t => t.Name == "run_command")
+            .Select(t => t.Result?.ToString() ?? "")
+            .ToList();
+
+        Assert.Equal(3, runCommandResults.Count);
+        Assert.All(runCommandResults, r => Assert.Contains("[ESITO: FALLITO", r));
+        Assert.Equal(1, runCommandResults.Count(r => r.Contains("Sei in loop: sintetizza i tentativi falliti e chiama ask_second_opinion")));
+        Assert.True(runCommandResults.Count(r => r.Contains("[STESSO ERRORE")) >= 1);
+    }
 }
