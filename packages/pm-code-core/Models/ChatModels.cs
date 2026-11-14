@@ -22,14 +22,20 @@ public class ChatRequest
     [JsonPropertyName("max_tokens")]
     public int MaxTokens { get; set; } = 4096;
 
+    // Nullable (con JsonIgnore su null) per permettere ad ask_second_opinion di NON inviare
+    // affatto il campo quando non configurato esplicitamente (SecondOpinionSettings): tutti
+    // gli altri chiamanti (loop principale, explore, review_changes) assegnano sempre un
+    // valore non-null, quindi per loro il JSON prodotto resta identico a prima.
     [JsonPropertyName("temperature")]
-    public float Temperature { get; set; } = 0.0f;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? Temperature { get; set; } = 0.0f;
 
     // Con temperature 0 (greedy) un modello locale quantizzato può entrare in un loop di
     // ripetizione (token più probabile = continuare la frase già detta). Una penalità sulla
     // frequenza rompe il loop senza introdurre randomicità nelle scelte di tool call.
     [JsonPropertyName("frequency_penalty")]
-    public float FrequencyPenalty { get; set; } = 0.3f;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? FrequencyPenalty { get; set; } = 0.3f;
 
     // Parametri di campionamento opzionali (LlmSettings in appsettings.json): se null non
     // vengono inviati e llama-server usa i propri default (quelli di avvio del server).
