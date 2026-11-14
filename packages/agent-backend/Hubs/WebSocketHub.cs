@@ -329,12 +329,21 @@ public class WebSocketHub
 
                     // Watchdog: se il Task non è terminato dopo 5 minuti (molto più
                     // dei 300 s di AwaitApprovalAsync + margine per gli step, ma molto
-                    // meno dei 10 min precedenti), forza EndTurn. Il Task in sé continua
-                    // a girare (non lo cancelliamo: l'approvazione potrebbe ancora essere
-                    // in attesa), ma la sessione torna "idle" e un nuovo send_message può
-                    // partire. 5 min è un compromesso: abbastanza per un turno lungo con
-                    // molte approvazioni, poco abbastanza da non bloccare l'utente a lungo
-                    // se un turno resta appeso (es. bug nel loop).
+                    // meno dei 10 min precedenti), forza EndTurn. La sessione torna
+                    // "idle" e un nuovo send_message può partire. 5 min è un compromesso:
+                    // abbastanza per un turno lungo con molte approvazioni, poco abbastanza
+                    // da non bloccare l'utente a lungo se un turno resta appeso (es. bug nel loop).
+                    //
+                    // Il Task di turno NON viene cancellato se è in attesa di un'approvazione
+                    // (il comportamento normale, non un blocco: AwaitApprovalAsync ha il proprio
+                    // timeout di 300 s che lo sbloccherà comunque) — cancellarlo in quel caso
+                    // interromperebbe un turno che sta semplicemente aspettando l'utente. Se
+                    // INVECE non c'è nessuna approvazione pendente (il Task è bloccato altrove,
+                    // es. una chiamata LLM/sotto-agente senza risposta), il turno viene cancellato
+                    // davvero tramite CancelTurn(): dal fix del timeout di ExploreSubAgent/
+                    // ConsultSubAgent in avanti, il CancellationToken del turno arriva fino alla
+                    // richiesta HTTP e la cancellazione la chiude per davvero invece di lasciarla
+                    // orfana a girare in background.
                     _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(async t =>
                     {
                         if (!turnTask.IsCompleted)
@@ -343,14 +352,17 @@ public class WebSocketHub
                             // Se il turno è bloccato in attesa di un'approvazione, emetti
                             // approval_resolved con outcome "expired" così il client (se
                             // connesso) pulisce il bottone e lo stato non resta incoerente.
-                            // Il Task di turno continua a girare: AwaitApprovalAsync ha il
-                            // proprio timeout di 300 s che lo sbloccherà comunque.
-                            var pending = _sessionService.GetSession(msgSessionId)?.GetPendingApprovalSnapshot();
+                            var session = _sessionService.GetSession(msgSessionId);
+                            var pending = session?.GetPendingApprovalSnapshot();
                             if (pending != null)
                             {
                                 var pid = GetProperty(pending, "approvalId");
                                 if (!string.IsNullOrEmpty(pid))
                                     await SendToSession(msgSessionId, "approval_resolved", new { approvalId = pid, outcome = "expired" });
+                            }
+                            else
+                            {
+                                session?.CancelTurn();
                             }
                             _sessionService.EndTurn(msgSessionId, "watchdog");
                         }
