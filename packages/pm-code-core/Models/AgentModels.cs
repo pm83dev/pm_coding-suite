@@ -110,6 +110,16 @@ public class ExploreLlmSettings
     public float? FrequencyPenalty { get; set; }
 
     /// <summary>
+    /// Righe massime restituite da una singola chiamata a read_file_range DENTRO il sotto-agente
+    /// explore (non tocca il comportamento di read_file_range per il loop principale — vedi
+    /// ExploreSubAgent.Execute: la clamp riscrive solo gli argomenti passati al dispatcher
+    /// PROPRIO di explore). Se la richiesta supera il limite, si restituiscono solo le prime N
+    /// righe con un avviso su quante ne restano e come continuare. Default 300.
+    /// </summary>
+    [JsonPropertyName("MaxLinesPerReadCall")]
+    public int MaxLinesPerReadCall { get; set; } = 300;
+
+    /// <summary>
     /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
     /// contrario il chiamante ricade sul client principale.
     /// </summary>

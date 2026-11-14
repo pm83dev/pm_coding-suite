@@ -211,10 +211,42 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         if (!seenCalls.Add($"{name}|{argsJson}"))
             return "ERRORE: chiamata identica già eseguita, il risultato è più sopra. Cerca altrove o concludi.";
 
-        var result = dispatcher.Execute(name, argsJson, ct);
+        var (effectiveArgsJson, clampNote) = name == "read_file_range" ? ClampReadRange(argsJson) : (argsJson, null);
+
+        var result = dispatcher.Execute(name, effectiveArgsJson, ct);
+        if (clampNote != null) result += clampNote;
         return result.Length <= MaxToolResultChars
             ? result
             : result[..MaxToolResultChars] + $"\n…(troncato: {result.Length - MaxToolResultChars} caratteri omessi — restringi la ricerca o il range)";
+    }
+
+    // Limita read_file_range a settings.MaxLinesPerReadCall righe per chiamata, SOLO dentro
+    // questo sotto-agente: il ToolDispatcher/FileSystemTools del loop principale non viene
+    // toccato, quindi read_file_range resta senza limite per l'agente principale (comportamento
+    // invariato) — questa clamp riscrive solo gli argomenti passati al dispatcher PROPRIO di explore.
+    private (string ArgsJson, string? ClampNote) ClampReadRange(string argsJson)
+    {
+        try
+        {
+            var el = JsonDocument.Parse(argsJson).RootElement;
+            if (!el.TryGetProperty("path", out var pathProp)) return (argsJson, null);
+            if (!el.TryGetProperty("start_line", out var s) || !el.TryGetProperty("end_line", out var e)
+                || s.ValueKind != JsonValueKind.Number || e.ValueKind != JsonValueKind.Number)
+                return (argsJson, null);
+
+            var start = s.GetInt32();
+            var end = e.GetInt32();
+            var requested = end - start + 1;
+            if (requested <= settings.MaxLinesPerReadCall) return (argsJson, null);
+
+            var clampedEnd = start + settings.MaxLinesPerReadCall - 1;
+            var clamped = JsonSerializer.Serialize(new { path = pathProp.GetString(), start_line = start, end_line = clampedEnd });
+            var remaining = end - clampedEnd;
+            return (clamped, $"\n[LIMITE RIGHE] Richieste {requested} righe, restituite solo {settings.MaxLinesPerReadCall} " +
+                              $"({start}-{clampedEnd}): ne restano {remaining}. Richiama read_file_range con start_line={clampedEnd + 1}, " +
+                              $"end_line={end} per continuare.");
+        }
+        catch { return (argsJson, null); }
     }
 
     private static string Finish(string? answer)

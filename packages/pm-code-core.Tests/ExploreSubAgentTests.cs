@@ -106,6 +106,48 @@ public class ExploreSubAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadFileRangeOltreLimite_RestituisceSoloLePrimeNRigheConAvviso()
+    {
+        var path = Path.Combine(_workspaceDir, "big.txt");
+        File.WriteAllLines(path, Enumerable.Range(1, 500).Select(i => $"line {i}"));
+
+        await using var server = new FakeLlmServer([
+            () => FakeResponse.ToolCall("read_file_range", """{"path":"big.txt","start_line":1,"end_line":500}"""),
+            () => FakeResponse.Text("fatto"),
+        ]);
+        var settings = Settings();
+        settings.MaxLinesPerReadCall = 10;
+        var agent = AgentFor(server, _dispatcher, _workspace, settings);
+
+        var result = await agent.RunAsync("""{"question":"leggi big.txt"}""");
+
+        Assert.StartsWith("[EXPLORE]", result);
+        // La 2ª richiesta al modello (LastRequestBody) include nella history il tool_result
+        // della 1ª chiamata: verifica che la clamp sia stata applicata DAVVERO (solo le prime
+        // 10 righe, con l'avviso) e non solo che il turno sia finito senza errori.
+        Assert.Contains("line 10", server.LastRequestBody);
+        Assert.DoesNotContain("line 11\\n", server.LastRequestBody);
+        Assert.Contains("[LIMITE RIGHE]", server.LastRequestBody);
+        Assert.Contains("Richieste 500 righe, restituite solo 10", server.LastRequestBody);
+    }
+
+    [Fact]
+    public void ReadFileRangeOltreLimite_NonCambiaIlComportamentoDelLoopPrincipale()
+    {
+        // Lo stesso ToolDispatcher passato a explore, usato DIRETTAMENTE (come farebbe il loop
+        // principale): read_file_range deve restare SENZA limite — la clamp vive solo dentro
+        // ExploreSubAgent.Execute, non nel ToolDispatcher/FileSystemTools condiviso.
+        var path = Path.Combine(_workspaceDir, "big.txt");
+        File.WriteAllLines(path, Enumerable.Range(1, 500).Select(i => $"line {i}"));
+
+        var result = _dispatcher.Execute("read_file_range", """{"path":"big.txt","start_line":1,"end_line":500}""");
+
+        Assert.Contains("line 1", result);
+        Assert.Contains("line 500", result);
+        Assert.DoesNotContain("[LIMITE RIGHE]", result);
+    }
+
+    [Fact]
     public async Task SamplingDedicato_InviatoSoloSeConfigurato()
     {
         await using var server = new FakeLlmServer([() => FakeResponse.Text("ok")]);
