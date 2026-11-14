@@ -45,6 +45,73 @@ public class TerminalToolsExitCodeTests : IDisposable
         var result = RunCommand("thiscommanddoesnotexist123abc");
         Assert.Contains("[ESITO: FALLITO", result);
         Assert.DoesNotContain("[ESITO: SUCCESSO]", result);
+        // NON ambiguo: PowerShell scrive il messaggio "non riconosciuto" in output, non è vuoto.
+        Assert.DoesNotContain(TerminalTools.AmbiguousExitOneMarker, result);
+    }
+
+    [Fact]
+    public void FindstrSenzaMatch_RestaFallitoMaSegnalatoComeAmbiguo()
+    {
+        File.WriteAllText(Path.Combine(_workspaceDir, "haystack.txt"), "hello world");
+        var result = RunCommand("findstr /c:\"needle-that-does-not-exist\" haystack.txt");
+
+        Assert.Contains("[ESITO: FALLITO exit code 1]", result);
+        Assert.Contains(TerminalTools.AmbiguousExitOneMarker, result);
+        Assert.Contains("nessuna corrispondenza/nessuna differenza", result);
+    }
+
+    [Fact]
+    public void GitDiffQuietConDifferenze_SegnalatoComeAmbiguo()
+    {
+        RunCommand("git init -q");
+        RunCommand("git config user.email test@test.local");
+        RunCommand("git config user.name test");
+        // autocrlf scrive un warning su stderr ad ogni normalizzazione di fine riga: rumore
+        // dell'ambiente di test (Windows), non del comando "git diff --quiet" in sé — va
+        // disabilitato qui per isolare il caso realistico "nessun output, solo exit code 1".
+        RunCommand("git config core.autocrlf false");
+        File.WriteAllText(Path.Combine(_workspaceDir, "file.txt"), "riga 1");
+        RunCommand("git add file.txt");
+        RunCommand("git commit -q -m init");
+        File.AppendAllText(Path.Combine(_workspaceDir, "file.txt"), "\nriga 2");
+
+        var result = RunCommand("git diff --quiet");
+
+        Assert.Contains("[ESITO: FALLITO exit code 1]", result);
+        Assert.Contains(TerminalTools.AmbiguousExitOneMarker, result);
+    }
+
+    [Fact]
+    public void DotnetTestFallito_NonAmbiguo()
+    {
+        var projDir = Path.Combine(_workspaceDir, "testproj");
+        Directory.CreateDirectory(projDir);
+        File.WriteAllText(Path.Combine(projDir, "Tests.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net8.0</TargetFramework>
+                <IsPackable>false</IsPackable>
+              </PropertyGroup>
+              <ItemGroup>
+                <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+                <PackageReference Include="xunit" Version="2.9.2" />
+                <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+              </ItemGroup>
+            </Project>
+            """);
+        File.WriteAllText(Path.Combine(projDir, "FailingTest.cs"), """
+            using Xunit;
+            public class FailingTest
+            {
+                [Fact]
+                public void ThisFails() => Assert.True(false, "intentional");
+            }
+            """);
+
+        var result = RunCommand("dotnet test testproj\\Tests.csproj");
+
+        Assert.Contains("[ESITO: FALLITO exit code 1]", result);
+        Assert.DoesNotContain(TerminalTools.AmbiguousExitOneMarker, result);
     }
 
     [Fact]

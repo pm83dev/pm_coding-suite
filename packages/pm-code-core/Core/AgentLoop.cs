@@ -603,43 +603,51 @@ namespace LocalCodeAgent.Core
                     || execResult.Contains("Exception") || execResult.Contains("[ESITO: FALLITO")
                     || Regex.IsMatch(execResult, @"\b(4\d\d|5\d\d)\b.{0,40}(Bad Request|Unauthorized|Not Found|Internal Server Error|validation errors)", RegexOptions.IgnoreCase)
                     || _commonCliErrorRegex.IsMatch(execResult);
-                if (looksLikeError)
+                // Exit code 1 con output vuoto (vedi TerminalTools.RunProcess): grep/findstr/git diff
+                // --quiet lo usano per "nessuna corrispondenza/differenza", non un errore reale. Non
+                // deve contare né come errore né come successo nei guard "stesso errore": lo stato
+                // (sameErrorStreak/lastErrorHash/lastErrorTool) resta esattamente com'era prima.
+                var isAmbiguousExitOne = execResult.Contains(TerminalTools.AmbiguousExitOneMarker);
+                if (!isAmbiguousExitOne)
                 {
-                    var signature = Regex.Replace(execResult.Length > 400 ? execResult[^400..] : execResult, @"\s+", " ");
-                    var errHash = HashCode.Combine(name, signature);
-                    sameErrorStreak = errHash == lastErrorHash ? sameErrorStreak + 1 : 1;
-                    lastErrorHash = errHash;
-                    if (sameErrorStreak >= _options.SecondOpinionSameErrorThreshold)
+                    if (looksLikeError)
                     {
-                        // Una sola iniezione del suggerimento per episodio (fino a che lo streak non
-                        // si interrompe, ramo "else" sotto): altrimenti si ripeterebbe a ogni step
-                        // mentre il modello resta sopra soglia, intasando il contesto.
-                        var secondOpinionHint = secondOpinionSuggestedForErrorStreak
-                            ? ""
-                            : " Sei in loop: sintetizza i tentativi falliti e chiama ask_second_opinion con il briefing " +
-                              "strutturato (GOAL/CONSTRAINTS/ATTEMPTS/EXACT ERROR/QUESTION) PRIMA di fermarti.";
-                        secondOpinionSuggestedForErrorStreak = true;
-                        execResult += $"\n\n[STESSO ERRORE {sameErrorStreak} VOLTE] '{name}' ha restituito lo stesso errore {sameErrorStreak} volte di fila " +
-                                      "anche cambiando gli argomenti: ritoccare il comando non funziona. Cambia APPROCCIO: usa uno script/strumento " +
-                                      "già esistente nel progetto, un metodo diverso (es. altro cmdlet/API), oppure leggi la documentazione dello " +
-                                      $"strumento;{secondOpinionHint} se non vedi alternative, fermati e spiega all'utente l'errore.";
+                        var signature = Regex.Replace(execResult.Length > 400 ? execResult[^400..] : execResult, @"\s+", " ");
+                        var errHash = HashCode.Combine(name, signature);
+                        sameErrorStreak = errHash == lastErrorHash ? sameErrorStreak + 1 : 1;
+                        lastErrorHash = errHash;
+                        if (sameErrorStreak >= _options.SecondOpinionSameErrorThreshold)
+                        {
+                            // Una sola iniezione del suggerimento per episodio (fino a che lo streak non
+                            // si interrompe, ramo "else" sotto): altrimenti si ripeterebbe a ogni step
+                            // mentre il modello resta sopra soglia, intasando il contesto.
+                            var secondOpinionHint = secondOpinionSuggestedForErrorStreak
+                                ? ""
+                                : " Sei in loop: sintetizza i tentativi falliti e chiama ask_second_opinion con il briefing " +
+                                  "strutturato (GOAL/CONSTRAINTS/ATTEMPTS/EXACT ERROR/QUESTION) PRIMA di fermarti.";
+                            secondOpinionSuggestedForErrorStreak = true;
+                            execResult += $"\n\n[STESSO ERRORE {sameErrorStreak} VOLTE] '{name}' ha restituito lo stesso errore {sameErrorStreak} volte di fila " +
+                                          "anche cambiando gli argomenti: ritoccare il comando non funziona. Cambia APPROCCIO: usa uno script/strumento " +
+                                          "già esistente nel progetto, un metodo diverso (es. altro cmdlet/API), oppure leggi la documentazione dello " +
+                                          $"strumento;{secondOpinionHint} se non vedi alternative, fermati e spiega all'utente l'errore.";
+                        }
                     }
-                }
-                else
-                {
-                    // Successo dopo almeno 2 errori di fila sullo stesso tool: salva la lezione.
-                    if (sameErrorStreak >= 2 && name == lastErrorTool)
+                    else
                     {
-                        execResult += $"\n\n[LEZIONE] Hai superato un errore che si era ripetuto {sameErrorStreak} volte. Se la soluzione è " +
-                                      "una regola GENERALE (non specifica di questo progetto), salvala ORA con lessons action=\"add\" in una " +
-                                      "frase: cosa non funzionava e cosa fare invece. Poi prosegui con il task.";
-                        _notice($"errore ripetuto {sameErrorStreak} volte poi superato: chiedo di salvare la lezione");
+                        // Successo dopo almeno 2 errori di fila sullo stesso tool: salva la lezione.
+                        if (sameErrorStreak >= 2 && name == lastErrorTool)
+                        {
+                            execResult += $"\n\n[LEZIONE] Hai superato un errore che si era ripetuto {sameErrorStreak} volte. Se la soluzione è " +
+                                          "una regola GENERALE (non specifica di questo progetto), salvala ORA con lessons action=\"add\" in una " +
+                                          "frase: cosa non funzionava e cosa fare invece. Poi prosegui con il task.";
+                            _notice($"errore ripetuto {sameErrorStreak} volte poi superato: chiedo di salvare la lezione");
+                        }
+                        sameErrorStreak = 0;
+                        lastErrorHash = 0;
+                        secondOpinionSuggestedForErrorStreak = false;
                     }
-                    sameErrorStreak = 0;
-                    lastErrorHash = 0;
-                    secondOpinionSuggestedForErrorStreak = false;
+                    lastErrorTool = name;
                 }
-                lastErrorTool = name;
 
                 // Avviso già dalla seconda ripetizione identica, prima del blocco.
                 if (count >= 2)

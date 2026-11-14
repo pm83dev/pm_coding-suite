@@ -10,6 +10,13 @@ namespace LocalCodeAgent.Tools;
 
 public class TerminalTools(WorkspaceContext workspace)
 {
+    /// <summary>
+    /// Prefisso della nota per l'exit code 1 "ambiguo" (output vuoto, nessun errore reale):
+    /// AgentLoop la riconosce per non contare quel risultato nei guard di errore ripetuto
+    /// (sameErrorStreak) — vedi ExecuteToolGuarded.
+    /// </summary>
+    public const string AmbiguousExitOneMarker = "[NOTA] exit code 1";
+
     // Su Windows usiamo PowerShell (già presente ovunque); su Linux/macOS bash.
     private static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
@@ -384,6 +391,26 @@ public class TerminalTools(WorkspaceContext workspace)
             if (sentinelIdx > 0 && string.IsNullOrWhiteSpace(lines[sentinelIdx - 1]))
                 lines.RemoveAt(sentinelIdx - 1);
             raw = string.Join('\n', lines);
+        }
+
+        // Exit code 1 con output REALE (al netto del sentinel appena rimosso e dei tag
+        // [EXIT CODE]/[ESITO] stessi) completamente vuoto: convenzione comune a grep/findstr/
+        // git diff --quiet per "nessuna corrispondenza"/"nessuna differenza", non un errore
+        // dello strumento. Se restasse qualcosa (stderr, [PROCESSI TERMINATI], output vero)
+        // dopo aver rimosso quei tag, NON è ambiguo. Il tag FALLITO resta (l'exit code è
+        // comunque quello): solo una nota in coda, letta da AgentLoop (AmbiguousExitOneMarker)
+        // per non farla contare nei guard di errore ripetuto.
+        var exitOneMatch = System.Text.RegularExpressions.Regex.Match(raw, @"\[ESITO: FALLITO exit code (\d+)\]");
+        if (exitOneMatch.Success && exitOneMatch.Groups[1].Value == "1")
+        {
+            var withoutTags = System.Text.RegularExpressions.Regex.Replace(raw, @"\[EXIT CODE: \d+\]", "")
+                .Replace(exitOneMatch.Value, "").Trim();
+            if (string.IsNullOrWhiteSpace(withoutTags))
+            {
+                raw += "\n" + AmbiguousExitOneMarker + " con output vuoto: con grep/findstr/git diff --quiet significa spesso " +
+                       "\"nessuna corrispondenza/nessuna differenza\", non un errore dello strumento. Verifica se è l'esito " +
+                       "atteso prima di \"correggerlo\".";
+            }
         }
 
         var cwdPrefix = !_cwd.Equals(workspace.Root, StringComparison.OrdinalIgnoreCase)

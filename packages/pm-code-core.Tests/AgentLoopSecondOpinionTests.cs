@@ -1,5 +1,6 @@
 using LocalCodeAgent.Core.Tests.Helpers;
 using LocalCodeAgent.Models;
+using LocalCodeAgent.Tools;
 using Xunit;
 
 namespace LocalCodeAgent.Core.Tests;
@@ -240,5 +241,56 @@ public class AgentLoopSecondOpinionTests : IDisposable
         Assert.All(runCommandResults, r => Assert.Contains("[ESITO: FALLITO", r));
         Assert.Equal(1, runCommandResults.Count(r => r.Contains("Sei in loop: sintetizza i tentativi falliti e chiama ask_second_opinion")));
         Assert.True(runCommandResults.Count(r => r.Contains("[STESSO ERRORE")) >= 1);
+    }
+
+    [Fact]
+    public async Task TreControlliFindstrSenzaMatch_NonScatenaSuggerimentoAskSecondOpinion()
+    {
+        // findstr su 3 file DIVERSI, nessuno con match: exit code 1 "ambiguo" (nessun output
+        // reale) ogni volta — NON deve contare nei guard di errore ripetuto, quindi non deve mai
+        // suggerire ask_second_opinion anche se è lo stesso tool fallito 3 volte di fila. I nomi
+        // variano con una LETTERA (non un numero) per non far scattare anche il guard "quasi
+        // identica" di run_command (che normalizza i numeri e appenderebbe un testo che contiene
+        // comunque "ask_second_opinion", confondendo l'assert su quel guard DIVERSO).
+        foreach (var letter in new[] { "a", "b", "c" })
+            File.WriteAllText(Path.Combine(_workspaceDir, $"haystack{letter}.txt"), "hello world");
+
+        await using var mainServer = new FakeLlmServer([
+            () => FakeResponse.ToolCall("run_command", """{"command":"findstr /c:\"needle\" haystacka.txt"}"""),
+            () => FakeResponse.ToolCall("run_command", """{"command":"findstr /c:\"needle\" haystackb.txt"}"""),
+            () => FakeResponse.ToolCall("run_command", """{"command":"findstr /c:\"needle\" haystackc.txt"}"""),
+            () => FakeResponse.Text("nessuna corrispondenza nei 3 file, come previsto."),
+        ]);
+        var mainLlm = new LlamaClient(mainServer.BaseUrl, "fake-main") { EndpointOverride = $"{mainServer.BaseUrl}/v1/chat/completions" };
+        var dispatcher = new ToolDispatcher(_workspace);
+        var sessionManager = new SessionManager(mainLlm, maxTokens: 128000, rolloverTokens: 64000, () => "test system prompt");
+        var consultAgent = new ConsultSubAgent(mainLlm, new ToolDispatcher(_workspace), _workspace, new SecondOpinionSettings());
+
+        var sink = new RecordingSink();
+        var options = new AgentLoopOptions
+        {
+            IsMachineMode = true,
+            MaxSteps = 10,
+            MaxContextTokens = 128000,
+            SecondOpinionSameErrorThreshold = 3,
+        };
+        var loop = new AgentLoop(
+            mainLlm, dispatcher, sessionManager, sink, _workspace,
+            exploreAgent: null, reviewAgent: null, consultAgent,
+            options,
+            ui: _ => { }, trace: _ => { }, notice: _ => { }, onStatus: _ => { });
+
+        var history = new List<ChatMessage> { ChatMessage.System("test"), ChatMessage.User("controlla se 'needle' è nei 3 file") };
+        await loop.RunTurnAsync(history, CancellationToken.None, maxTokens: 4096, turnId: "test-turn-5");
+
+        var runCommandResults = sink.ToolCallsFinished
+            .Where(t => t.Name == "run_command")
+            .Select(t => t.Result?.ToString() ?? "")
+            .ToList();
+
+        Assert.Equal(3, runCommandResults.Count);
+        Assert.All(runCommandResults, r => Assert.Contains(TerminalTools.AmbiguousExitOneMarker, r));
+        Assert.DoesNotContain(runCommandResults, r => r.Contains("[STESSO ERRORE"));
+        Assert.DoesNotContain(runCommandResults, r => r.Contains("ask_second_opinion"));
     }
 }
