@@ -86,6 +86,29 @@ public class ExploreLlmSettings
     [JsonPropertyName("ReasoningMode")]
     public string ReasoningMode { get; set; } = "off";
 
+    // Sampling: tutti opzionali e NON ereditati da LlmSettings (il coordinatore) — se assenti il
+    // campo non viene incluso nella richiesta HTTP (il server usa i default di avvio).
+    [JsonPropertyName("Temperature")]
+    public float? Temperature { get; set; }
+
+    [JsonPropertyName("TopP")]
+    public float? TopP { get; set; }
+
+    [JsonPropertyName("TopK")]
+    public int? TopK { get; set; }
+
+    [JsonPropertyName("MinP")]
+    public float? MinP { get; set; }
+
+    [JsonPropertyName("RepeatPenalty")]
+    public float? RepeatPenalty { get; set; }
+
+    [JsonPropertyName("PresencePenalty")]
+    public float? PresencePenalty { get; set; }
+
+    [JsonPropertyName("FrequencyPenalty")]
+    public float? FrequencyPenalty { get; set; }
+
     /// <summary>
     /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
     /// contrario il chiamante ricade sul client principale.

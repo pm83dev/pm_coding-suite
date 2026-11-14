@@ -37,7 +37,7 @@ public class ExploreSubAgentTests : IDisposable
         new(server.BaseUrl, "fake-model") { EndpointOverride = $"{server.BaseUrl}/v1/chat/completions" };
 
     private static ExploreSubAgent AgentFor(FakeLlmServer server, ToolDispatcher dispatcher, WorkspaceContext workspace, ExploreLlmSettings settings) =>
-        new(ClientFor(server), dispatcher, workspace, _ => { }, settings);
+        new(ClientFor(server), dispatcher, workspace, settings);
 
     [Fact]
     public async Task RispostaNormale_RestituisceContenutoConPrefisso()
@@ -86,7 +86,7 @@ public class ExploreSubAgentTests : IDisposable
         var deadPort = new TcpListenerPortProbe().FindFreeButUnusedPort();
         var client = new LlamaClient($"http://127.0.0.1:{deadPort}", "fake-model")
             { EndpointOverride = $"http://127.0.0.1:{deadPort}/v1/chat/completions" };
-        var agent = new ExploreSubAgent(client, _dispatcher, _workspace, _ => { }, Settings());
+        var agent = new ExploreSubAgent(client, _dispatcher, _workspace, Settings());
 
         var result = await agent.RunAsync("""{"question":"test"}""");
 
@@ -103,6 +103,28 @@ public class ExploreSubAgentTests : IDisposable
 
         Assert.Equal("ERRORE: 'question' vuota.", result);
         Assert.Equal(0, server.CallCount);
+    }
+
+    [Fact]
+    public async Task SamplingDedicato_InviatoSoloSeConfigurato()
+    {
+        await using var server = new FakeLlmServer([() => FakeResponse.Text("ok")]);
+        var settings = Settings();
+        settings.Temperature = 0.3f;
+        settings.PresencePenalty = 0f;
+        var agent = AgentFor(server, _dispatcher, _workspace, settings);
+
+        await agent.RunAsync("""{"question":"test"}""");
+
+        Assert.Contains("\"temperature\":0.3", server.LastRequestBody);
+        Assert.Contains("\"presence_penalty\":0", server.LastRequestBody);
+        // TopP/TopK/MinP/RepeatPenalty/FrequencyPenalty non impostati: assenti dalla richiesta
+        // (nessun valore ereditato dal coordinatore — il server usa i propri default di avvio).
+        Assert.DoesNotContain("top_p", server.LastRequestBody);
+        Assert.DoesNotContain("top_k", server.LastRequestBody);
+        Assert.DoesNotContain("min_p", server.LastRequestBody);
+        Assert.DoesNotContain("repeat_penalty", server.LastRequestBody);
+        Assert.DoesNotContain("frequency_penalty", server.LastRequestBody);
     }
 
     [Fact]

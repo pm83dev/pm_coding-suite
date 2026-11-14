@@ -24,7 +24,7 @@ internal sealed class ExploreCallException(string message) : Exception(message);
 /// non devono contare come "file già letto" per l'agente principale, che altrimenti potrebbe
 /// modificare codice mai visto (vedi FileSystemTools.RequireRead).
 /// </summary>
-public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, WorkspaceContext workspace, Action<ChatRequest> applySampling, ExploreLlmSettings settings)
+public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, WorkspaceContext workspace, ExploreLlmSettings settings)
 {
     public const string ToolName = "explore";
 
@@ -131,8 +131,16 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
             Tools = tools,
             ToolChoice = tools == null ? null : "auto",
             MaxTokens = settings.MaxTokens,
+            // Nessun parametro di sampling ereditato dall'agente coordinatore: solo quelli
+            // esplicitamente configurati in ExploreLlmSettings vengono inviati.
+            Temperature = settings.Temperature,
+            FrequencyPenalty = settings.FrequencyPenalty,
+            PresencePenalty = settings.PresencePenalty,
+            TopP = settings.TopP,
+            TopK = settings.TopK,
+            MinP = settings.MinP,
+            RepeatPenalty = settings.RepeatPenalty,
         };
-        applySampling(request);
 
         // ReasoningMode: "auto" = nessun campo extra (decide il server/chat-template). "on"/"off" =
         // chat_template_kwargs.enable_thinking, stessa convenzione di ConsultSubAgent (non

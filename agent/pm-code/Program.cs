@@ -275,11 +275,12 @@ if (dispatcher.ReapOrphanJobs() is { } reaped)
     else UI.Dim($"  [{reaped}]");
 }
 
-// Sotto-agente "explore": dispatcher proprio (vedi ExploreSubAgent) e stessi parametri di
-// campionamento. Se "ExploreLlmSettings" è configurato in appsettings.json (BaseUrl+Model),
-// usa un'istanza llama-server dedicata su un'altra GPU: le decine di letture/ricerche del
-// sotto-agente non competono così con il modello coordinatore. Se assente, usa lo stesso
-// client del loop principale (comportamento invariato).
+// Sotto-agente "explore": dispatcher proprio (vedi ExploreSubAgent) e sampling dedicato
+// (ExploreLlmSettings, nessun parametro ereditato dal coordinatore). Se "ExploreLlmSettings" è
+// configurato in appsettings.json (BaseUrl+Model), usa un'istanza llama-server dedicata su
+// un'altra GPU: le decine di letture/ricerche del sotto-agente non competono così con il
+// modello coordinatore. Se assente, usa lo stesso client del loop principale (comportamento
+// invariato).
 LlamaClient exploreLlm;
 var exploreSettings = config.GetSection("ExploreLlmSettings").Get<ExploreLlmSettings>() ?? new ExploreLlmSettings();
 if (exploreSettings.IsConfigured)
@@ -293,17 +294,7 @@ else
 {
     exploreLlm = llm;
 }
-var exploreAgent = new ExploreSubAgent(exploreLlm, new ToolDispatcher(workspace, braveApiKey), workspace, r =>
-{
-    r.Temperature = temperature;
-    r.FrequencyPenalty = frequencyPenalty;
-    r.PresencePenalty = presencePenalty;
-    r.TopP = topP;
-    r.TopK = topK;
-    r.MinP = minP;
-    r.RepeatPenalty = repeatPenalty;
-    r.RepeatLastN = repeatLastN;
-}, exploreSettings);
+var exploreAgent = new ExploreSubAgent(exploreLlm, new ToolDispatcher(workspace, braveApiKey), workspace, exploreSettings);
 
 if (!isMachineMode)
 {

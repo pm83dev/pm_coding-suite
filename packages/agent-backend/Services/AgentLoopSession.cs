@@ -119,7 +119,7 @@ public class AgentLoopSession
 
         // Sotto-agente "explore": se "ExploreLlmSettings" è configurato (BaseUrl+Model), usa un'istanza
         // llama-server dedicata su un'altra GPU; altrimenti lo stesso client della sessione (comportamento
-        // invariato). Stessi parametri di campionamento del loop principale.
+        // invariato). Sampling dedicato (ExploreLlmSettings): nessun parametro ereditato dal coordinatore.
         var exploreLlm = _config.ExploreLlmSettings.IsConfigured
             ? new LlamaClient(_config.ExploreLlmSettings.BaseUrl, _config.ExploreLlmSettings.Model) {
                 EndpointOverride = $"{_config.ExploreLlmSettings.BaseUrl}/v1/chat/completions" }
@@ -129,17 +129,6 @@ public class AgentLoopSession
             exploreLlm,
             new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
             workspace,
-            r =>
-            {
-                r.Temperature = _config.LlmSettings.Temperature;
-                r.FrequencyPenalty = _config.LlmSettings.FrequencyPenalty;
-                r.PresencePenalty = _config.LlmSettings.PresencePenalty;
-                r.TopP = _config.LlmSettings.TopP;
-                r.TopK = _config.LlmSettings.TopK;
-                r.MinP = _config.LlmSettings.MinP;
-                r.RepeatPenalty = _config.LlmSettings.RepeatPenalty;
-                r.RepeatLastN = _config.LlmSettings.RepeatLastN;
-            },
             _config.ExploreLlmSettings);
 
         // Sotto-agente "review_changes": stesso schema di "explore" ma su un endpoint dedicato
