@@ -106,6 +106,21 @@ public class ExploreSubAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task SystemPromptPath_SovrascriveIlPromptDiDefault()
+    {
+        var promptFile = Path.Combine(_workspaceDir, "custom-prompt.txt");
+        File.WriteAllText(promptFile, "SEI UN LETTORE PERSONALIZZATO DI TEST.");
+        await using var server = new FakeLlmServer([() => FakeResponse.Text("ok")]);
+        var settings = Settings();
+        settings.SystemPromptPath = promptFile;
+        var agent = AgentFor(server, _dispatcher, _workspace, settings);
+
+        await agent.RunAsync("""{"question":"test"}""");
+
+        Assert.Contains("SEI UN LETTORE PERSONALIZZATO DI TEST.", server.LastRequestBody);
+    }
+
+    [Fact]
     public async Task CancellazioneUtenteReale_PropagaSenzaEssereInghiottita()
     {
         await using var server = new FakeLlmServer([

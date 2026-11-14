@@ -26,6 +26,11 @@ public sealed class FakeLlmServer : IAsyncDisposable
     public string BaseUrl => $"http://127.0.0.1:{Port}";
     public int CallCount => Volatile.Read(ref _callIndex) + 1;
 
+    // Corpo grezzo dell'ultima richiesta ricevuta (thread-safe: scritto una volta per chiamata,
+    // letto solo dopo che il test ha atteso il risultato). Utile per verificare cosa il
+    // chiamante ha effettivamente inviato (es. il system prompt), non solo cosa risponde il finto server.
+    public string? LastRequestBody { get; private set; }
+
     public FakeLlmServer(IEnumerable<Func<FakeResponse>> script)
     {
         _script = script.ToList();
@@ -69,6 +74,7 @@ public sealed class FakeLlmServer : IAsyncDisposable
 
             using var bodyReader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
             var body = await bodyReader.ReadToEndAsync();
+            LastRequestBody = body;
             var isStreaming = false;
             try
             {

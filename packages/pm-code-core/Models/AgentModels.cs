@@ -68,6 +68,10 @@ public class ExploreLlmSettings
     [JsonPropertyName("TimeoutSeconds")]
     public int TimeoutSeconds { get; set; } = 120;
 
+    /// <summary>Percorso di un file con il system prompt del sotto-agente. Se assente/non leggibile, usa il default nel codice.</summary>
+    [JsonPropertyName("SystemPromptPath")]
+    public string? SystemPromptPath { get; set; }
+
     /// <summary>
     /// true se il blocco è realmente configurato (BaseUrl e Model non vuoti): in caso
     /// contrario il chiamante ricade sul client principale.

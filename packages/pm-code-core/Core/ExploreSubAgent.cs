@@ -189,7 +189,28 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
                "\n\n(Conclusione del sotto-agente: prima di modificare un file leggi comunque le righe interessate con read_file_range.)";
     }
 
-    private string BuildSystemPrompt() => $"""
+    private string BuildSystemPrompt()
+    {
+        if (!string.IsNullOrWhiteSpace(settings.SystemPromptPath))
+        {
+            try
+            {
+                var fromFile = File.ReadAllText(settings.SystemPromptPath).Trim();
+                if (fromFile.Length > 0) return fromFile;
+                Console.Error.WriteLine($"[EXPLORE] SystemPromptPath '{settings.SystemPromptPath}' è vuoto, uso il prompt di default.");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[EXPLORE] SystemPromptPath '{settings.SystemPromptPath}' non leggibile ({ex.Message}), uso il prompt di default.");
+            }
+        }
+        return DefaultSystemPrompt;
+    }
+
+    // Default in italiano (lingua dell'agente coordinatore e dell'utente — vedi risposta finale):
+    // la regola di fedeltà è la più importante per un lettore, perché il chiamante può modificare
+    // codice basandosi sulla sua risposta senza rileggerlo (vedi Finish, che lo ricorda comunque).
+    private string DefaultSystemPrompt => $"""
         Sei un sotto-agente di ESPLORAZIONE del codice, in sola lettura. Workspace: {workspace.Root}
         Il tuo compito è rispondere alla domanda dell'utente cercando nel codice. Non puoi modificare nulla né eseguire comandi.
 
@@ -199,10 +220,18 @@ public class ExploreSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
         - Segui il filo: definizione → chiamanti → dove finisce il dato. Fermati appena hai la risposta.
         - Hai al massimo {MaxSteps} step: puoi fare più tool call nello stesso step se sono indipendenti.
 
+        FEDELTÀ (regola più importante: chi ti ha chiamato può modificare codice basandosi sulla tua risposta):
+        - Cita VERBATIM, tra backtick, firme di funzione/metodo, nomi esatti, messaggi d'errore e le poche righe
+          decisive — mai parafrasate — insieme al percorso:riga da cui vengono.
+        - Non inventare nomi di funzioni, API, parametri o file che non hai visto nei risultati dei tool: se non
+          l'hai letto, non esiste per te.
+        - Se qualcosa è plausibile ma non l'hai verificato leggendo il codice, dillo esplicitamente ("non verificato").
+
         RISPOSTA FINALE (testo, niente tool call), max 25 righe, in italiano:
         - La conclusione in 1-3 frasi.
-        - I punti rilevanti come "percorso:riga — cosa fa", con i numeri di riga restituiti dai tool (mai stimati).
-        - Separa ciò che hai VERIFICATO leggendo il codice da ciò che è un'ipotesi.
+        - I punti rilevanti come "percorso:riga — cosa fa", con citazioni verbatim tra backtick dove rilevante,
+          e i numeri di riga restituiti dai tool (mai stimati).
+        - Separa ciò che hai VERIFICATO leggendo il codice da ciò che è un'ipotesi o non hai controllato.
         - Se non hai trovato la risposta, dillo e indica dove hai cercato.
         """;
 
