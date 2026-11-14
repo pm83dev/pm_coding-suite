@@ -185,20 +185,32 @@ public class ConsultSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
             throw new SecondOpinionCallException($"risposta non valida (JSON malformato: {ex.Message})");
         }
 
-        var message = response?.Choices.FirstOrDefault()?.Message ?? new ChatMessage { Role = "assistant" };
+        var choice = response?.Choices.FirstOrDefault();
+        var message = choice?.Message ?? new ChatMessage { Role = "assistant" };
         message.TryExtractFallbackToolCalls();
+
+        var hasToolCalls = message.ToolCalls is { Count: > 0 };
+        var isLengthTruncated = string.Equals(choice?.FinishReason, "length", StringComparison.OrdinalIgnoreCase);
 
         // Leggi SOLO 'content'. Se è vuoto ma il modello ha prodotto 'reasoning_content' (alcuni
         // modelli reasoning separano i due campi), non restituire mai una stringa vuota: è un
         // segnale di configurazione/endpoint da segnalare chiaramente, non un "nessuna risposta"
         // generico — altrimenti sembra un fallimento del modello quando in realtà ha "pensato"
-        // ma non ha scritto la risposta finale nel campo giusto.
-        if (string.IsNullOrWhiteSpace(message.Content) && message.ToolCalls is not { Count: > 0 })
+        // ma non ha scritto la risposta finale nel campo giusto. Se il troncamento è per limite di
+        // token (finish_reason "length"), questo è più specifico e prevale sul caso reasoning-only.
+        if (string.IsNullOrWhiteSpace(message.Content) && !hasToolCalls)
         {
-            message.Content = !string.IsNullOrWhiteSpace(message.ReasoningContent)
-                ? "ERRORE: il modello di supporto ha prodotto solo ragionamento interno ('reasoning_content'), nessuna " +
-                  "risposta finale in 'content'. Verifica ReasoningMode/la configurazione del server di supporto."
-                : "(nessuna risposta dal modello)";
+            message.Content = isLengthTruncated
+                ? "ERRORE: il modello di supporto ha raggiunto il limite di token (MaxTokens) senza produrre alcuna " +
+                  "risposta finale in 'content'. Aumenta SecondOpinionSettings.MaxTokens o imposta ReasoningMode=off."
+                : !string.IsNullOrWhiteSpace(message.ReasoningContent)
+                    ? "ERRORE: il modello di supporto ha prodotto solo ragionamento interno ('reasoning_content'), nessuna " +
+                      "risposta finale in 'content'. Verifica ReasoningMode/la configurazione del server di supporto."
+                    : "(nessuna risposta dal modello)";
+        }
+        else if (isLengthTruncated && !hasToolCalls)
+        {
+            message.Content += "\n\n[SECOND OPINION TRONCATO: limite di token raggiunto]";
         }
         return message;
     }

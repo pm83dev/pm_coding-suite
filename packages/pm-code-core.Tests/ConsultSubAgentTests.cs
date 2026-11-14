@@ -121,6 +121,35 @@ public class ConsultSubAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task FinishReasonLength_ConContentNonVuoto_AggiungeAvvisoTroncamento()
+    {
+        await using var server = new FakeLlmServer([
+            () => new FakeResponse { Content = "DIAGNOSIS: parziale", FinishReason = "length" }
+        ]);
+        var agent = new ConsultSubAgent(ClientFor(server), _dispatcher, _workspace, Settings());
+
+        var result = await agent.RunAsync("""{"problem":"GOAL: test"}""");
+
+        Assert.Contains("DIAGNOSIS: parziale", result);
+        Assert.Contains("[SECOND OPINION TRONCATO: limite di token raggiunto]", result);
+    }
+
+    [Fact]
+    public async Task FinishReasonLength_ConContentVuoto_RestituisceErroreChiaro()
+    {
+        await using var server = new FakeLlmServer([
+            () => new FakeResponse { Content = "", FinishReason = "length" }
+        ]);
+        var agent = new ConsultSubAgent(ClientFor(server), _dispatcher, _workspace, Settings());
+
+        var result = await agent.RunAsync("""{"problem":"GOAL: test"}""");
+
+        Assert.Contains("ERRORE", result);
+        Assert.Contains("limite di token", result, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("TRONCATO", result);
+    }
+
+    [Fact]
     public async Task ProblemVuoto_NonChiamaIlServerERestituisceErrore()
     {
         await using var server = new FakeLlmServer([() => FakeResponse.Text("non dovrebbe arrivare qui")]);
