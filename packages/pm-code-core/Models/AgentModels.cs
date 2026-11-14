@@ -87,6 +87,113 @@ public class CoderLlmSettings
 }
 
 /// <summary>
+/// Configurazione dedicata del sotto-agente "ask_second_opinion" (<see cref="ConsultSubAgent"/>
+/// in pm-code-core). INDIPENDENTE da <see cref="CoderLlmSettings"/> (usato da "review_changes"):
+/// se questa sezione non è configurata (BaseUrl/ModelName vuoti), il chiamante ricade su
+/// <see cref="CoderLlmSettings"/> per non cambiare il comportamento attuale — ma "review_changes"
+/// stesso continua a usare SOLO <see cref="CoderLlmSettings"/>, mai questa sezione. Mappa il
+/// blocco "SecondOpinionSettings" di appsettings.json. Nessun valore di default lega il codice a
+/// un modello specifico: tutti i parametri di campionamento sono opzionali e, se assenti, non
+/// vengono inviati al server (il server usa i propri default di avvio).
+/// </summary>
+public class SecondOpinionSettings
+{
+    [JsonPropertyName("BaseUrl")]
+    public string BaseUrl { get; set; } = "";
+
+    [JsonPropertyName("ModelName")]
+    public string ModelName { get; set; } = "";
+
+    /// <summary>Opzionale: inviata come header "Authorization: Bearer &lt;ApiKey&gt;" se non vuota.</summary>
+    [JsonPropertyName("ApiKey")]
+    public string? ApiKey { get; set; }
+
+    /// <summary>
+    /// Timeout della singola chiamata HTTP al modello di supporto (secondi). Applicato SOLO a
+    /// livello di chiamata del sotto-agente (CancellationTokenSource collegato al ct del turno) —
+    /// non cambia <see cref="LlamaClient"/>, il cui HttpClient resta a timeout infinito per gli
+    /// altri usi. Default: 300s (5 minuti, generoso per un modello CPU-bound locale).
+    /// </summary>
+    [JsonPropertyName("TimeoutSeconds")]
+    public int TimeoutSeconds { get; set; } = 300;
+
+    [JsonPropertyName("MaxTokens")]
+    public int MaxTokens { get; set; } = 12288;
+
+    [JsonPropertyName("MaxAnswerChars")]
+    public int MaxAnswerChars { get; set; } = 6000;
+
+    /// <summary>Numero massimo di step (tool call) del sotto-agente per singola chiamata al tool.</summary>
+    [JsonPropertyName("MaxStepsSubAgent")]
+    public int MaxStepsSubAgent { get; set; } = 8;
+
+    /// <summary>Numero massimo di chiamate ad ask_second_opinion per turno del loop principale.</summary>
+    [JsonPropertyName("MaxCallsPerTurn")]
+    public int MaxCallsPerTurn { get; set; } = 3;
+
+    // Sampling: tutti opzionali e NON ereditati da LlmSettings/CoderLlmSettings — se assenti il
+    // campo non viene incluso nella richiesta HTTP (il server usa i default di avvio).
+    [JsonPropertyName("Temperature")]
+    public float? Temperature { get; set; }
+
+    [JsonPropertyName("TopP")]
+    public float? TopP { get; set; }
+
+    [JsonPropertyName("TopK")]
+    public int? TopK { get; set; }
+
+    [JsonPropertyName("MinP")]
+    public float? MinP { get; set; }
+
+    [JsonPropertyName("RepeatPenalty")]
+    public float? RepeatPenalty { get; set; }
+
+    /// <summary>
+    /// "auto" (default, nessun campo extra inviato — decide il server/template), "on"/"off"
+    /// (inviati come "chat_template_kwargs": {"enable_thinking": true|false} — convenzione
+    /// adottata da più chat template "thinking-capable", non da un singolo modello — vedi
+    /// nota nel report: se l'endpoint/chat-template non la supporta, il campo viene ignorato
+    /// dalla maggior parte dei server OpenAI-compatibili). Se il server non ha un parametro
+    /// per-richiesta per questo, va impostato all'avvio del server (fuori da questa app).
+    /// </summary>
+    [JsonPropertyName("ReasoningMode")]
+    public string ReasoningMode { get; set; } = "auto";
+
+    /// <summary>Percorso di un file con il system prompt del sotto-agente. Se assente/non leggibile, usa il default nel codice.</summary>
+    [JsonPropertyName("SystemPromptPath")]
+    public string? SystemPromptPath { get; set; }
+
+    /// <summary>Troncamento nel trace diagnostico (argomenti/risultato) SOLO per ask_second_opinion.</summary>
+    [JsonPropertyName("TraceMaxChars")]
+    public int TraceMaxChars { get; set; } = 2000;
+
+    /// <summary>
+    /// Soglia di "stesso errore ripetuto" (stesso tool, stesso errore, argomenti diversi) oltre
+    /// la quale AgentLoop suggerisce ask_second_opinion prima di fermarsi e chiedere all'utente.
+    /// Default 3 — identico al valore finora hardcoded in AgentLoop (nessuna regressione).
+    /// </summary>
+    [JsonPropertyName("SameErrorThreshold")]
+    public int SameErrorThreshold { get; set; } = 3;
+
+    /// <summary>
+    /// Soglia di "troppe letture senza agire" (letture consecutive senza modifiche) oltre la
+    /// quale il nudge esistente (AgentSettings.MaxConsecutiveReadOnly) include anche il
+    /// suggerimento di ask_second_opinion. Default 6, volutamente più alta dell'attuale
+    /// maxReadBlocks (3, non configurabile) usato per il rifiuto duro delle letture: qui si
+    /// tratta di un suggerimento, non di un blocco, quindi ha senso scatti più avanti.
+    /// </summary>
+    [JsonPropertyName("ReadWithoutActionThreshold")]
+    public int ReadWithoutActionThreshold { get; set; } = 6;
+
+    /// <summary>
+    /// true se BaseUrl e ModelName sono entrambi configurati: in caso contrario il chiamante
+    /// ricade su CoderLlmSettings (vedi classe).
+    /// </summary>
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(ModelName);
+}
+
+/// <summary>
 /// Configurazione agente (workspace, limiti di contesto, rollover).
 /// Mappa il blocco "AgentSettings" di appsettings.json.
 /// </summary>
@@ -158,6 +265,17 @@ public sealed record AgentLoopOptions
     public float? MinP { get; init; }
     public float? RepeatPenalty { get; init; }
     public int? RepeatLastN { get; init; }
+
+    // ── Limiti dedicati ad ask_second_opinion (vedi SecondOpinionSettings) ──────────
+
+    /// <summary>Numero massimo di chiamate ad ask_second_opinion per turno.</summary>
+    public int SecondOpinionMaxCallsPerTurn { get; init; } = 3;
+
+    /// <summary>Soglia "stesso errore ripetuto" oltre la quale si suggerisce ask_second_opinion.</summary>
+    public int SecondOpinionSameErrorThreshold { get; init; } = 3;
+
+    /// <summary>Soglia "troppe letture senza agire" oltre la quale si suggerisce ask_second_opinion.</summary>
+    public int SecondOpinionReadWithoutActionThreshold { get; init; } = 6;
 }
 
 /// <summary>
@@ -207,6 +325,14 @@ public class AgentConfig
     /// </summary>
     [JsonPropertyName("CoderLlmSettings")]
     public CoderLlmSettings CoderLlmSettings { get; set; } = new();
+
+    /// <summary>
+    /// Endpoint/modello/parametri dedicati del sotto-agente "ask_second_opinion" (vedi
+    /// <see cref="SecondOpinionSettings"/>). Se assente o non configurato, ricade su
+    /// <see cref="CoderLlmSettings"/> (comportamento storico) e poi su <see cref="LlmSettings"/>.
+    /// </summary>
+    [JsonPropertyName("SecondOpinionSettings")]
+    public SecondOpinionSettings SecondOpinionSettings { get; set; } = new();
 
     [JsonPropertyName("AgentSettings")]
     public AgentSettings AgentSettings { get; set; } = new();
