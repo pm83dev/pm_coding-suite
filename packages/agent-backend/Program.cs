@@ -95,7 +95,8 @@ app.MapControllers();
 // (recenti usi + driver disponibili + home utente) filtrati per query.
 app.MapGet("/api/workspaces", (string? query) =>
 {
-    var rawQuery = (query ?? "").Trim();
+    // Normalizza le barre: la UI/utente può scrivere "C:/Dev", i path candidati usano "\".
+    var rawQuery = (query ?? "").Trim().Replace('/', '\\');
     var q = rawQuery.ToLowerInvariant();
     var ignoreDirs = new[] { ".git", "bin", "obj", "node_modules", ".vs", "__pycache__", ".nuget", "$recycle.bin", "system volume information" };
     var candidates = new List<string>();
@@ -126,13 +127,14 @@ app.MapGet("/api/workspaces", (string? query) =>
             var lastSep = rawQuery.LastIndexOfAny(['\\', '/']);
             var parentDir = lastSep >= 0 ? rawQuery[..lastSep] : rawQuery;
             var namePrefix = lastSep >= 0 ? rawQuery[(lastSep + 1)..] : "";
-            if (lastSep < 0 && Directory.Exists(rawQuery))
+            if (lastSep >= 0 && Directory.Exists(rawQuery) && !rawQuery.EndsWith('\\'))
             {
                 // La query è già una cartella esistente (es. "C:\DevAgentPM"): mostra le sue
                 // sottocartelle invece che quelle del suo genitore.
                 parentDir = rawQuery;
                 namePrefix = "";
             }
+            if (parentDir.Length == 2 && parentDir[1] == ':') parentDir += "\\"; // "C:" = cwd del drive, serve "C:\"
             if (Directory.Exists(parentDir))
             {
                 foreach (var sub in Directory.EnumerateDirectories(parentDir))

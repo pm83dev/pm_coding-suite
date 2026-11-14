@@ -180,7 +180,7 @@ export class Settings {
   protected readonly showDropdown = this.dropdownOpen;
 
   protected readonly filteredWorkspaces = computed(() => {
-    const query = this.workspace().trim().toLowerCase();
+    const query = this.workspace().trim().replace(/\//g, "\\").toLowerCase();
     const all = this.allWorkspaces();
     if (!query) return all.slice(0, 20);
     return all.filter(w => w.toLowerCase().includes(query)).slice(0, 20);
