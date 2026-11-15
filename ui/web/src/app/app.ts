@@ -1,4 +1,4 @@
-﻿import {
+import {
   AfterViewChecked,
   ChangeDetectionStrategy,
   Component,
@@ -30,6 +30,8 @@ import { DiffPipe } from "./shared/pipes/diff.pipe";
 export class App implements AfterViewChecked {
   protected readonly protocol = inject(WebSocketProtocolService);
   protected readonly draft = signal("");
+  /** Messaggio in coda da inviare quando il turno corrente termina. */
+  private readonly queuedMessage = signal<string | null>(null);
   /** Id delle approvazioni accordion espanse (toggle manuale). */
   private readonly expandedApprovals = signal<Set<string>>(new Set());
   /** Id delle approvazioni che l'utente ha esplicitamente chiuso con un click. */
@@ -76,6 +78,20 @@ export class App implements AfterViewChecked {
           current.add(a.approvalId);
           this.expandedApprovals.set(current);
         }
+      }
+    });
+
+    // Quando il turno termina (currentTurnId diventa null) e c'è un messaggio in coda,
+    // invialo al backend. L'utente può scrivere e "inviare" un messaggio durante un
+    // turno in corso: il messaggio viene conservato localmente e inviato automaticamente
+    // quando il turno corrente termina.
+    effect(() => {
+      const turnId = this.protocol.currentTurnId();
+      const queued = this.queuedMessage();
+      if (turnId === null && queued !== null) {
+        this.protocol.sendMessage(queued);
+        this.queuedMessage.set(null);
+        this.draft.set("");
       }
     });
 
@@ -193,6 +209,13 @@ export class App implements AfterViewChecked {
   protected send(): void {
     const text = this.draft();
     if (!text.trim()) return;
+    // Se c'è un turno in corso, metti il messaggio in coda: verrà inviato quando
+    // il turno termina. Niente bolla nel frattempo (solo il draft rimane visibile).
+    if (this.protocol.currentTurnId() !== null) {
+      this.queuedMessage.set(text);
+      this.draft.set("");
+      return;
+    }
     this.protocol.sendMessage(text);
     this.draft.set("");
   }

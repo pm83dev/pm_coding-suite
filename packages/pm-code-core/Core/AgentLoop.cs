@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -824,12 +824,16 @@ namespace LocalCodeAgent.Core
             {
                 step++;
 
+                // Controllo di cancellazione a inizio step: se il token è stato cancellato,
+                // esce dal loop e emette turn_finished con reason="cancelled".
+                ct.ThrowIfCancellationRequested();
+
                 // Ricontrolla ad OGNI step, non solo all'inizio del turno: un singolo messaggio
                 // utente può generare molti step di tool-call, e la cronologia può superare la
                 // soglia di contesto anche a metà di un turno lungo.
                 var beforeRollover = history;
                 history = await _sessionManager.MaybeRolloverAsync(history, atTurnStart: step == 1, _dispatcher.HasPendingPlan, turnRequest,
-                    _dispatcher.PlanSummary(), _workspace.Root,
+                    _dispatcher.PlanSummary(), _workspace.Root, ct,
                     onNotice: text => { if (_options.IsMachineMode) _notice(text); else _ui(text); },
                     onSummary: text => { if (_options.IsMachineMode) _trace("  [rollover] " + text.Replace("\n", "\n  [rollover] ")); });
                 History = history;
@@ -1158,9 +1162,19 @@ namespace LocalCodeAgent.Core
                             return true;
                         }
 
-                        var (result, toolDurationMs) = await ExecuteWithHeartbeatAsync(
-                            tc.Function.Name, tc.Function.Arguments, ct,
-                            () => ExecuteToolWithPermissionAsync(tc.Function.Name, tc.Function.Arguments, ct));
+                        string result;
+                        double toolDurationMs;
+                        try
+                        {
+                            (result, toolDurationMs) = await ExecuteWithHeartbeatAsync(
+                                tc.Function.Name, tc.Function.Arguments, ct,
+                                () => ExecuteToolWithPermissionAsync(tc.Function.Name, tc.Function.Arguments, ct));
+                        }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                        {
+                            result = $"Tool call '{tc.Function.Name}' cancelled (cancellation requested)";
+                            toolDurationMs = 0;
+                        }
 
                         TrackBuildState(tc.Function.Name, tc.Function.Arguments, result);
 
@@ -1317,9 +1331,19 @@ namespace LocalCodeAgent.Core
                                 return true;
                             }
 
-                            var (result, rescuedDurationMs) = await ExecuteWithHeartbeatAsync(
-                                name, argsJson, ct,
-                                () => ExecuteToolWithPermissionAsync(name, argsJson, ct));
+                            string result;
+                            double rescuedDurationMs;
+                            try
+                            {
+                                (result, rescuedDurationMs) = await ExecuteWithHeartbeatAsync(
+                                    name, argsJson, ct,
+                                    () => ExecuteToolWithPermissionAsync(name, argsJson, ct));
+                            }
+                            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                            {
+                                result = $"Tool call '{name}' cancelled (cancellation requested)";
+                                rescuedDurationMs = 0;
+                            }
 
                             TrackBuildState(name, argsJson, result);
 
@@ -1442,16 +1466,26 @@ namespace LocalCodeAgent.Core
 
 
 
-                        var (buildResult, autoBuildMs) = await ExecuteWithHeartbeatAsync(
-                            "sol_analyze", autoArgs, ct,
-                            async () =>
-                            {
-                                var sw = System.Diagnostics.Stopwatch.StartNew();
-                                var r = _dispatcher.Execute("sol_analyze", autoArgs, ct);
-                                sw.Stop();
-                                await Task.CompletedTask;
-                                return (r, sw.ElapsedMilliseconds);
-                            });
+                        string buildResult;
+                        double autoBuildMs;
+                        try
+                        {
+                            (buildResult, autoBuildMs) = await ExecuteWithHeartbeatAsync(
+                                "sol_analyze", autoArgs, ct,
+                                async () =>
+                                {
+                                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                                    var r = _dispatcher.Execute("sol_analyze", autoArgs, ct);
+                                    sw.Stop();
+                                    await Task.CompletedTask;
+                                    return (r, sw.ElapsedMilliseconds);
+                                });
+                        }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                        {
+                            buildResult = "Tool call 'sol_analyze' cancelled (cancellation requested)";
+                            autoBuildMs = 0;
+                        }
 
                         StructuredTrace.ToolCall("sol_analyze", autoArgs, !buildResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase),
                             buildResult.StartsWith("ERRORE", StringComparison.OrdinalIgnoreCase) ? "tool_error" : null,

@@ -391,6 +391,13 @@ export function applyServerMessage(
 
     case "turn_finished": {
       const p = msg.payload;
+      // Ignora turn_finished di un turno diverso da quello corrente: può arrivare
+      // in ritardo da un turno precedente cancellato (il Task del vecchio turno
+      // completa più tardi e emette l'evento). Se non filtrato, azzererebbe lo
+      // stato del nuovo turno in corso.
+      if (state.currentTurnId != null && p.turnId !== state.currentTurnId) {
+        return state;
+      }
       // Testo rimasto in streaming senza assistant_done (il backend normalmente lo
       // emette, ma non per ogni percorso): lo si chiude in chat invece di perderlo.
       return {

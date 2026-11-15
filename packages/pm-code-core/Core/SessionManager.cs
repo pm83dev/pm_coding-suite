@@ -59,6 +59,7 @@ public class SessionManager
     public async Task<List<ChatMessage>> MaybeRolloverAsync(
         List<ChatMessage> history, bool atTurnStart, bool hasPendingPlan, string? currentRequest,
         string? planSummary, string workspaceRoot,
+        CancellationToken ct = default,
         Action<string>? onNotice = null, Action<string>? onSummary = null)
     {
         var estimated = EstimateTokens(history);
@@ -72,7 +73,7 @@ public class SessionManager
         var toSummarize = atTurnStart && history.Count > 1 && history[^1].Role == "user"
             ? history.Take(history.Count - 1).ToList()
             : history;
-        var summary    = await GenerateSummaryAsync(toSummarize, atTurnStart ? null : planSummary);
+        var summary    = await GenerateSummaryAsync(toSummarize, atTurnStart ? null : planSummary, ct);
         var previousId = _currentId;
         _currentId     = Guid.NewGuid();
 
@@ -191,7 +192,7 @@ public class SessionManager
         catch { return null; /* best effort: il rollover non deve fallire per il salvataggio */ }
     }
 
-    private async Task<string> GenerateSummaryAsync(List<ChatMessage> messages, string? planSummary)
+    private async Task<string> GenerateSummaryAsync(List<ChatMessage> messages, string? planSummary, CancellationToken ct = default)
     {
         try
         {
@@ -218,7 +219,7 @@ public class SessionManager
                 Temperature = 0.0f
             };
 
-            var response = await _llm.ChatAsync(request);
+            var response = await _llm.ChatAsync(request, ct);
             var content  = response?.Choices[0]?.Message?.Content;
             return !string.IsNullOrWhiteSpace(content) ? content : BuildFallbackSummary(messages);
         }
