@@ -134,7 +134,7 @@ public sealed class FakeLlmServer : IAsyncDisposable
         var payload = new Dictionary<string, object?>
         {
             ["choices"] = new object[] { new Dictionary<string, object?> { ["message"] = messageObj, ["finish_reason"] = fake.FinishReason ?? "stop" } },
-            ["usage"] = new Dictionary<string, object?> { ["prompt_tokens"] = 10, ["completion_tokens"] = 10 },
+            ["usage"] = new Dictionary<string, object?> { ["prompt_tokens"] = fake.PromptTokens ?? 10, ["completion_tokens"] = 10 },
         };
         var json = JsonSerializer.Serialize(payload);
         ctx.Response.ContentType = "application/json";
@@ -178,7 +178,7 @@ public sealed class FakeLlmServer : IAsyncDisposable
             var doneChunk = new Dictionary<string, object?>
             {
                 ["choices"] = new object[] { new Dictionary<string, object?> { ["delta"] = new Dictionary<string, object?>(), ["finish_reason"] = "tool_calls" } },
-                ["usage"] = new Dictionary<string, object?> { ["prompt_tokens"] = 10, ["completion_tokens"] = 10 },
+                ["usage"] = new Dictionary<string, object?> { ["prompt_tokens"] = fake.PromptTokens ?? 10, ["completion_tokens"] = 10 },
             };
             await writer.WriteAsync($"data: {JsonSerializer.Serialize(doneChunk)}\n\n");
         }
@@ -193,7 +193,7 @@ public sealed class FakeLlmServer : IAsyncDisposable
             var doneChunk = new Dictionary<string, object?>
             {
                 ["choices"] = new object[] { new Dictionary<string, object?> { ["delta"] = new Dictionary<string, object?>(), ["finish_reason"] = fake.FinishReason ?? "stop" } },
-                ["usage"] = new Dictionary<string, object?> { ["prompt_tokens"] = 10, ["completion_tokens"] = 10 },
+                ["usage"] = new Dictionary<string, object?> { ["prompt_tokens"] = fake.PromptTokens ?? 10, ["completion_tokens"] = 10 },
             };
             await writer.WriteAsync($"data: {JsonSerializer.Serialize(doneChunk)}\n\n");
         }
@@ -221,6 +221,8 @@ public sealed record FakeResponse
     public int? HttpStatus { get; init; }
     public string? Body { get; init; }
     public TimeSpan? DelayBeforeResponding { get; init; }
+    /// <summary>prompt_tokens riportati nell'usage (default 10). Serve a simulare un rapporto caratteri/token realistico, che il SessionManager usa per stimare quando fare il rollover.</summary>
+    public int? PromptTokens { get; init; }
 
     public static FakeResponse Text(string content) => new() { Content = content };
     public static FakeResponse ReasoningOnly(string reasoning) => new() { ReasoningContent = reasoning };

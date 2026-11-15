@@ -98,8 +98,21 @@ public class AgentLoopSession
         // Aggiunge il messaggio utente
         history.Add(ChatMessage.User(userMessage));
 
+        // Dopo un rollover il loop lavora su una lista NUOVA (AgentLoop.History, vedi il contratto
+        // in AgentLoop.RunTurnAsync): la sessione deve adottarla, altrimenti EndTurn salva la lista
+        // vecchia e i messaggi assistant/tool del turno si perdono. L'allineamento avviene (a) a
+        // ogni evento emesso dal loop — così anche un EndTurn "dall'esterno" (watchdog, cancel)
+        // mentre il Task è ancora vivo salva lo stato corrente — e (b) nel finally in fondo,
+        // per tutte le uscite (successo, cancel, eccezione).
+        AgentLoop? loopRef = null;
+        void SyncHistory()
+        {
+            var h = loopRef?.History;
+            if (h != null) _session.AdoptHistory(h);
+        }
+
         // Costruisce l'AgentLoop con il sink WebSocket
-        var sink = new WebSocketSink(_onEvent);
+        var sink = new WebSocketSink(evt => { SyncHistory(); _onEvent(evt); });
         var options = new AgentLoopOptions
         {
             IsMachineMode = true,
@@ -198,6 +211,7 @@ public class AgentLoopSession
             (toolName, argsJson, ct) => CheckPermissionAsync(toolName, argsJson, turnId)
         );
 
+        loopRef = loop;
         try
         {
             var success = await loop.RunTurnAsync(history, _session.TurnCancellationToken, 32768, turnId);
@@ -216,6 +230,12 @@ public class AgentLoopSession
             sink.Error(ex.Message);
             sink.TurnFinished(turnId, "error");
             return (false, turnId);
+        }
+        finally
+        {
+            // Tutte le uscite (successo, cancel, eccezione, anche se l'eccezione risale al chiamante):
+            // la sessione adotta la lista del loop prima che l'hub chiami EndTurn/Save.
+            SyncHistory();
         }
     }
 
