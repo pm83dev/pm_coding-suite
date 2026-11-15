@@ -235,7 +235,7 @@ namespace LocalCodeAgent.Core
             string? stopReason = null;
             bool planTouchedThisTurn = false;
             int planContinueRetries = 0;
-            const int maxPlanContinueRetries = 2;
+            const int maxPlanContinueRetries = 4; // si azzera quando il modello esegue tool call (progresso)
             bool jobsReminderSent = false;
             bool codeEditedThisTurn = false;
             bool functionalCheckSinceEdit = false;
@@ -1402,6 +1402,9 @@ namespace LocalCodeAgent.Core
 
                         }
 
+                        // Il modello ha eseguito tool call: c'è progresso, il budget di auto-continue si ricarica.
+                        planContinueRetries = 0;
+
                         continue;
 
                     }
@@ -1573,7 +1576,11 @@ namespace LocalCodeAgent.Core
                     }
                     // ── Gate di avanzamento del piano ────────────────────────────
 
-                    if (planTouchedThisTurn && _dispatcher.HasPendingPlan && !message.Content.Contains('?')
+                    // Basta che il piano salvato abbia passi aperti: prima serviva anche aver chiamato
+                    // manage_todo in QUESTO turno, quindi un turno ripreso con "prosegui" che finiva con un
+                    // riepilogo veniva chiuso senza che il gate scattasse. Una domanda all'utente è solo
+                    // un messaggio che TERMINA con '?' (un '?' in mezzo a un riepilogo non conta).
+                    if (_dispatcher.HasPendingPlan && !(message.Content ?? "").TrimEnd().EndsWith('?')
 
                         && planContinueRetries < maxPlanContinueRetries && step < _options.MaxSteps - 1)
 

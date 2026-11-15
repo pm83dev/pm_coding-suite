@@ -116,6 +116,17 @@ public class LlamaClient
     // di modificarlo, quindi resta sicuro chiamarlo ad ogni turno.
     public string? EndpointOverride { get; set; }
 
+    // Timeout di inattività dello streaming (0 = disattivato, comportamento storico). L'HttpClient ha
+    // Timeout infinito (il server locale può impiegare minuti su CPU), quindi senza questi limiti una
+    // richiesta che non riceve mai risposta resta appesa finché non interviene il watchdog del turno
+    // (osservato: turni fermi per 600s dopo un tool result, senza alcun errore nel log).
+    //  - FirstByteTimeout: max attesa per header + PRIMA riga dello stream (include il prompt processing).
+    //  - IdleTimeout: max silenzio tra due righe successive dello stream.
+    // Allo scadere: HttpRequestException (senza StatusCode) se non è arrivato nulla, altrimenti
+    // IncompleteLlmResponseException("stream_truncated"): entrambe già gestite dal retry di AgentLoop.
+    public TimeSpan FirstByteTimeout { get; set; } = TimeSpan.Zero;
+    public TimeSpan IdleTimeout { get; set; } = TimeSpan.Zero;
+
     // Opzionale: solo chi lo imposta esplicitamente (oggi: ConsultSubAgent via
     // SecondOpinionSettings.ApiKey) lo invia; gli altri usi di LlamaClient restano senza
     // header Authorization, comportamento invariato. Impostabile una sola volta per istanza:
@@ -184,27 +195,43 @@ public class LlamaClient
         httpReq.Content = JsonContent.Create(request, options: _json);
         httpReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-        using var resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct);
+        // Token collegato a ct con scadenza rinnovabile: ct resta l'unico segnale di cancellazione
+        // "vera" (utente/watchdog); la scadenza dell'idleCts è invece un timeout di inattività.
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var linked = idleCts.Token;
+        var streamStarted = false;
+        Usage? usage = null;
+        string? finishReason = null;
+
+        try
+        {
+        if (FirstByteTimeout > TimeSpan.Zero) idleCts.CancelAfter(FirstByteTimeout);
+
+        using var resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, linked);
         if (!resp.IsSuccessStatusCode)
         {
             // Legge il body per includere il dettaglio dell'errore (es. "Failed to parse tool call arguments as JSON")
-            var errBody = await resp.Content.ReadAsStringAsync(ct);
+            var errBody = await resp.Content.ReadAsStringAsync(linked);
             throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {errBody}", null, resp.StatusCode);
         }
 
-        using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var stream = await resp.Content.ReadAsStreamAsync(linked);
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
         var contentSb = new StringBuilder();
         var toolBuilders = new Dictionary<int, ToolCallBuilder>();
-        Usage? usage = null;
-        string? finishReason = null;
         var sawDone = false; // vero solo se "data: [DONE]" è arrivato prima che lo stream finisse
         var lastHeartbeat = DateTime.UtcNow;
 
-        while (!reader.EndOfStream)
+        // NB: niente `while (!reader.EndOfStream)`: EndOfStream legge in modo SINCRONO e non
+        // cancellabile, quindi un server muto bloccava il thread senza che ct/timeout potessero
+        // interromperlo. ReadLineAsync restituisce null a fine stream.
+        while (true)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await reader.ReadLineAsync(linked);
+            if (line == null) break;
+            streamStarted = true;
+            if (IdleTimeout > TimeSpan.Zero) idleCts.CancelAfter(IdleTimeout);
             if (string.IsNullOrEmpty(line)) continue;
             if (!line.StartsWith("data: ", StringComparison.Ordinal)) continue;
 
@@ -323,6 +350,18 @@ public class LlamaClient
         }
 
         return (message, usage, finishReason);
+        }
+        // Scaduta la finestra di inattività (e NON una cancellazione richiesta dal chiamante).
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && idleCts.IsCancellationRequested)
+        {
+            var limit = streamStarted ? IdleTimeout : FirstByteTimeout;
+            var msg = streamStarted
+                ? $"Nessun dato dal server LLM per {limit.TotalSeconds:0}s a metà risposta (stream bloccato)."
+                : $"Nessuna risposta dal server LLM entro {limit.TotalSeconds:0}s (richiesta bloccata).";
+            if (streamStarted)
+                throw new IncompleteLlmResponseException("stream_truncated", msg, usage);
+            throw new HttpRequestException(msg);
+        }
     }
 
     private sealed class ToolCallBuilder

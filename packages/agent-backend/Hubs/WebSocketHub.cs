@@ -276,6 +276,14 @@ public class WebSocketHub
                         return;
                     }
 
+                    // Auto-continue: se il watchdog chiude un turno bloccato mentre il piano ha ancora passi
+                    // aperti, il turno viene rilanciato da qui con un "prosegui" (max WatchdogAutoContinueMax
+                    // volte) invece di lasciare la sessione ferma ad aspettare l'utente.
+                    var autoContinues = 0;
+                    var maxAutoContinues = Math.Max(0, _config.AgentSettings?.WatchdogAutoContinueMax ?? 0);
+                    while (true)
+                    {
+                    var watchdogFired = false;
                     if (!_sessionService.TryStartTurn(msgSessionId))
                     {
                         // Log per diagnosticare: se la sessione esiste ma il flag TurnInProgress
@@ -347,6 +355,7 @@ public class WebSocketHub
                         if (!turnTask.IsCompleted)
                         {
                             DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo {turnTimeoutSec}s — forza EndTurn");
+                            watchdogFired = true;
                             // Se il turno è bloccato in attesa di un'approvazione, emetti
                             // approval_resolved con outcome "expired" così il client (se
                             // connesso) pulisce il bottone e lo stato non resta incoerente.
@@ -376,6 +385,16 @@ public class WebSocketHub
                         // anche se il turno è già terminato normalmente).
                         session.EndTurnCts();
                         _sessionService.EndTurn(msgSessionId, "completed");
+                    }
+
+                    if (watchdogFired && autoContinues < maxAutoContinues && session.Dispatcher?.HasPendingPlan == true)
+                    {
+                        autoContinues++;
+                        DebugLog($"watchdog: piano con passi aperti, rilancio automatico del turno ({autoContinues}/{maxAutoContinues}) sessione={msgSessionId[..8]}");
+                        msgText = "prosegui (automatico: il turno precedente si è bloccato ed è stato interrotto; riprendi dal piano)";
+                        continue;
+                    }
+                    break;
                     }
                     break;
                 }

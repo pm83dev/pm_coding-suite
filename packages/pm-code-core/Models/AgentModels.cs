@@ -351,6 +351,27 @@ public class AgentSettings
     /// </summary>
     [JsonPropertyName("TurnTimeoutSeconds")]
     public int TurnTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Max attesa (secondi) per header + prima riga dello stream LLM, incluso il prompt processing.
+    /// Scaduto: la chiamata viene ritentata dal loop. 0 = disattivato.
+    /// </summary>
+    [JsonPropertyName("LlmFirstByteTimeoutSeconds")]
+    public int LlmFirstByteTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Max silenzio (secondi) tra due righe dello stream LLM. Scaduto: stream considerato bloccato
+    /// e chiamata ritentata. 0 = disattivato.
+    /// </summary>
+    [JsonPropertyName("LlmIdleTimeoutSeconds")]
+    public int LlmIdleTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// Quante volte il watchdog del turno può far ripartire da solo un turno bloccato che ha ancora
+    /// un piano con passi aperti (messaggio "prosegui" automatico). 0 = mai.
+    /// </summary>
+    [JsonPropertyName("WatchdogAutoContinueMax")]
+    public int WatchdogAutoContinueMax { get; set; } = 2;
 }
 
 /// <summary>
