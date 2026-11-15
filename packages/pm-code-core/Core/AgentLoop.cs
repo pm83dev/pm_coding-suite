@@ -39,6 +39,7 @@ namespace LocalCodeAgent.Core
         private readonly ExploreSubAgent? _exploreAgent;
         private readonly ReviewSubAgent? _reviewAgent;
         private readonly ConsultSubAgent? _consultAgent;
+        private readonly RevisionSubAgent? _revisionAgent;
         private readonly IAgentSink _sink;
         private readonly AgentLoopOptions _options;
         private readonly Action<string> _ui;
@@ -60,7 +61,7 @@ namespace LocalCodeAgent.Core
             "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
             "list_directory", "get_workspace_tree", "dir_info",
             "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
-            ExploreSubAgent.ToolName, ReviewSubAgent.ToolName, ConsultSubAgent.ToolName,
+            ExploreSubAgent.ToolName, ReviewSubAgent.ToolName, ConsultSubAgent.ToolName, RevisionSubAgent.ToolName,
         ];
         private readonly HashSet<string> _codeExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -113,7 +114,8 @@ namespace LocalCodeAgent.Core
             Action<string> trace,
             Action<string> notice,
             Action<string> onStatus,
-            ToolPermissionHook? toolPermissionHook = null)
+            ToolPermissionHook? toolPermissionHook = null,
+            RevisionSubAgent? revisionAgent = null)
         {
             _llm = llm;
             _dispatcher = dispatcher;
@@ -123,6 +125,7 @@ namespace LocalCodeAgent.Core
             _exploreAgent = exploreAgent;
             _reviewAgent = reviewAgent;
             _consultAgent = consultAgent;
+            _revisionAgent = revisionAgent;
             _options = options;
             _ui = ui;
             _trace = trace;
@@ -207,6 +210,7 @@ namespace LocalCodeAgent.Core
             // quel budget): evita che il modello chieda un secondo parere senza limite nello
             // stesso turno. Resettato ad ogni turno (variabile locale di RunTurnAsync).
             int secondOpinionCallsThisTurn = 0;
+            int revisionCallsThisTurn = 0;
             // Una sola iniezione del suggerimento "chiama ask_second_opinion" per episodio di
             // "stesso errore ripetuto", per non intasare il contesto ripetendolo ad ogni step
             // mentre lo streak resta sopra soglia. Si riazzera quando lo streak si interrompe
@@ -398,6 +402,7 @@ namespace LocalCodeAgent.Core
             // tool è toccato da questo helper.
             int TraceCharsFor(string toolName) =>
                 toolName == ConsultSubAgent.ToolName ? _options.SecondOpinionTraceMaxChars :
+                toolName == RevisionSubAgent.ToolName ? _options.RevisionTraceMaxChars :
                 toolName == ExploreSubAgent.ToolName ? _options.ExploreTraceMaxChars : 300;
 
             async Task<string> ExecuteToolGuarded(string name, string argsJson)
@@ -421,6 +426,17 @@ namespace LocalCodeAgent.Core
                         return $"[LOOP-BLOCK] Hai già chiesto un secondo parere {secondOpinionCallsThisTurn} volte in questo turno: " +
                                "procedi con le tue conclusioni o chiedi all'utente.";
                     secondOpinionCallsThisTurn++;
+                }
+
+                // Limite per turno su ask_revision (costa una chiamata esterna): controllato PRIMA di eseguirlo.
+                if (name == RevisionSubAgent.ToolName)
+                {
+                    if (_revisionAgent == null)
+                        return "ERRORE: ask_revision non è abilitato.";
+                    if (revisionCallsThisTurn >= _options.RevisionMaxCallsPerTurn)
+                        return $"[LOOP-BLOCK] Hai già chiesto una revisione {revisionCallsThisTurn} volte in questo turno: " +
+                               "procedi con le tue conclusioni o chiedi all'utente.";
+                    revisionCallsThisTurn++;
                 }
 
                 var key = $"{name}|{argsJson}";
@@ -585,7 +601,9 @@ namespace LocalCodeAgent.Core
                         ? await _reviewAgent!.RunAsync(argsJson, _onStatus, ct)
                         : name == ConsultSubAgent.ToolName
                             ? await _consultAgent!.RunAsync(argsJson, _onStatus, ct)
-                            : _dispatcher.Execute(name, argsJson, ct);
+                            : name == RevisionSubAgent.ToolName
+                                ? await _revisionAgent!.RunAsync(argsJson, _onStatus, ct)
+                                : _dispatcher.Execute(name, argsJson, ct);
 
                 // L'hash per il conteggio delle ripetizioni ESATTE va calcolato sul risultato GREZZO
                 // del tool, prima di appendere avvisi (similarWarning/repeatHint) il cui testo varia
@@ -808,6 +826,7 @@ namespace LocalCodeAgent.Core
             if (_exploreAgent != null) turnTools.Add(ExploreSubAgent.Definition);
             turnTools.Add(ReviewSubAgent.Definition);
             turnTools.Add(ConsultSubAgent.Definition);
+            if (_revisionAgent != null) turnTools.Add(RevisionSubAgent.Definition);
 
             // null se promptTokens non è noto (server che non manda usage, o eccezione prima che
             // arrivi): mai calcolato su un valore mancante, vedi StructuredTrace.LlmRequest.
