@@ -99,4 +99,25 @@ public class LlamaClientIdleTimeoutTests
         }
         finally { listener.Stop(); }
     }
+
+    [Fact]
+    public async Task SilentWait_EmitsHeartbeats_SoCallerSeesActivity()
+    {
+        var (listener, url) = StartSilentServer(initialResponse: null);
+        try
+        {
+            var llm = new LlamaClient(url, "fake") { FirstByteTimeout = TimeSpan.FromSeconds(5) };
+            var heartbeats = new List<string>();
+
+            await Assert.ThrowsAsync<HttpRequestException>(() =>
+                llm.StreamChatAsync(NewRequest(), _ => { }, onHeartbeat: t => { lock (heartbeats) heartbeats.Add(t); }));
+
+            lock (heartbeats)
+            {
+                Assert.NotEmpty(heartbeats);
+                Assert.Contains("In attesa del server LLM", heartbeats[0]);
+            }
+        }
+        finally { listener.Stop(); }
+    }
 }
