@@ -349,18 +349,39 @@ public class WebSocketHub
                     // ConsultSubAgent in avanti, il CancellationToken del turno arriva fino alla
                     // richiesta HTTP e la cancellazione la chiude per davvero invece di lasciarla
                     // orfana a girare in background.
+                    //
+                    // Il limite è sull'INATTIVITÀ, non sulla durata: scatta solo se per TurnTimeoutSeconds
+                    // non arriva nessun evento dal turno (ogni evento del loop, inclusi gli heartbeat di
+                    // stato durante i tool lunghi e l'attesa del modello, azzera il contatore). Un turno
+                    // sano non viene mai tagliato per la sola durata. TurnMaxSeconds è un tetto assoluto
+                    // OPZIONALE (0 = disattivato, default), mai inferiore a TurnTimeoutSeconds.
                     var turnTimeoutSec = _config.AgentSettings?.TurnTimeoutSeconds ?? 300;
-                    _ = Task.Delay(TimeSpan.FromSeconds(turnTimeoutSec)).ContinueWith(async t =>
+                    var configuredMax = _config.AgentSettings?.TurnMaxSeconds ?? 0;
+                    var turnMaxSec = configuredMax > 0 ? Math.Max(turnTimeoutSec, configuredMax) : 0; // 0 = nessun tetto
+                    session.TouchActivity();
+                    var turnStartedUtc = DateTime.UtcNow;
+                    _ = Task.Run(async () =>
                     {
-                        if (!turnTask.IsCompleted)
+                        string? watchdogReason = null;
+                        while (!turnTask.IsCompleted)
                         {
-                            DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato dopo {turnTimeoutSec}s — forza EndTurn");
+                            var pollSec = Math.Clamp(Math.Min(turnTimeoutSec, 5), 1, 5);
+                            await Task.Delay(TimeSpan.FromSeconds(pollSec));
+                            if (turnTask.IsCompleted) return;
+                            var idleSec = (DateTime.UtcNow - session.LastActivityUtc).TotalSeconds;
+                            var totalSec = (DateTime.UtcNow - turnStartedUtc).TotalSeconds;
+                            if (idleSec >= turnTimeoutSec) { watchdogReason = $"nessun evento da {(int)idleSec}s (limite inattività {turnTimeoutSec}s)"; break; }
+                            if (turnMaxSec > 0 && totalSec >= turnMaxSec) { watchdogReason = $"durata totale {(int)totalSec}s oltre il tetto assoluto {turnMaxSec}s"; break; }
+                        }
+                        if (watchdogReason != null && !turnTask.IsCompleted)
+                        {
+                            DebugLog($"watchdog: send_message per sessione {msgSessionId[..8]} non terminato — {watchdogReason} — forza EndTurn");
                             watchdogFired = true;
                             // Se il turno è bloccato in attesa di un'approvazione, emetti
                             // approval_resolved con outcome "expired" così il client (se
                             // connesso) pulisce il bottone e lo stato non resta incoerente.
-                            var session = _sessionService.GetSession(msgSessionId);
-                            var pending = session?.GetPendingApprovalSnapshot();
+                            var wdSession = _sessionService.GetSession(msgSessionId);
+                            var pending = wdSession?.GetPendingApprovalSnapshot();
                             if (pending != null)
                             {
                                 var pid = GetProperty(pending, "approvalId");
@@ -369,11 +390,11 @@ public class WebSocketHub
                             }
                             else
                             {
-                                session?.CancelTurn();
+                                wdSession?.CancelTurn();
                             }
                             _sessionService.EndTurn(msgSessionId, "watchdog");
                         }
-                    }, TaskScheduler.Default);
+                    });
 
                     try
                     {
@@ -511,6 +532,7 @@ public class WebSocketHub
     /// </summary>
     private void EmitSessionEvent(AgentSession session, string sessionId, AgentEventDto evt)
     {
+        session.TouchActivity(); // segno di vita per il watchdog di inattività
         if (evt.Type == "turn_started")
             session.CurrentTurnId = evt.TurnId;
         else if (evt.Type == "turn_finished")

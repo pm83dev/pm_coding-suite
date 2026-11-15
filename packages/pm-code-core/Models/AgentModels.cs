@@ -345,19 +345,28 @@ public class AgentSettings
     public List<string> AllowedWorkspaceRoots { get; set; } = [];
 
     /// <summary>
-    /// Timeout in secondi per il watchdog del turno nel backend (default 300 = 5 minuti).
-    /// Se un turno non termina entro questo tempo e non è in attesa di approvazione,
-    /// viene cancellato tramite CancelTurn(). Aumentare per build/test lunghi.
+    /// Limite di INATTIVITÀ in secondi per il watchdog del turno nel backend (default 300).
+    /// Se per questo tempo il turno non emette nessun evento (delta, tool call, heartbeat di stato)
+    /// e non è in attesa di approvazione, viene cancellato tramite CancelTurn(). Un turno lungo ma
+    /// attivo non viene tagliato: per la durata totale vedi <see cref="TurnMaxSeconds"/>.
     /// </summary>
     [JsonPropertyName("TurnTimeoutSeconds")]
     public int TurnTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Tetto assoluto opzionale in secondi sulla durata totale di un turno. 0 (default) = nessun
+    /// tetto: una sessione che lavora correttamente non viene mai interrotta per la sola durata.
+    /// Se impostato, non può essere inferiore a <see cref="TurnTimeoutSeconds"/>.
+    /// </summary>
+    [JsonPropertyName("TurnMaxSeconds")]
+    public int TurnMaxSeconds { get; set; } = 0;
 
     /// <summary>
     /// Max attesa (secondi) per header + prima riga dello stream LLM, incluso il prompt processing.
     /// Scaduto: la chiamata viene ritentata dal loop. 0 = disattivato.
     /// </summary>
     [JsonPropertyName("LlmFirstByteTimeoutSeconds")]
-    public int LlmFirstByteTimeoutSeconds { get; set; } = 300;
+    public int LlmFirstByteTimeoutSeconds { get; set; } = 600;
 
     /// <summary>
     /// Max silenzio (secondi) tra due righe dello stream LLM. Scaduto: stream considerato bloccato

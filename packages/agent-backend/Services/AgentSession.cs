@@ -83,6 +83,14 @@ public class AgentSession
     // durante la chiamata LLM).
     private CancellationTokenSource? _turnCts;
 
+    // Ultimo segno di vita del turno (qualsiasi evento emesso dal loop: delta, tool call, heartbeat
+    // di stato…). Lo usa il watchdog per distinguere un turno bloccato da uno lungo ma attivo.
+    private long _lastActivityTicks = DateTime.UtcNow.Ticks;
+
+    public DateTime LastActivityUtc => new(Interlocked.Read(ref _lastActivityTicks), DateTimeKind.Utc);
+
+    public void TouchActivity() => Interlocked.Exchange(ref _lastActivityTicks, DateTime.UtcNow.Ticks);
+
     /// <summary>Token di cancellazione del turno in corso (valido solo se TurnInProgress).</summary>
     public CancellationToken TurnCancellationToken => _turnCts?.Token ?? CancellationToken.None;
 

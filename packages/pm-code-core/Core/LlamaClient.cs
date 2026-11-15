@@ -202,6 +202,31 @@ public class LlamaClient
         var streamStarted = false;
         Usage? usage = null;
         string? finishReason = null;
+        var lastDataTicks = DateTime.UtcNow.Ticks;
+
+        // Heartbeat di attesa: finché il server non manda dati (prompt processing lungo, modello lento)
+        // il chiamante non riceve nessun evento e un watchdog di inattività lo scambierebbe per un blocco.
+        // Ogni HeartbeatInterval di silenzio segnala "in attesa", così una chiamata che sta davvero
+        // lavorando risulta attiva. Un server realmente muto è comunque limitato da FirstByte/IdleTimeout.
+        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (onHeartbeat != null)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        await Task.Delay(HeartbeatInterval, heartbeatCts.Token);
+                        var silent = DateTime.UtcNow - new DateTime(Interlocked.Read(ref lastDataTicks), DateTimeKind.Utc);
+                        if (silent >= HeartbeatInterval)
+                            onHeartbeat($"In attesa del server LLM… ({(int)silent.TotalSeconds}s senza dati)");
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch { /* un errore del callback di stato non deve mai rompere la chiamata */ }
+            });
+        }
 
         try
         {
@@ -231,6 +256,7 @@ public class LlamaClient
             var line = await reader.ReadLineAsync(linked);
             if (line == null) break;
             streamStarted = true;
+            Interlocked.Exchange(ref lastDataTicks, DateTime.UtcNow.Ticks);
             if (IdleTimeout > TimeSpan.Zero) idleCts.CancelAfter(IdleTimeout);
             if (string.IsNullOrEmpty(line)) continue;
             if (!line.StartsWith("data: ", StringComparison.Ordinal)) continue;
@@ -361,6 +387,10 @@ public class LlamaClient
             if (streamStarted)
                 throw new IncompleteLlmResponseException("stream_truncated", msg, usage);
             throw new HttpRequestException(msg);
+        }
+        finally
+        {
+            heartbeatCts.Cancel();
         }
     }
 
