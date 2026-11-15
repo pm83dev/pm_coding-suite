@@ -34,6 +34,8 @@ public class AgentSessionService
         );
         llm.EndpointOverride = $"{_config.LlmSettings.BaseUrl}/v1/chat/completions";
         llm.Model = model;
+        llm.FirstByteTimeout = TimeSpan.FromSeconds(Math.Max(0, _config.AgentSettings.LlmFirstByteTimeoutSeconds));
+        llm.IdleTimeout = TimeSpan.FromSeconds(Math.Max(0, _config.AgentSettings.LlmIdleTimeoutSeconds));
 
         var dispatcher = new ToolDispatcher(workspace, _braveApiKey);
         AgentStateDir.Ensure(workspaceRoot);
