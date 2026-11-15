@@ -22,6 +22,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Riuso del finto server LLM (OpenAI-compatible, in-process) già usato dai test del core. -->
+    <Compile Include="..\pm-code-core.Tests\Helpers\FakeLlmServer.cs" Link="Helpers\FakeLlmServer.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 
