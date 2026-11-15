@@ -94,6 +94,46 @@ public static class SessionPersistence
         }
     }
 
+    /// <summary>
+    /// Archivia lo storico COMPLETO di una sessione prima che venga sostituito (rollover del
+    /// contesto): <c>&lt;dir&gt;\archive\&lt;sessionId&gt;\&lt;AAAAMMGG-HHmmssfff&gt;-&lt;reason&gt;.json</c>, stesso
+    /// formato del file di sessione. Scrittura atomica (.tmp + Move) con retry, best-effort come
+    /// <see cref="Save"/>. La sottocartella non viene letta da <see cref="LoadAll"/> (solo i *.json
+    /// nella radice di <paramref name="dir"/>), quindi non compare come sessione.
+    /// </summary>
+    public static void ArchiveHistory(string dir, AgentSession session, List<ChatMessage> history, string reason)
+    {
+        try
+        {
+            var archiveDir = Path.Combine(dir, "archive", session.SessionId);
+            Directory.CreateDirectory(archiveDir);
+            var dto = new SessionFile
+            {
+                SessionId = session.SessionId,
+                Title = session.Title,
+                WorkspaceRoot = session.WorkspaceRoot,
+                Model = session.Model,
+                PermissionMode = session.PermissionMode,
+                UpdatedAt = DateTime.UtcNow,
+                History = history,
+            };
+            var json = JsonSerializer.Serialize(dto, JsonOpts);
+            var path = Path.Combine(archiveDir, $"{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{reason}.json");
+            var tmp = path + ".tmp";
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    File.WriteAllText(tmp, json);
+                    File.Move(tmp, path, overwrite: true);
+                    return;
+                }
+                catch when (attempt < 3) { Thread.Sleep(50 * attempt); }
+            }
+        }
+        catch { /* l'archivio non deve mai rompere il turno */ }
+    }
+
     /// <summary>Elimina il file di una sessione (best-effort).</summary>
     public static void Delete(string dir, string sessionId)
     {

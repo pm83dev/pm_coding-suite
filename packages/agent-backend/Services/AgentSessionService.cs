@@ -87,6 +87,7 @@ public class AgentSessionService
                         Status = "idle",
                         TurnInProgress = false,
                     };
+                    WireHistoryArchive(session);
                     _sessions[dto.SessionId] = session;
                 }
                 catch
@@ -119,10 +120,20 @@ public class AgentSessionService
             UpdatedAt = DateTime.UtcNow
         };
 
+        WireHistoryArchive(session);
         lock (_lock) _sessions[sessionId] = session;
         SessionPersistence.Save(_sessionsDir, session);
         return session;
     }
+
+    /// <summary>
+    /// Quando un rollover sostituisce la lista di history della sessione, lo storico completo
+    /// precedente viene archiviato in <c>&lt;SessionsDir&gt;\archive\&lt;sessionId&gt;\</c> prima che
+    /// il file di sessione venga sovrascritto con quello compresso (nessuna perdita di cronologia).
+    /// </summary>
+    private void WireHistoryArchive(AgentSession session) =>
+        session.OnHistoryReplaced = old =>
+            SessionPersistence.ArchiveHistory(_sessionsDir, session, old, "pre-rollover");
 
     public AgentSession? GetSession(string sessionId)
     {

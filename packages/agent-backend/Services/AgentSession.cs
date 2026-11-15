@@ -17,6 +17,33 @@ public class AgentSession
     public ToolDispatcher? Dispatcher { get; set; }
     public SessionManager? SessionManager { get; set; }
     public List<ChatMessage> History { get; set; } = [];
+
+    /// <summary>
+    /// Invocata con la lista PRECEDENTE (completa) quando <see cref="AdoptHistory"/> sostituisce
+    /// <see cref="History"/> con una lista diversa (tipicamente dopo un rollover del contesto).
+    /// Serve ad archiviare lo storico completo prima che il file di sessione venga sovrascritto
+    /// con quello compresso. Best-effort: le eccezioni del callback vengono ignorate.
+    /// </summary>
+    public Action<List<ChatMessage>>? OnHistoryReplaced { get; set; }
+
+    /// <summary>
+    /// Allinea <see cref="History"/> alla lista usata dal loop. <c>SessionManager.MaybeRolloverAsync</c>
+    /// restituisce una lista NUOVA (non modifica quella passata): senza questo allineamento il loop
+    /// lavora su una lista che la sessione non conosce, e <c>EndTurn</c> salva quella vecchia
+    /// perdendo tutti i messaggi assistant/tool del turno. No-op se è già la stessa lista.
+    /// </summary>
+    public void AdoptHistory(List<ChatMessage> loopHistory)
+    {
+        List<ChatMessage> previous;
+        lock (_lock)
+        {
+            if (ReferenceEquals(loopHistory, History)) return;
+            previous = History;
+            History = loopHistory;
+        }
+        try { OnHistoryReplaced?.Invoke(previous); } catch { /* l'archivio non deve rompere il turno */ }
+    }
+
     private readonly object _lock = new();
     public object Lock => _lock;
     public bool TurnInProgress { get; set; }
