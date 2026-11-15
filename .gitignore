@@ -12,6 +12,7 @@ tools/**/bin/
 tools/**/obj/
 packages/**/bin/
 packages/**/obj/
+packages/**/publish/
 
 # Node / VS Code extension
 extension/node_modules/
