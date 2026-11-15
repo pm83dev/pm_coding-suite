@@ -14,10 +14,18 @@ function createMockProtocolService() {
     sessions: () => [],
     currentSessionId: () => "",
     messages: () => [],
+    timeline: () => [],
     streamingText: () => "",
-    currentTurnId: () => "",
+    currentTurnId: () => null,
+    statusText: () => null,
+    toolCalls: () => [],
+    approvals: () => [],
+    permissionMode: () => null,
+    activeModelId: () => null,
+    models: () => [],
     settings: () => ({ serverUrl: "" }),
-    send: () => {}, connect: () => {}, disconnect: () => {}, saveSettings: () => {},
+    sendMessage: () => {}, send: () => {}, connect: () => {}, disconnect: () => {}, saveSettings: () => {},
+    approve: () => {}, reject: () => {}, deleteSession: () => {},
   };
 }
 

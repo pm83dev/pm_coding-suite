@@ -91,7 +91,9 @@ public class AgentSession
     {
         lock (_lock)
         {
-            _turnCts?.Cancel();
+            // Non cancellare il CTS precedente: se un Task del turno vecchio è ancora vivo,
+            // la cancellazione forzata potrebbe interferire. Il vecchio CTS verrà pulito
+            // dal suo finally quando il Task terminerà.
             _turnCts?.Dispose();
             _turnCts = new CancellationTokenSource();
         }
@@ -117,8 +119,13 @@ public class AgentSession
     {
         lock (_lock)
         {
-            _turnCts?.Dispose();
-            _turnCts = null;
+            // Non pulire se c'è un nuovo CTS: significa che è già stato avviato un nuovo turno.
+            // Il vecchio Task non deve distruggere il CTS del nuovo turno.
+            if (_turnCts != null && !_turnCts.IsCancellationRequested)
+            {
+                _turnCts.Dispose();
+                _turnCts = null;
+            }
         }
     }
 
@@ -141,15 +148,17 @@ public class AgentSession
 
     /// <summary>
     /// Blocca il turno in attesa della decisione utente (o del timeout). Restituisce true se
-    /// approvato, false se rifiutato/scaduto.
+    /// approvato, false se rifiutato/scaduto/cancellato.
     /// </summary>
-    public async Task<bool> AwaitApprovalAsync(int timeoutSeconds = 300)
+    public async Task<bool> AwaitApprovalAsync(int timeoutSeconds = 300, CancellationToken ct = default)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         SetPendingApproval(tcs);
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            // Cancellazione del turno o timeout: rifiuta l'approvazione (false).
             using (cts.Token.Register(() => tcs.TrySetResult(false)))
             {
                 return await tcs.Task;

@@ -277,9 +277,8 @@ public class TerminalTools(WorkspaceContext workspace)
 
     public void ResetCwd() => _cwd = workspace.Root;
 
-    // ct: CancellationToken del turno corrente (vedi Program.cs/RunAgentLoopAsync) — oggi non
-    // annulla nessun comando in corso (nessun chiamante lo annulla mai): plumbing per un futuro
-    // comando "cancel" lato UI/estensione, non cambia alcun comportamento osservabile.
+    // ct: CancellationToken del turno corrente — quando cancellato, killa il processo in corso
+    // (albero completo) e restituisce un messaggio di errore.
     public string Execute(string toolName, string argumentsJson, CancellationToken ct = default)
     {
         try
@@ -287,7 +286,7 @@ public class TerminalTools(WorkspaceContext workspace)
             var args = JsonSerializer.Deserialize<JsonElement>(argumentsJson);
             return toolName switch
             {
-                "run_command"     => RunCommand(args),
+                "run_command"     => RunCommand(args, ct),
                 "run_dotnet"      => RunDotnet(args),
                 "sol_analyze"     => AnalyzeSolution(args),
                 "get_background_output" => GetBackgroundOutput(args),
@@ -299,8 +298,9 @@ public class TerminalTools(WorkspaceContext workspace)
         catch (Exception ex) { return $"ERRORE: {ex.Message}"; }
     }
 
-    private string RunCommand(JsonElement args)
+    private string RunCommand(JsonElement args, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var command = args.GetProperty("command").GetString()!;
         var timeoutMs = args.TryGetProperty("timeout_ms", out var t) ? t.GetInt32() : 60_000;
 
@@ -366,8 +366,8 @@ public class TerminalTools(WorkspaceContext workspace)
         }
 
         var raw = IsWindows
-            ? RunCommandWindows(command, timeoutMs)
-            : RunCommandUnix(command, timeoutMs);
+            ? RunCommandWindows(command, timeoutMs, ct)
+            : RunCommandUnix(command, timeoutMs, ct);
 
         // Estrai e aggiorna CWD dal sentinel
         var lines = raw.Split('\n').ToList();
@@ -430,7 +430,7 @@ public class TerminalTools(WorkspaceContext workspace)
     // lo script prima che la pipe Out-String venga eseguita: l'host scrive allora il CLIXML
     // direttamente sul vero stderr del processo, bypassando il redirect. Il catch intercetta
     // l'eccezione e la forza comunque a testo.
-    private string RunCommandWindows(string command, int timeoutMs)
+    private string RunCommandWindows(string command, int timeoutMs, CancellationToken ct = default)
     {
         // PowerShell non propaga di default l'esito del comando interno all'exit code del
         // processo powershell.exe (il try/catch sopra lo intercetta e lo rende testo): senza
@@ -447,21 +447,21 @@ public class TerminalTools(WorkspaceContext workspace)
         // estratto il sentinel della cwd in coda all'output.
         return RunProcess(ShellExe,
             $"-NoProfile -NonInteractive -EncodedCommand {encoded}",
-            _cwd, timeoutMs, maxChars: int.MaxValue, killLeftovers: true);
+            _cwd, timeoutMs, maxChars: int.MaxValue, killLeftovers: true, ct);
     }
 
     // bash -c riceve lo script come singolo elemento di argv (nessuna shell intermedia a
     // rifare il parsing), quindi non serve escaping del comando come su Windows con
     // -EncodedCommand. stderr è unito a stdout nello script stesso per preservare l'ordine
     // cronologico dell'output, come *>&1 fa lato PowerShell.
-    private string RunCommandUnix(string command, int timeoutMs)
+    private string RunCommandUnix(string command, int timeoutMs, CancellationToken ct = default)
     {
         // Senza catturare l'exit code PRIMA del printf del sentinel, il processo bash terminava
         // sempre con l'exit code del printf (sempre 0, successo) a prescindere dal comando.
         var cwdEscaped = _cwd.Replace("'", "'\\''");
         var script = $"cd '{cwdEscaped}' || exit 1\n{{ {command}\n}} 2>&1\n__pm_exit=$?\nprintf '\\n%s%s' '{Sentinel}' '{(Directory.Exists(_cwd) ? _cwd : "UNKNOWN")}'\nexit $__pm_exit";
 
-        return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs, maxChars: int.MaxValue, killLeftovers: true);
+        return RunProcess("/bin/bash", ["-c", script], _cwd, timeoutMs, maxChars: int.MaxValue, killLeftovers: true, ct);
     }
 
     private string StartBackground(string command)
@@ -840,7 +840,7 @@ public class TerminalTools(WorkspaceContext workspace)
         return result;
     }
 
-    private static string RunProcess(string executable, string arguments, string workDir, int timeoutMs = 60_000, int maxChars = 3000, bool killLeftovers = false)
+    private static string RunProcess(string executable, string arguments, string workDir, int timeoutMs = 60_000, int maxChars = 3000, bool killLeftovers = false, CancellationToken ct = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -853,12 +853,12 @@ public class TerminalTools(WorkspaceContext workspace)
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        return RunProcess(startInfo, timeoutMs, maxChars, killLeftovers);
+        return RunProcess(startInfo, timeoutMs, maxChars, killLeftovers, ct);
     }
 
     // Passa gli argomenti come argv (nessuna shell intermedia a rifare il parsing): evita
     // problemi di escaping per script multilinea con virgolette annidate, es. bash -c "<script>".
-    private static string RunProcess(string executable, string[] argumentList, string workDir, int timeoutMs = 60_000, int maxChars = 3000, bool killLeftovers = false)
+    private static string RunProcess(string executable, string[] argumentList, string workDir, int timeoutMs = 60_000, int maxChars = 3000, bool killLeftovers = false, CancellationToken ct = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -871,7 +871,7 @@ public class TerminalTools(WorkspaceContext workspace)
             CreateNoWindow = true
         };
         foreach (var a in argumentList) startInfo.ArgumentList.Add(a);
-        return RunProcess(startInfo, timeoutMs, maxChars, killLeftovers);
+        return RunProcess(startInfo, timeoutMs, maxChars, killLeftovers, ct);
     }
 
     // killLeftovers: per run_command in primo piano. Tutto ciò che il comando ha avviato e che
@@ -886,8 +886,9 @@ public class TerminalTools(WorkspaceContext workspace)
         }
     }
 
-    private static string RunProcess(ProcessStartInfo startInfo, int timeoutMs, int maxChars, bool killLeftovers = false)
+    private static string RunProcess(ProcessStartInfo startInfo, int timeoutMs, int maxChars, bool killLeftovers = false, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         using var proc = new Process { StartInfo = startInfo };
 
         var output = new System.Text.StringBuilder();
@@ -923,7 +924,7 @@ public class TerminalTools(WorkspaceContext workspace)
         // Soluzione: attendere la fine sul thread corrente MA con un watchdog su un thread separato
         // che, se il timeout scatta, forza il kill del processo (e del suo albero). Il kill chiude
         // le pipe e sblocca WaitForExit, che ritorna quindi sempre entro timeoutMs + margine.
-        bool finished = WaitForExitWithWatchdog(proc, timeoutMs);
+        bool finished = WaitForExitWithWatchdog(proc, timeoutMs, ct);
         if (!finished)
         {
             // Il watchdog ha già provato il kill; riproviamo qui, in ordine, ogni via per essere
@@ -990,7 +991,7 @@ public class TerminalTools(WorkspaceContext workspace)
     /// Restituisce true se il processo è terminato da solo entro il timeout, false se è stato
     /// necessario terminarlo forzatamente.
     /// </summary>
-    private static bool WaitForExitWithWatchdog(Process proc, int timeoutMs)
+    private static bool WaitForExitWithWatchdog(Process proc, int timeoutMs, CancellationToken ct = default)
     {
         var finished = new ManualResetEventSlim(false);
         var timedOut = new ManualResetEventSlim(false);
@@ -1003,10 +1004,14 @@ public class TerminalTools(WorkspaceContext workspace)
         }) { IsBackground = true, Name = "RunProcess-waiter" };
         waiter.Start();
 
-        // Watchdog: a timeout scatta il kill FORTE (albero + discendenti MSIX + job).
+        // Watchdog: a timeout o su cancellazione del turno scatta il kill FORTE (albero + discendenti MSIX + job).
         var watchdog = new Thread(() =>
         {
-            if (finished.Wait(timeoutMs)) return; // terminato in tempo
+            try
+            {
+                if (finished.Wait(timeoutMs, ct)) return; // terminato in tempo
+            }
+            catch (OperationCanceledException) { /* cancellazione del turno */ }
             timedOut.Set();
             try
             {
@@ -1018,7 +1023,7 @@ public class TerminalTools(WorkspaceContext workspace)
         }) { IsBackground = true, Name = "RunProcess-watchdog" };
         watchdog.Start();
 
-        // Aspetta che uno dei due eventi si verifichi (finito o timeout).
+        // Aspetta che uno dei due eventi si verifichi (finito o timeout/cancellazione).
         WaitHandle.WaitAny(new WaitHandle[] { finished.WaitHandle, timedOut.WaitHandle });
         return !timedOut.IsSet;
     }

@@ -208,7 +208,7 @@ public class AgentLoopSession
             _ => { }, // trace: no-op
             _ => { }, // notice: già via sink
             text => _onEvent(new AgentEventDto { Type = "status", TurnId = turnId, Text = text }),
-            (toolName, argsJson, ct) => CheckPermissionAsync(toolName, argsJson, turnId)
+            (toolName, argsJson, ct) => CheckPermissionAsync(toolName, argsJson, turnId, ct)
         );
 
         loopRef = loop;
@@ -245,7 +245,7 @@ public class AgentLoopSession
     /// Hook di permesso chiamato dal core AgentLoop prima di ogni esecuzione tool.
     /// Restituisce null per procedere, oppure una stringa di errore per bloccare.
     /// </summary>
-    private async Task<string?> CheckPermissionAsync(string toolName, string argsJson, string turnId)
+    private async Task<string?> CheckPermissionAsync(string toolName, string argsJson, string turnId, CancellationToken ct = default)
     {
         var mode = _session.PermissionMode;
         // DEBUG: logga la modalità e il tool per capire se l'approvazione viene richiesta in "auto"
@@ -274,21 +274,21 @@ public class AgentLoopSession
         if (mode == "ask")
         {
             if (toolName is "edit_file" or "write_file")
-                return await CheckWritePermissionAsync(toolName, argsJson, turnId);
+                return await CheckWritePermissionAsync(toolName, argsJson, turnId, ct);
             if (toolName is "run_command" or "run_dotnet")
-                return await CheckCommandPermissionAsync(argsJson, turnId);
+                return await CheckCommandPermissionAsync(argsJson, turnId, ct);
             // Altre azioni mutanti/distruttive (filesystem e git) che non passano né
             // per il diff di edit/write né per run_command, ma hanno comunque effetti
             // reali e devono chiedere conferma come le altre in modalità "ask".
             if (toolName is "delete_file" or "move_file" or "create_directory"
                 or "git_add" or "git_commit" or "git_checkout" or "stop_background_job")
-                return await CheckFileSystemActionPermissionAsync(toolName, argsJson, turnId);
+                return await CheckFileSystemActionPermissionAsync(toolName, argsJson, turnId, ct);
         }
 
         return null; // altri tool (lettura di rete, analisi, cambio workspace): consentiti anche in ask
     }
 
-    private async Task<string?> CheckWritePermissionAsync(string toolName, string argsJson, string turnId)
+    private async Task<string?> CheckWritePermissionAsync(string toolName, string argsJson, string turnId, CancellationToken ct = default)
     {
         var workspace = _session.Workspace;
         if (workspace == null) return null;
@@ -352,22 +352,24 @@ public class AgentLoopSession
         bool approved;
         try
         {
-            approved = await _session.AwaitApprovalAsync(300);
+            approved = await _session.AwaitApprovalAsync(300, ct);
         }
         finally
         {
             _session.Status = previousStatus;
         }
-        var outcome = approved ? "approved" : "rejected";
+        var outcome = approved ? "approved" : (ct.IsCancellationRequested ? "cancelled" : "rejected");
         _onEvent(new AgentEventDto { Type = "approval_resolved", ApprovalId = approvalId, Outcome = outcome });
 
         if (!approved)
-            return $"⛔ Modifica a '{relPath}' rifiutata o scaduta: NON applicata.";
+            return ct.IsCancellationRequested
+                ? $"⛔ Modifica a '{relPath}' annullata (cancellazione del turno): NON applicata."
+                : $"⛔ Modifica a '{relPath}' rifiutata o scaduta: NON applicata.";
 
         return null; // approvato: procedi con l'esecuzione
     }
 
-    private async Task<string?> CheckCommandPermissionAsync(string argsJson, string turnId)
+    private async Task<string?> CheckCommandPermissionAsync(string argsJson, string turnId, CancellationToken ct = default)
     {
         JsonElement args;
         try { args = JsonSerializer.Deserialize<JsonElement>(argsJson)!; }
@@ -375,7 +377,7 @@ public class AgentLoopSession
 
         var command = args.TryGetProperty("command", out var cp) ? cp.GetString() ?? "" : "";
         return await RequestActionApprovalAsync(turnId, "Esegui comando", command,
-            "⛔ Comando rifiutato o scaduto: NON eseguito.");
+            "⛔ Comando rifiutato o scaduto: NON eseguito.", ct);
     }
 
     /// <summary>
@@ -385,7 +387,7 @@ public class AgentLoopSession
     /// stop_background_job. Mostrate come kind "command" con una descrizione sintetica
     /// dell'azione, perché non ha senso costruire un unified diff per queste.
     /// </summary>
-    private async Task<string?> CheckFileSystemActionPermissionAsync(string toolName, string argsJson, string turnId)
+    private async Task<string?> CheckFileSystemActionPermissionAsync(string toolName, string argsJson, string turnId, CancellationToken ct = default)
     {
         JsonElement args;
         try { args = JsonSerializer.Deserialize<JsonElement>(argsJson)!; }
@@ -408,7 +410,7 @@ public class AgentLoopSession
         };
 
         return await RequestActionApprovalAsync(turnId, title, display,
-            $"⛔ Azione '{title}' rifiutata o scaduta: NON eseguita.");
+            $"⛔ Azione '{title}' rifiutata o scaduta: NON eseguita.", ct);
     }
 
     /// <summary>
@@ -416,7 +418,7 @@ public class AgentLoopSession
     /// espone l'approvazione pendente sulla sessione (per il ripristino dopo
     /// refresh/riconnessione) e attende la decisione dell'utente (o il timeout).
     /// </summary>
-    private async Task<string?> RequestActionApprovalAsync(string turnId, string title, string commandDisplay, string rejectMessage)
+    private async Task<string?> RequestActionApprovalAsync(string turnId, string title, string commandDisplay, string rejectMessage, CancellationToken ct = default)
     {
         var approvalId = Guid.NewGuid().ToString("N");
         var expiresAt = DateTime.UtcNow.AddSeconds(300).ToString("o");
@@ -447,15 +449,17 @@ public class AgentLoopSession
         bool approved;
         try
         {
-            approved = await _session.AwaitApprovalAsync(300);
+            approved = await _session.AwaitApprovalAsync(300, ct);
         }
         finally
         {
             _session.Status = previousStatus;
         }
-        var outcome = approved ? "approved" : "rejected";
+        var outcome = approved ? "approved" : (ct.IsCancellationRequested ? "cancelled" : "rejected");
         _onEvent(new AgentEventDto { Type = "approval_resolved", ApprovalId = approvalId, Outcome = outcome });
 
+        if (!approved && ct.IsCancellationRequested)
+            return $"⛔ Comando annullato (cancellazione del turno): NON eseguito.";
         return approved ? null : rejectMessage;
     }
 
