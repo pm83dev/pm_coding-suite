@@ -255,6 +255,16 @@ namespace LocalCodeAgent.Core
             var announcementRetries = 0;
             const int maxAnnouncementRetries = 2;
 
+            // Tetto sui risultati di tool che entrano nella history del modello (vedi ToolResultLimiter):
+            // un solo risultato enorme (es. un file da MB su una riga) rende la sessione irrecuperabile.
+            // La UI/trace ricevono comunque il risultato completo; qui si limita solo ciò che va al modello.
+            string LimitToolResult(string toolName, string result)
+            {
+                if (result.Length <= ToolResultLimiter.MaxToolResultChars) return result;
+                _notice($"risultato di '{toolName}' troncato per il modello: {result.Length:N0} caratteri, ne tengo {ToolResultLimiter.MaxToolResultChars:N0}");
+                return ToolResultLimiter.Clip(result, ToolResultLimiter.MaxToolResultChars);
+            }
+
             string? FullPathOf(string argsJson)
             {
                 try
@@ -867,6 +877,36 @@ namespace LocalCodeAgent.Core
                     _dispatcher.ClearCache();
                 }
 
+                // ── Controllo pre-volo del contesto ──────────────────────────
+                // Se anche dopo il rollover la history stimata supera il contesto del modello, la richiesta
+                // non può riuscire: prima si prova a risanarla (accorciando i risultati di tool grossi), poi,
+                // se è ancora troppo grande, il turno si ferma con un errore chiaro invece di restare
+                // appeso senza spiegazioni.
+                if (_options.MaxContextTokens > 0)
+                {
+                    var preflightTokens = _sessionManager.EstimateHistoryTokens(history);
+                    if (preflightTokens > _options.MaxContextTokens)
+                    {
+                        var healed = ToolResultLimiter.ShrinkOversizedToolMessages(history, ToolResultLimiter.MaxKeptToolResultChars);
+                        if (healed > 0)
+                        {
+                            _notice($"contesto stimato a ~{preflightTokens / 1000}K token (limite {_options.MaxContextTokens / 1000}K): accorciati {healed} risultati di tool molto grandi");
+                            preflightTokens = _sessionManager.EstimateHistoryTokens(history);
+                        }
+                        if (preflightTokens > _options.MaxContextTokens)
+                        {
+                            _ui("__ERROR__Contesto troppo grande per il modello anche dopo il rollover — mi fermo.");
+                            EmitFinalNotice(
+                                $"⚠️ La conversazione è stimata a ~{preflightTokens / 1000}K token, oltre il limite del modello " +
+                                $"({_options.MaxContextTokens / 1000}K), e non riesco a ridurla da sola. Non invio la richiesta " +
+                                "(fallirebbe). Apri una nuova sessione e riparti dal riassunto, oppure scrivimi di nuovo il compito.");
+                            StructuredTrace.EndTurn("error");
+                            _sink.TurnFinished(turnId, "error");
+                            return false;
+                        }
+                    }
+                }
+
                 // ── Call LLM (streaming) ──────────────────────────────────────
                 ChatMessage message;
                 Usage? usage;
@@ -1223,7 +1263,7 @@ namespace LocalCodeAgent.Core
 
 
 
-                        history.Add(ChatMessage.ToolResult(tc.Id, result));
+                        history.Add(ChatMessage.ToolResult(tc.Id, LimitToolResult(tc.Function.Name, result)));
                         if (result.StartsWith(readBlockedPrefix, StringComparison.Ordinal) ||
 
                             result.StartsWith(verifyMissingPrefix, StringComparison.Ordinal) ||
@@ -1376,7 +1416,7 @@ namespace LocalCodeAgent.Core
 
 
 
-                            history.Add(ChatMessage.ToolResult($"rescued-{step}", result));
+                            history.Add(ChatMessage.ToolResult($"rescued-{step}", LimitToolResult(name, result)));
 
                         }
 
@@ -1523,7 +1563,7 @@ namespace LocalCodeAgent.Core
 
 
 
-                        history.Add(ChatMessage.ToolResult($"auto-build-{step}", buildResult));
+                        history.Add(ChatMessage.ToolResult($"auto-build-{step}", LimitToolResult("sol_analyze", buildResult)));
 
                         history.Add(new ChatMessage
 

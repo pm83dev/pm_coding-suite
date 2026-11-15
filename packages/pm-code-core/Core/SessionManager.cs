@@ -62,6 +62,11 @@ public class SessionManager
         CancellationToken ct = default,
         Action<string>? onNotice = null, Action<string>? onSummary = null)
     {
+        // Risana risultati di tool enormi già presenti (es. sessione caricata da disco, o letto prima di
+        // questo limite): senza, il riassunto e ogni richiesta successiva si portano dietro MB di testo.
+        if (ToolResultLimiter.ShrinkOversizedToolMessages(history, ToolResultLimiter.MaxToolResultChars) > 0)
+            WriteStatus("  [risultati di tool enormi accorciati nella history]");
+
         var estimated = EstimateTokens(history);
         var limit = atTurnStart && !hasPendingPlan ? (int)(HardLimit * TurnStartFraction) : HardLimit;
         if (estimated < limit)
@@ -98,6 +103,10 @@ public class SessionManager
         // history con 3 messaggi e il client, dopo il refresh, vedeva solo i propri
         // messaggi user (quelli del nuovo turno) e nessun assistant.
         var recent = PickRecentMessages(toSummarize);
+        // La coda recente viene conservata per esteso: un risultato di tool gigante qui sopravviverebbe
+        // a ogni rollover (e farebbe scattare un nuovo rollover a ogni step). Il modello comunque deve
+        // rileggere i file prima di modificarli, quindi un estratto basta.
+        ToolResultLimiter.ShrinkOversizedToolMessages(recent, ToolResultLimiter.MaxKeptToolResultChars);
 
         List<ChatMessage> fresh =
         [
@@ -311,6 +320,9 @@ public class SessionManager
 
         return sb.ToString();
     }
+
+    /// <summary>Stima dei token della history (stessa stima usata per il rollover).</summary>
+    public int EstimateHistoryTokens(List<ChatMessage> messages) => EstimateTokens(messages);
 
     private int EstimateTokens(List<ChatMessage> messages) =>
         (int)(TotalChars(messages) / _charsPerToken);
