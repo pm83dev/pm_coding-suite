@@ -134,6 +134,8 @@ public class AgentLoopSession
             SecondOpinionSameErrorThreshold = _config.SecondOpinionSettings.SameErrorThreshold,
             SecondOpinionReadWithoutActionThreshold = _config.SecondOpinionSettings.ReadWithoutActionThreshold,
             SecondOpinionTraceMaxChars = _config.SecondOpinionSettings.TraceMaxChars,
+            RevisionMaxCallsPerTurn = _config.RevisionSettings.MaxCallsPerTurn,
+            RevisionTraceMaxChars = _config.RevisionSettings.TraceMaxChars,
             ExploreTraceMaxChars = _config.ExploreLlmSettings.TraceMaxChars,
         };
 
@@ -194,6 +196,11 @@ public class AgentLoopSession
             workspace,
             _config.SecondOpinionSettings);
 
+        // "ask_revision" (Claude CLI): opzionale, disabilitato di default — se non abilitato il tool non è esposto.
+        var revisionAgent = _config.RevisionSettings.Enabled
+            ? new RevisionSubAgent(workspace, _config.RevisionSettings)
+            : null;
+
         var loop = new AgentLoop(
             llm,
             dispatcher,
@@ -208,7 +215,8 @@ public class AgentLoopSession
             _ => { }, // trace: no-op
             _ => { }, // notice: già via sink
             text => _onEvent(new AgentEventDto { Type = "status", TurnId = turnId, Text = text }),
-            (toolName, argsJson, ct) => CheckPermissionAsync(toolName, argsJson, turnId, ct)
+            (toolName, argsJson, ct) => CheckPermissionAsync(toolName, argsJson, turnId, ct),
+            revisionAgent
         );
 
         loopRef = loop;
@@ -259,7 +267,7 @@ public class AgentLoopSession
             "list_directory", "get_workspace_tree", "dir_info",
             "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
             "manage_todo", "project_notes", "lessons", "ask_question",
-            "explore", "review_changes", "ask_second_opinion"
+            "explore", "review_changes", "ask_second_opinion", "ask_revision"
         };
         if (readOnlyTools.Contains(toolName)) return null;
 

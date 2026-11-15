@@ -270,6 +270,51 @@ public class SecondOpinionSettings
 }
 
 /// <summary>
+/// Configurazione del tool opzionale "ask_revision" (<see cref="RevisionSubAgent"/>): revisione/coordinamento
+/// affidati al CLI di Claude Code in modalità non interattiva (<c>claude -p</c>), con il login dell'utente —
+/// nessuna chiave API. DISABILITATO di default: il tool non viene nemmeno esposto al modello se
+/// <see cref="Enabled"/> è false. Indipendente da <see cref="SecondOpinionSettings"/> (che resta locale).
+/// </summary>
+public class RevisionSettings
+{
+    [JsonPropertyName("Enabled")]
+    public bool Enabled { get; set; }
+
+    /// <summary>Eseguibile del CLI (default "claude", risolto dal PATH).</summary>
+    [JsonPropertyName("ClaudeCliPath")]
+    public string ClaudeCliPath { get; set; } = "claude";
+
+    /// <summary>Opzionale: alias/nome modello passato a <c>--model</c>. Vuoto = default del CLI.</summary>
+    [JsonPropertyName("Model")]
+    public string? Model { get; set; }
+
+    /// <summary>Tetto ai turni interni del CLI (<c>--max-turns</c>).</summary>
+    [JsonPropertyName("MaxTurns")]
+    public int MaxTurns { get; set; } = 6;
+
+    [JsonPropertyName("TimeoutSeconds")]
+    public int TimeoutSeconds { get; set; } = 300;
+
+    [JsonPropertyName("MaxAnswerChars")]
+    public int MaxAnswerChars { get; set; } = 8000;
+
+    /// <summary>Numero massimo di chiamate ad ask_revision per turno del loop principale.</summary>
+    [JsonPropertyName("MaxCallsPerTurn")]
+    public int MaxCallsPerTurn { get; set; } = 2;
+
+    /// <summary>
+    /// Regole <c>Read(...)</c> aggiuntive negate al CLI per non fargli leggere segreti. Si sommano a
+    /// quelle di default (appsettings*.json, .env*, chiavi/certificati).
+    /// </summary>
+    [JsonPropertyName("DenyRead")]
+    public List<string> DenyRead { get; set; } = [];
+
+    /// <summary>Troncamento nel trace diagnostico (argomenti/risultato) per ask_revision.</summary>
+    [JsonPropertyName("TraceMaxChars")]
+    public int TraceMaxChars { get; set; } = 2000;
+}
+
+/// <summary>
 /// Configurazione agente (workspace, limiti di contesto, rollover).
 /// Mappa il blocco "AgentSettings" di appsettings.json.
 /// </summary>
@@ -355,6 +400,10 @@ public sealed record AgentLoopOptions
     /// <summary>Numero massimo di chiamate ad ask_second_opinion per turno.</summary>
     public int SecondOpinionMaxCallsPerTurn { get; init; } = 3;
 
+    /// <summary>Numero massimo di chiamate ad ask_revision per turno, e troncamento nel trace (vedi RevisionSettings).</summary>
+    public int RevisionMaxCallsPerTurn { get; init; } = 2;
+    public int RevisionTraceMaxChars { get; init; } = 2000;
+
     /// <summary>Soglia "stesso errore ripetuto" oltre la quale si suggerisce ask_second_opinion.</summary>
     public int SecondOpinionSameErrorThreshold { get; init; } = 3;
 
@@ -423,6 +472,7 @@ public class AgentConfig
     /// </summary>
     [JsonPropertyName("SecondOpinionSettings")]
     public SecondOpinionSettings SecondOpinionSettings { get; set; } = new();
+    public RevisionSettings RevisionSettings { get; set; } = new();
 
     [JsonPropertyName("AgentSettings")]
     public AgentSettings AgentSettings { get; set; } = new();
