@@ -200,6 +200,10 @@ namespace LocalCodeAgent.Core
             // Chiamate uguali a meno dei numeri (vedi ExecuteToolGuarded): avviso dalla 3ª, blocco oltre maxSimilarCalls.
             var similarCounts = new Dictionary<string, int>();
             const int maxSimilarCalls = 5;
+            // Prima di fermarsi per "stesso comando rilanciato", al modello si concede UN passo in cui deve
+            // chiedere aiuto (ask_revision, o ask_second_opinion) invece di arrendersi subito. Si riazzera
+            // quando chiede davvero aiuto, così dopo il parere ha un nuovo budget di tentativi.
+            bool similarEscalationGiven = false;
             int lastErrorHash = 0;
             int sameErrorStreak = 0;
             string? lastErrorTool = null;
@@ -436,6 +440,8 @@ namespace LocalCodeAgent.Core
                         return $"[LOOP-BLOCK] Hai già chiesto un secondo parere {secondOpinionCallsThisTurn} volte in questo turno: " +
                                "procedi con le tue conclusioni o chiedi all'utente.";
                     secondOpinionCallsThisTurn++;
+                    similarCounts.Clear();
+                    similarEscalationGiven = false;
                 }
 
                 // Limite per turno su ask_revision (costa una chiamata esterna): controllato PRIMA di eseguirlo.
@@ -447,6 +453,8 @@ namespace LocalCodeAgent.Core
                         return $"[LOOP-BLOCK] Hai già chiesto una revisione {revisionCallsThisTurn} volte in questo turno: " +
                                "procedi con le tue conclusioni o chiedi all'utente.";
                     revisionCallsThisTurn++;
+                    similarCounts.Clear();
+                    similarEscalationGiven = false;
                 }
 
                 var key = $"{name}|{argsJson}";
@@ -470,8 +478,8 @@ namespace LocalCodeAgent.Core
                     {
                         repeatHint = $"\n\n[LOOP IMMINENTE] Hai ripetuto {state.Count + 1} volte la stessa chiamata ('{name}') con " +
                                      "argomenti identici ottenendo sempre lo stesso risultato: ripeterla ancora non darà nulla di " +
-                                     "nuovo. Sintetizza ORA i tentativi falliti e chiama ask_second_opinion con il briefing " +
-                                     "strutturato (GOAL/CONSTRAINTS/ATTEMPTS/EXACT ERROR/QUESTION) prima di ripetere ancora questa " +
+                                     "nuovo. Sintetizza ORA i tentativi falliti e chiama ask_revision (se disponibile) o ask_second_opinion " +
+                                     "con il briefing strutturato (GOAL/CONSTRAINTS/ATTEMPTS/EXACT ERROR/QUESTION) prima di ripetere ancora questa " +
                                      "chiamata, oppure fermati e chiedi all'utente come proseguire.";
                     }
                     else
@@ -494,6 +502,22 @@ namespace LocalCodeAgent.Core
                     similarCounts[similarKey] = similar;
                     if (similar > maxSimilarCalls)
                     {
+                        // Prima di arrendersi: UN passo in cui deve chiedere aiuto. Preferisce la revisione
+                        // esterna (più capace) se abilitata e con chiamate disponibili, altrimenti il secondo parere.
+                        var helpTool =
+                            _revisionAgent != null && revisionCallsThisTurn < _options.RevisionMaxCallsPerTurn ? RevisionSubAgent.ToolName :
+                            secondOpinionCallsThisTurn < _options.SecondOpinionMaxCallsPerTurn ? ConsultSubAgent.ToolName : null;
+                        if (!similarEscalationGiven && helpTool != null)
+                        {
+                            similarEscalationGiven = true;
+                            _notice($"'{name}' rilanciato {similar} volte quasi identico: prima di fermarmi chiedo aiuto con {helpTool}");
+                            return $"[LOOP-BLOCK] '{name}' rilanciato {similar} volte quasi identico (cambiano solo i numeri) senza " +
+                                   "progressi. NON eseguirlo di nuovo. Chiama ORA il tool " + helpTool + " con un briefing strutturato " +
+                                   "(GOAL: cosa vuole l'utente / ATTEMPTS: cosa hai provato e l'esito reale di ciascun tentativo / " +
+                                   "EXACT ERROR o risultato inatteso / QUESTION: cosa non riesci a capire o quale approccio diverso proporre), " +
+                                   "poi segui il parere con un approccio DIVERSO. Solo se anche così non hai idee, chiedi all'utente.";
+                        }
+
                         loopDetected = true;
                         stopReason = $"⚠️ Mi fermo: ho rilanciato {similar} volte lo stesso comando '{name}' cambiando solo dei numeri, " +
                                      "senza modificare il codice né capire il risultato. Dimmi come proseguire o indicami cosa controllare.";
@@ -507,8 +531,9 @@ namespace LocalCodeAgent.Core
                                          "atteso, contenuto, messaggi d'errore nell'output) e, se non coincide, cerca la causa nel codice " +
                                          "e correggila. Se devi capire come/dove il codice gestisce qualcosa, usa explore invece di " +
                                          "rilanciare comandi — delega la ricerca multi-file a lui. Se non sai come interpretare il " +
-                                         "risultato o ti manca un'idea diversa da quella già tentata, chiama ask_second_opinion con " +
-                                         "cosa hai osservato: un modello indipendente può darti una pista diversa. Se invece manca " +
+                                         "risultato o ti manca un'idea diversa da quella già tentata, chiama ask_revision (se disponibile: " +
+                                         "è un revisore più capace) oppure ask_second_opinion con cosa hai osservato: un modello " +
+                                         "indipendente può darti una pista diversa. Se invece manca " +
                                          "una decisione dell'utente, chiama ask_question — ma non ritentare ancora lo stesso comando.";
                 }
                 if (name == "manage_todo")
