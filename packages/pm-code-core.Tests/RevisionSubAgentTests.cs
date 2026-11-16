@@ -59,6 +59,15 @@ public class RevisionSubAgentTests
     }
 
     [Fact]
+    public void Parse_MaxTurns_MessaggioEsplicito()
+    {
+        Assert.Null(RevisionSubAgent.ParseCliOutput(
+            """{"is_error":true,"subtype":"error_max_turns","num_turns":7}""", out var err, out _));
+        Assert.Contains("esaurito i turni", err);
+        Assert.Contains("MaxTurns", err);
+    }
+
+    [Fact]
     public async Task RunAsync_RequestVuoto_Errore()
     {
         var (agent, dir) = Make(new RevisionSettings());

@@ -83,7 +83,10 @@ public class RevisionSubAgent(WorkspaceContext workspace, RevisionSettings setti
             if (isError || string.IsNullOrWhiteSpace(result))
             {
                 var sub = root.TryGetProperty("subtype", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : "unknown";
-                error = isError ? $"il CLI ha segnalato un errore ({sub}: {result})" : $"risposta vuota dal CLI ({sub})";
+                if (sub == "error_max_turns")
+                    error = $"il revisore ha esaurito i turni del CLI ({turns}) prima di rispondere: riprova con un briefing più autosufficiente (punti chiave del diff già nella richiesta) o aumenta RevisionSettings.MaxTurns";
+                else
+                    error = isError ? $"il CLI ha segnalato un errore ({sub}: {result})" : $"risposta vuota dal CLI ({sub})";
                 return null;
             }
             return result;
