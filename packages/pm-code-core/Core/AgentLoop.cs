@@ -449,7 +449,7 @@ namespace LocalCodeAgent.Core
                 {
                     if (_revisionAgent == null)
                         return "ERRORE: ask_revision non è abilitato.";
-                    if (revisionCallsThisTurn >= _options.RevisionMaxCallsPerTurn)
+                    if (_options.RevisionMaxCallsPerTurn > 0 && revisionCallsThisTurn >= _options.RevisionMaxCallsPerTurn)
                         return $"[LOOP-BLOCK] Hai già chiesto una revisione {revisionCallsThisTurn} volte in questo turno: " +
                                "procedi con le tue conclusioni o chiedi all'utente.";
                     revisionCallsThisTurn++;
@@ -505,7 +505,7 @@ namespace LocalCodeAgent.Core
                         // Prima di arrendersi: UN passo in cui deve chiedere aiuto. Preferisce la revisione
                         // esterna (più capace) se abilitata e con chiamate disponibili, altrimenti il secondo parere.
                         var helpTool =
-                            _revisionAgent != null && revisionCallsThisTurn < _options.RevisionMaxCallsPerTurn ? RevisionSubAgent.ToolName :
+                            _revisionAgent != null && (_options.RevisionMaxCallsPerTurn <= 0 || revisionCallsThisTurn < _options.RevisionMaxCallsPerTurn) ? RevisionSubAgent.ToolName :
                             secondOpinionCallsThisTurn < _options.SecondOpinionMaxCallsPerTurn ? ConsultSubAgent.ToolName : null;
                         if (!similarEscalationGiven && helpTool != null)
                         {
@@ -856,7 +856,8 @@ namespace LocalCodeAgent.Core
             StructuredTrace.BeginTurn();
             StructuredTrace.UserMessage(turnRequest ?? "");
 
-            // Set di tool fisso per tutto il turno, scelto sulla richiesta dell'utente.
+            // Set di tool fisso per tutto il turno: unione (solo aggiunte, ordine fisso) dei gruppi
+            // attivati dalle richieste della sessione (vedi ToolDispatcher.GetRelevantDefinitions).
             var turnTools = _dispatcher.GetRelevantDefinitions(turnRequest ?? "");
             if (_exploreAgent != null) turnTools.Add(ExploreSubAgent.Definition);
             turnTools.Add(ReviewSubAgent.Definition);
@@ -950,11 +951,10 @@ namespace LocalCodeAgent.Core
 
                     try
                     {
+                        // Lista dei tool invariata per tutto il turno anche in modalità "solo azione"
+                        // (restrictReadOnly): cambiarla a metà turno invaliderebbe la cache del prompt
+                        // del server. Le letture vengono rifiutate lato dispatcher (vedi readBlockedPrefix).
                         var tools = turnTools;
-                        // Modalità "solo azione" (vedi readOnlyNudgeGiven): togliere i tool di lettura
-                        // dalla richiesta è più efficace di qualunque istruzione testuale.
-                        if (restrictReadOnly)
-                            tools = [.. tools.Where(t => !_readOnlyTools.Contains(t.Function.Name))];
                         var request = new ChatRequest
                         {
                             Messages = history,

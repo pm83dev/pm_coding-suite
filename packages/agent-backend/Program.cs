@@ -1,6 +1,7 @@
 using AgentBackend.Controllers;
 using AgentBackend.Hubs;
 using AgentBackend.Services;
+using LocalCodeAgent.Core;
 using LocalCodeAgent.Models;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +17,17 @@ builder.Configuration.GetSection("CoderLlmSettings").Bind(config.CoderLlmSetting
 builder.Configuration.GetSection("SecondOpinionSettings").Bind(config.SecondOpinionSettings);
 builder.Configuration.GetSection("RevisionSettings").Bind(config.RevisionSettings);
 builder.Configuration.GetSection("PersistenceSettings").Bind(config.PersistenceSettings);
+builder.Configuration.GetSection("TraceSettings").Bind(config.TraceSettings);
+
+// Trace strutturato NDJSON (un file per avvio del backend): contiene tra l'altro gli eventi
+// "prompt_fingerprint" per diagnosticare le invalidazioni della cache del prompt di llama-server.
+// Default attivo; disattivabile con TraceSettings:Enabled=false o PM_TRACE=off.
+StructuredTrace.Init(config.TraceSettings);
+StructuredTrace.StartSession(
+    "(agent-backend)",
+    config.LlmSettings.Model,
+    config.LlmSettings.BaseUrl,
+    typeof(StructuredTrace).Assembly.GetName().Version?.ToString() ?? "unknown");
 
 // Services
 builder.Services.AddSingleton(config);

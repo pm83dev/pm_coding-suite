@@ -98,30 +98,45 @@ public class ToolDispatcher
         // legittima — delete_file sposta nel cestino recuperabile .pm-agent/trash.
         defs.AddRange(_fs.Definitions.Where(t => t.Function.Name == "delete_file"));
 
-        // Terminal — su task che richiedono dotnet specifico
-        if (Has(lc, "test", "package", "nuget", "add ", "pubbl", "run_dotnet"))
-            defs.Add(_terminal.Definitions.First(t => t.Function.Name == "run_dotnet"));
-
-        // Navigazione directory — su task che richiedono gestione cartelle/workspace
-        if (Has(lc, "dir", "cartell", "folder", "list", "sposta", "rinomina", "elimina", "cancella", "struttura", "workspace", "init"))
+        // Gruppi opzionali: attivati dalle parole chiave del messaggio, poi MAI più disattivati per
+        // la durata della sessione (solo aggiunte). Il blocco tool sta all'inizio del prompt reso dal
+        // chat template: un tool che compare e scompare tra un turno e l'altro invalida l'intera
+        // cache del prompt di llama-server. Sono aggiunti sempre nello stesso ordine fisso
+        // (dotnet, nav, git, web), indipendente dall'ordine di attivazione.
+        lock (_groupsLock)
         {
-            defs.AddRange(_fs.Definitions.Where(t => t.Function.Name is
-                "list_directory" or "create_directory" or "move_file" or "delete_file"));
-            defs.AddRange(_agent.Definitions.Where(t => t.Function.Name is "dir_info" or "set_workspace"));
+            if (Has(lc, "test", "package", "nuget", "add ", "pubbl", "run_dotnet")) _activeGroups.Add("dotnet");
+            if (Has(lc, "dir", "cartell", "folder", "list", "sposta", "rinomina", "elimina", "cancella", "struttura", "workspace", "init")) _activeGroups.Add("nav");
+            if (Has(lc, "git", "commit", "push", "branch", "diff", "merge", "stash", "log", "stage")) _activeGroups.Add("git");
+            if (Has(lc, "web", "http", "url", "cerca online", "internet", "documentazion", "fetch", "download", "sito", "api key", "nuget.org")) _activeGroups.Add("web");
+
+            // Terminal — task che richiedono dotnet specifico
+            if (_activeGroups.Contains("dotnet"))
+                defs.Add(_terminal.Definitions.First(t => t.Function.Name == "run_dotnet"));
+
+            // Navigazione directory — gestione cartelle/workspace
+            if (_activeGroups.Contains("nav"))
+            {
+                defs.AddRange(_fs.Definitions.Where(t => t.Function.Name is
+                    "list_directory" or "create_directory" or "move_file" or "delete_file"));
+                defs.AddRange(_agent.Definitions.Where(t => t.Function.Name is "dir_info" or "set_workspace"));
+            }
+
+            // Git — tutti i tool git (in sola lettura sono già inclusi sopra)
+            if (_activeGroups.Contains("git"))
+                defs.AddRange(_git.Definitions);
+
+            // Web — accesso internet o documentazione online
+            if (_activeGroups.Contains("web"))
+                defs.AddRange(_web.Definitions);
         }
-
-
-
-        // Git — su task git
-        if (Has(lc, "git", "commit", "push", "branch", "diff", "merge", "stash", "log", "stage"))
-            defs.AddRange(_git.Definitions);
-
-        // Web — su task che richiedono accesso internet o documentazione online
-        if (Has(lc, "web", "http", "url", "cerca online", "internet", "documentazion", "fetch", "download", "sito", "api key", "nuget.org"))
-            defs.AddRange(_web.Definitions);
 
         return [.. defs.DistinctBy(t => t.Function.Name)];
     }
+
+    // Gruppi di tool opzionali già attivati in questa sessione (solo aggiunte, vedi GetRelevantDefinitions).
+    private readonly HashSet<string> _activeGroups = [];
+    private readonly object _groupsLock = new();
 
     private static bool Has(string s, params string[] kw) =>
         kw.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase));

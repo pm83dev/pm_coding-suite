@@ -32,6 +32,9 @@ public class AgentLoopSession
     public async Task<(bool Success, string TurnId)> RunTurnAsync(string userMessage)
     {
         var turnId = Guid.NewGuid().ToString("N");
+        // Trace strutturato: gli eventi di questo flusso asincrono (loop, chiamate al modello, sotto-agenti)
+        // riportano la chat e un turnId progressivo per chat, anche con più sessioni in parallelo.
+        StructuredTrace.SetChat(_session.SessionId);
         var llm = _session.LlmClient;
         var history = _session.History;
         var dispatcher = _session.Dispatcher;

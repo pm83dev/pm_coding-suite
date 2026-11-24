@@ -147,12 +147,128 @@ public class LlamaClient
         catch { return false; }
     }
 
+    // ── Diagnostica cache del prompt ───────────────────────────────────────────
+    // llama-server riusa lo slot solo se il PREFISSO del prompt coincide con la richiesta precedente.
+    // Per ogni richiesta (se il trace è attivo) si emette "prompt_fingerprint" con: hash SHA-256 dei
+    // primi 2000 caratteri del body serializzato, hash del solo blocco tool, hash di messages[0].Content,
+    // conteggi, e il confronto con la richiesta precedente allo STESSO endpoint (stato statico condiviso
+    // fra le istanze: stesso endpoint = stesso slot): firstDiffIndex, blocco cambiato (diffRegion), ruolo del
+    // messaggio divergente e quota di prefisso condiviso. Il prefisso è misurato sul testo "in ordine
+    // template" (tool, poi messaggi: i chat template mettono i tool nel blocco system, prima di tutto)
+    // ed è una stima in caratteri, non in token. Mai un'eccezione verso il chiamante.
+    private sealed class PromptState(string[] messages, string tools, string logical, int seq)
+    {
+        public string[] Messages { get; } = messages;
+        public string Tools { get; } = tools;
+        public string Logical { get; } = logical;
+        public int Seq { get; } = seq;
+    }
+
+    private static readonly Dictionary<string, PromptState> _lastPrompt = new();
+    private static readonly object _lastPromptLock = new();
+
+    private static string Sha256Hex(string s) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(s)));
+
+    private static int CommonPrefixLength(string a, string b)
+    {
+        var n = Math.Min(a.Length, b.Length);
+        var i = 0;
+        while (i < n && a[i] == b[i]) i++;
+        return i;
+    }
+
+    private static string Window(string s, int center, int radius) =>
+        StructuredTrace.Redact(s.Substring(Math.Max(0, center - radius), Math.Min(s.Length, center + radius) - Math.Max(0, center - radius)));
+
+    private void TracePromptFingerprint(ChatRequest request, string kind)
+    {
+        if (!StructuredTrace.Enabled) return;
+        try
+        {
+            var endpoint = EndpointOverride ?? new Uri(_http.BaseAddress!, "/v1/chat/completions").ToString();
+            var body = JsonSerializer.Serialize(request, _json);
+            var toolsJson = request.Tools == null ? "" : JsonSerializer.Serialize(request.Tools, _json);
+            var toolsHash = Sha256Hex(toolsJson);
+            var msgJson = request.Messages.Select(m => JsonSerializer.Serialize(m, _json)).ToArray();
+            var msgHashes = msgJson.Select(Sha256Hex).ToArray();
+            var logical = toolsJson + "\n" + string.Join("\n", msgJson);
+
+            var fields = new Dictionary<string, object?>
+            {
+                ["kind"] = kind,
+                ["endpoint"] = endpoint,
+                ["model"] = request.Model,
+                ["promptHead2000Sha256"] = Sha256Hex(body.Length <= 2000 ? body : body[..2000]),
+                ["toolsSha256"] = toolsHash,
+                ["firstMessageContentSha256"] = Sha256Hex(request.Messages.Count > 0 ? request.Messages[0].Content ?? "" : ""),
+                ["messagesCount"] = request.Messages.Count,
+                ["toolsCount"] = request.Tools?.Count ?? 0,
+                ["promptChars"] = logical.Length,
+            };
+
+            lock (_lastPromptLock)
+            {
+                _lastPrompt.TryGetValue(endpoint, out var prev);
+                fields["endpointSeq"] = (prev?.Seq ?? 0) + 1;
+                if (prev == null)
+                {
+                    // Prima richiesta a questo endpoint: niente da confrontare.
+                    fields["firstDiffIndex"] = null;
+                    fields["toolsChanged"] = null;
+                    fields["messagesChanged"] = null;
+                    fields["diffRegion"] = "first";
+                }
+                else
+                {
+                    var toolsChanged = prev.Tools != toolsHash;
+                    var common = Math.Min(prev.Messages.Length, msgHashes.Length);
+                    var diff = -1;
+                    for (var i = 0; i < common; i++)
+                        if (prev.Messages[i] != msgHashes[i]) { diff = i; break; }
+                    // Nessuna differenza nella parte comune: pura estensione (-1) se la nuova non è più corta;
+                    // se è più corta, la divergenza inizia dove finisce.
+                    var firstDiff = diff >= 0 ? diff : (msgHashes.Length >= prev.Messages.Length ? -1 : common);
+                    var shared = CommonPrefixLength(prev.Logical, logical);
+
+                    fields["prevMessagesCount"] = prev.Messages.Length;
+                    fields["prevPromptChars"] = prev.Logical.Length;
+                    fields["firstDiffIndex"] = firstDiff;
+                    fields["toolsChanged"] = toolsChanged;
+                    fields["messagesChanged"] = firstDiff >= 0;
+                    // Dove si rompe il prefisso: i tool vengono prima di tutti i messaggi.
+                    fields["diffRegion"] = toolsChanged ? "tools"
+                        : firstDiff < 0 ? "none"
+                        : firstDiff >= request.Messages.Count ? "truncated"
+                        : firstDiff == 0 && request.Messages[0].Role == "system" ? "system"
+                        : $"message[{firstDiff}]";
+                    if (firstDiff >= 0 && firstDiff < request.Messages.Count)
+                        fields["diffRole"] = request.Messages[firstDiff].Role;
+                    fields["sharedPrefixChars"] = shared;
+                    fields["sharedPrefixPct"] = prev.Logical.Length == 0 ? 100.0 : Math.Round(100.0 * shared / prev.Logical.Length, 1);
+
+                    // Opt-in (TraceSettings.DiffSnippets): estratto ripulito dai segreti attorno al punto di divergenza.
+                    if (StructuredTrace.DiffSnippets && shared < Math.Max(prev.Logical.Length, logical.Length) && !(firstDiff < 0 && !toolsChanged))
+                    {
+                        fields["prevSnippet"] = Window(prev.Logical, shared, 80);
+                        fields["newSnippet"] = Window(logical, shared, 80);
+                    }
+                }
+                _lastPrompt[endpoint] = new PromptState(msgHashes, toolsHash, logical, (prev?.Seq ?? 0) + 1);
+            }
+
+            StructuredTrace.PromptFingerprint(fields);
+        }
+        catch { /* la diagnostica non deve mai far fallire la richiesta */ }
+    }
+
     // ── Standard (non-streaming) ───────────────────────────────────────────────
 
     public async Task<ChatResponse?> ChatAsync(ChatRequest request, CancellationToken ct = default)
     {
         request.Model  = Model;
         request.Stream = false;
+        TracePromptFingerprint(request, "chat");
         var resp = await _http.PostAsJsonAsync(EndpointOverride ?? "/v1/chat/completions", request, _json, ct);
         resp.EnsureSuccessStatusCode();
         return JsonSerializer.Deserialize<ChatResponse>(
@@ -190,6 +306,7 @@ public class LlamaClient
         request.Model  = Model;
         request.Stream = true;
         request.StreamOptions = new StreamOptions();
+        TracePromptFingerprint(request, "stream");
 
         using var httpReq = new HttpRequestMessage(HttpMethod.Post, EndpointOverride ?? "/v1/chat/completions");
         httpReq.Content = JsonContent.Create(request, options: _json);

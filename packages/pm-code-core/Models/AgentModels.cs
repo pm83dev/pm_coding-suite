@@ -298,9 +298,9 @@ public class RevisionSettings
     [JsonPropertyName("MaxAnswerChars")]
     public int MaxAnswerChars { get; set; } = 8000;
 
-    /// <summary>Numero massimo di chiamate ad ask_revision per turno del loop principale.</summary>
+    /// <summary>Numero massimo di chiamate ad ask_revision per turno del loop principale (0 o negativo = illimitato).</summary>
     [JsonPropertyName("MaxCallsPerTurn")]
-    public int MaxCallsPerTurn { get; set; } = 2;
+    public int MaxCallsPerTurn { get; set; } = 0;
 
     /// <summary>
     /// Regole <c>Read(...)</c> aggiuntive negate al CLI per non fargli leggere segreti. Si sommano a
@@ -430,8 +430,8 @@ public sealed record AgentLoopOptions
     /// <summary>Numero massimo di chiamate ad ask_second_opinion per turno.</summary>
     public int SecondOpinionMaxCallsPerTurn { get; init; } = 3;
 
-    /// <summary>Numero massimo di chiamate ad ask_revision per turno, e troncamento nel trace (vedi RevisionSettings).</summary>
-    public int RevisionMaxCallsPerTurn { get; init; } = 2;
+    /// <summary>Numero massimo di chiamate ad ask_revision per turno (0 o negativo = illimitato), e troncamento nel trace (vedi RevisionSettings).</summary>
+    public int RevisionMaxCallsPerTurn { get; init; } = 0;
     public int RevisionTraceMaxChars { get; init; } = 2000;
 
     /// <summary>Soglia "stesso errore ripetuto" oltre la quale si suggerisce ask_second_opinion.</summary>
@@ -515,6 +515,40 @@ public class AgentConfig
 
     [JsonPropertyName("PersistenceSettings")]
     public PersistenceSettings PersistenceSettings { get; set; } = new();
+
+    [JsonPropertyName("TraceSettings")]
+    public TraceSettings TraceSettings { get; set; } = new();
+}
+
+/// <summary>
+/// Trace strutturato NDJSON (vedi StructuredTrace) per agent-backend. Le variabili d'ambiente
+/// PM_TRACE / PM_TRACE_DIR / PM_TRACE_MAX_FILES / PM_TRACE_MAX_MB, se presenti, hanno la precedenza.
+/// </summary>
+public class TraceSettings
+{
+    /// <summary>Default attivo. false = nessun file di trace.</summary>
+    [JsonPropertyName("Enabled")]
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Cartella dei file .ndjson. Vuoto = "traces" accanto all'eseguibile.</summary>
+    [JsonPropertyName("Dir")]
+    public string Dir { get; set; } = "";
+
+    /// <summary>Conserva solo gli ultimi N file (0 = default 200).</summary>
+    [JsonPropertyName("MaxFiles")]
+    public int MaxFiles { get; set; } = 0;
+
+    /// <summary>Tetto in MB sul totale della cartella (0 = nessun tetto).</summary>
+    [JsonPropertyName("MaxMb")]
+    public int MaxMb { get; set; } = 0;
+
+    /// <summary>
+    /// Default false (nel trace solo hash e conteggi). true = ogni "prompt_fingerprint" include un breve
+    /// estratto (~80 caratteri prima/dopo, ripulito da chiavi/token) del punto in cui il prompt diverge
+    /// dalla richiesta precedente: dice COSA è cambiato, ma scrive nel trace frammenti del prompt.
+    /// </summary>
+    [JsonPropertyName("DiffSnippets")]
+    public bool DiffSnippets { get; set; } = false;
 }
 
 /// <summary>

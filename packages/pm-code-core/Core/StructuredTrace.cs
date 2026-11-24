@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using LocalCodeAgent.Models;
 
 namespace LocalCodeAgent.Core;
 
@@ -42,21 +43,55 @@ public static class StructuredTrace
     private static string _sessionId = "";
     private static int _turnCounter;
     private static int _currentTurnId;
+
+    // Contesto della chat (sessione dell'utente) del flusso asincrono corrente. agent-backend gestisce più
+    // chat in parallelo nello stesso processo: senza questo il contatore dei turni e "turnId" sarebbero
+    // condivisi e mescolati. Impostato da SetChat() all'inizio di ogni turno; scorre con l'ExecutionContext
+    // (await, Task.Run) fino alle chiamate al modello e ai sotto-agenti. Senza SetChat (CLI) resta il
+    // comportamento globale di sempre.
+    private sealed class ChatContext(string chatId) { public string ChatId { get; } = chatId; public int Turn; }
+    private static readonly AsyncLocal<ChatContext?> _chat = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _chatTurnCounters = new();
+
+    /// <summary>true = i fingerprint includono un breve estratto (ripulito dai segreti) attorno al punto di divergenza.</summary>
+    internal static bool DiffSnippets { get; private set; }
+
+    /// <summary>
+    /// Associa gli eventi emessi dal flusso asincrono corrente alla chat <paramref name="chatId"/>: ogni evento
+    /// riporta "chatSessionId" e un "turnId" progressivo PER CHAT. Da chiamare all'inizio di ogni turno.
+    /// </summary>
+    public static void SetChat(string? chatId)
+    {
+        if (!_enabled) return;
+        _chat.Value = string.IsNullOrEmpty(chatId) ? null : new ChatContext(chatId.Length > 8 ? chatId[..8] : chatId);
+    }
     private static bool _shutdown;
 
     // ── Avvio/spegnimento ──────────────────────────────────────────────────────
 
-    public static void Init()
+    public static void Init() => Init(null);
+
+    /// <summary>
+    /// Come <see cref="Init()"/>, con valori di default da configurazione (appsettings.json, usato da
+    /// agent-backend). Le variabili d'ambiente PM_TRACE* hanno comunque la precedenza.
+    /// </summary>
+    public static void Init(TraceSettings? cfg)
     {
         var mode = Environment.GetEnvironmentVariable("PM_TRACE");
-        _enabled = !string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase);
+        _enabled = !string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase)
+                   && (cfg?.Enabled ?? true);
         if (!_enabled) return;
+        DiffSnippets = cfg?.DiffSnippets ?? false;
 
         var dir = Environment.GetEnvironmentVariable("PM_TRACE_DIR");
+        if (string.IsNullOrWhiteSpace(dir)) dir = cfg?.Dir;
         _dir = string.IsNullOrWhiteSpace(dir) ? Path.Combine(AppContext.BaseDirectory, "traces") : dir;
 
-        _maxFiles = int.TryParse(Environment.GetEnvironmentVariable("PM_TRACE_MAX_FILES"), out var mf) && mf > 0 ? mf : 200;
-        _maxTotalBytes = long.TryParse(Environment.GetEnvironmentVariable("PM_TRACE_MAX_MB"), out var mb) && mb > 0 ? mb * 1024L * 1024L : 0;
+        _maxFiles = int.TryParse(Environment.GetEnvironmentVariable("PM_TRACE_MAX_FILES"), out var mf) && mf > 0
+            ? mf : (cfg?.MaxFiles > 0 ? cfg.MaxFiles : 200);
+        var maxMb = long.TryParse(Environment.GetEnvironmentVariable("PM_TRACE_MAX_MB"), out var mb) && mb > 0
+            ? mb : (cfg?.MaxMb ?? 0);
+        _maxTotalBytes = maxMb > 0 ? maxMb * 1024L * 1024L : 0;
 
         try { Directory.CreateDirectory(_dir); }
         catch (Exception ex) { Disable($"impossibile creare la cartella trace '{_dir}': {ex.Message}"); return; }
@@ -177,6 +212,13 @@ public static class StructuredTrace
         if (!_enabled) return 0;
         lock (_fileLock)
         {
+            var chat = _chat.Value;
+            if (chat != null)
+            {
+                chat.Turn = _chatTurnCounters.AddOrUpdate(chat.ChatId, 1, (_, n) => n + 1);
+                WriteLocked("turn_start", new());
+                return chat.Turn;
+            }
             _currentTurnId = ++_turnCounter;
             WriteLocked("turn_start", new());
             return _currentTurnId;
@@ -224,6 +266,15 @@ public static class StructuredTrace
     public static void LlmRetry(int attempt, int maxAttempts, string reason, int delayMs) =>
         Emit("llm_retry", new() { ["attempt"] = attempt, ["maxAttempts"] = maxAttempts, ["reason"] = reason, ["delayMs"] = delayMs });
 
+    /// <summary>true se il trace è attivo: permette ai chiamanti di saltare lavoro costoso (es. serializzare il prompt).</summary>
+    public static bool Enabled => _enabled;
+
+    /// <summary>
+    /// Impronta del prompt inviato a llama-server, per diagnosticare le invalidazioni della cache del
+    /// prefisso (vedi LlamaClient.TracePromptFingerprint). I campi sono preparati dal chiamante.
+    /// </summary>
+    public static void PromptFingerprint(Dictionary<string, object?> fields) => Emit("prompt_fingerprint", fields);
+
     public static void GuardTriggered(string guard, string reason) =>
         Emit("guard_triggered", new() { ["guard"] = guard, ["reason"] = Redact(Truncate(reason, 300)) });
 
@@ -242,13 +293,15 @@ public static class StructuredTrace
     {
         if (_writer == null) return;
 
+        var chat = _chat.Value;
         var evt = new Dictionary<string, object?>
         {
             ["ts"] = DateTime.Now.ToString("o"),
             ["sessionId"] = _sessionId,
-            ["turnId"] = _currentTurnId,
+            ["turnId"] = chat?.Turn ?? _currentTurnId,
             ["type"] = type,
         };
+        if (chat != null) evt["chatSessionId"] = chat.ChatId;
         foreach (var kv in fields) evt[kv.Key] = kv.Value;
 
         try

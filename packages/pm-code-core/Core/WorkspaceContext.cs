@@ -60,7 +60,7 @@ public class WorkspaceContext
     }
 
     private static readonly string[] _ignoreDirs =
-        [".git", "bin", "obj", "node_modules", ".vs", "__pycache__"];
+        [".git", "bin", "obj", "node_modules", ".vs", "__pycache__", ".pm-agent"];
 
     private static readonly string[] _ignoreExts =
         [".exe", ".dll", ".pdb", ".zip", ".rar", ".7z", ".png", ".jpg", ".gif", ".ico"];

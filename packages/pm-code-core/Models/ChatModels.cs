@@ -65,6 +65,11 @@ public class ChatRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? RepeatLastN { get; set; }
 
+    // Esplicito (non si affida al default del server): llama-server riusa lo slot solo se il
+    // prefisso del prompt coincide con la richiesta precedente.
+    [JsonPropertyName("cache_prompt")]
+    public bool CachePrompt { get; set; } = true;
+
     [JsonPropertyName("stream")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Stream { get; set; }
