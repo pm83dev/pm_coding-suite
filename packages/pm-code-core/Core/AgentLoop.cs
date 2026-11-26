@@ -61,6 +61,7 @@ namespace LocalCodeAgent.Core
             "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
             "list_directory", "get_workspace_tree", "dir_info",
             "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
+            "analyze_image",
             ExploreSubAgent.ToolName, ReviewSubAgent.ToolName, ConsultSubAgent.ToolName, RevisionSubAgent.ToolName,
         ];
         private readonly HashSet<string> _codeExtensions = new(StringComparer.OrdinalIgnoreCase)

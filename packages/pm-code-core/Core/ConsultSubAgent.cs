@@ -38,7 +38,7 @@ public class ConsultSubAgent(LlamaClient llm, ToolDispatcher dispatcher, Workspa
     [
         "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
         "list_directory", "get_workspace_tree", "dir_info",
-        "git_status", "git_diff", "git_log",
+        "git_status", "git_diff", "git_log", "analyze_image",
     ];
 
     public static ToolDefinition Definition => new()

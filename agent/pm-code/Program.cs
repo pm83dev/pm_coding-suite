@@ -268,7 +268,16 @@ if (isStdinProtocol)
     };
 }
 
-var dispatcher = new ToolDispatcher(workspace, braveApiKey, proposeWrite);
+// Se "VisionSettings" non è configurato esplicitamente (BaseUrl/Model vuoti), ricade su
+// LlmSettings (il modello principale, già avviato con --mmproj serve anche richieste con
+// "image_url") — stesso schema di AgentConfig.EffectiveVisionSettings() in agent-backend.
+var visionSettings = config.GetSection("VisionSettings").Get<VisionSettings>() ?? new VisionSettings();
+if (!visionSettings.IsConfigured)
+{
+    visionSettings.BaseUrl = serverUrl;
+    visionSettings.Model = model;
+}
+var dispatcher = new ToolDispatcher(workspace, braveApiKey, proposeWrite, visionSettings);
 if (dispatcher.ReapOrphanJobs() is { } reaped)
 {
     if (isStdinProtocol) Trace($"  !! {reaped}");
@@ -294,7 +303,7 @@ else
 {
     exploreLlm = llm;
 }
-var exploreAgent = new ExploreSubAgent(exploreLlm, new ToolDispatcher(workspace, braveApiKey), workspace, exploreSettings);
+var exploreAgent = new ExploreSubAgent(exploreLlm, new ToolDispatcher(workspace, braveApiKey, null, visionSettings), workspace, exploreSettings);
 
 if (!isMachineMode)
 {

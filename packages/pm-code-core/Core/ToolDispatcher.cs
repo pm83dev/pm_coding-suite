@@ -18,9 +18,12 @@ public class ToolDispatcher
     private readonly ProjectNotesTools _notes;
     private readonly ProjectNotesTools _lessons;
     private readonly AskQuestionTool _ask;
+    private readonly ImageTools _image;
 
-    public ToolDispatcher(WorkspaceContext workspace, string? braveApiKey = null, Func<string, string, bool>? proposeWrite = null)
+    public ToolDispatcher(WorkspaceContext workspace, string? braveApiKey = null, Func<string, string, bool>? proposeWrite = null,
+        VisionSettings? vision = null)
     {
+        _image = new ImageTools(workspace, vision);
         _fs = new FileSystemTools(workspace, proposeWrite);
         _terminal = new TerminalTools(workspace);
         _agent = new AgentTools(workspace);
@@ -43,7 +46,8 @@ public class ToolDispatcher
         .._todo.Definitions,
         .._notes.Definitions,
         .._lessons.Definitions,
-        .._ask.Definitions
+        .._ask.Definitions,
+        .._image.Definitions
     ];
 
     public List<ToolDefinition> GetDefinitionsByCategory(string category) =>
@@ -87,6 +91,10 @@ public class ToolDispatcher
         defs.AddRange(_notes.Definitions);
         defs.AddRange(_lessons.Definitions);
         defs.AddRange(_ask.Definitions);
+
+        // analyze_image: sempre incluso se configurato (Definitions vuoto altrimenti) — niente
+        // attivazione a parole chiave, così il blocco tool resta stabile per la prompt cache.
+        defs.AddRange(_image.Definitions);
 
         // Git in sola lettura — sempre inclusi: con un prompt tipo "prosegui" (nessuna parola
         // chiave git) il modello non li aveva e ripiegava su run_command "git diff | Select-Object
@@ -181,6 +189,9 @@ public class ToolDispatcher
 
         if (toolName == AskQuestionTool.ToolName)
             return _ask.Execute(argumentsJson);
+
+        if (toolName == ImageTools.ToolName)
+            return _image.Execute(toolName, argumentsJson, ct);
 
         // ── Gestione read_file_range ──────────────────────────────────────
         if (toolName == "read_file_range")

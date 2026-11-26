@@ -144,6 +144,37 @@ public class ExploreLlmSettings
 }
 
 /// <summary>
+/// Endpoint multimodale per il tool "analyze_image" (vedi ImageTools). Senza BaseUrl/Model il
+/// tool non viene esposto. Tipicamente llama-server avviato con un modello a visione + --mmproj.
+/// </summary>
+public class VisionSettings
+{
+    [JsonPropertyName("BaseUrl")] public string BaseUrl { get; set; } = "";
+    [JsonPropertyName("Model")] public string Model { get; set; } = "";
+    [JsonPropertyName("ApiKey")] public string ApiKey { get; set; } = "";
+    [JsonPropertyName("TimeoutSeconds")] public int TimeoutSeconds { get; set; } = 180;
+    [JsonPropertyName("MaxTokens")] public int MaxTokens { get; set; } = 2048;
+    [JsonPropertyName("Temperature")] public float Temperature { get; set; } = 0.2f;
+    [JsonPropertyName("MaxImageBytes")] public long MaxImageBytes { get; set; } = 8 * 1024 * 1024;
+    [JsonPropertyName("MaxAnswerChars")] public int MaxAnswerChars { get; set; } = 6000;
+
+    /// <summary>Cartelle assolute (es. gli screenshot) da cui è permesso leggere immagini oltre al workspace.</summary>
+    [JsonPropertyName("AllowedDirs")] public List<string> AllowedDirs { get; set; } = [];
+
+    [JsonPropertyName("DefaultQuestion")]
+    public string DefaultQuestion { get; set; } =
+        "Descrivi in dettaglio questa immagine: layout, componenti UI, tutti i testi visibili (trascritti alla lettera), colori e stati.";
+
+    [JsonPropertyName("SystemPrompt")]
+    public string SystemPrompt { get; set; } =
+        "Sei un analista di immagini per un agente di programmazione. Rispondi in italiano, in modo fedele e strutturato: " +
+        "trascrivi i testi esattamente come appaiono, non inventare ciò che non è visibile e indica ciò che è illeggibile.";
+
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(Model);
+}
+
+/// <summary>
 /// Configurazione opzionale del sotto-agente "review_changes" (revisione in sola lettura
 /// del diff pendente). Stesso schema di <see cref="ExploreLlmSettings"/>: se presente, usa
 /// un'istanza llama-server dedicata (tipicamente un modello "coder" su un'altra GPU/porta);
@@ -504,6 +535,10 @@ public class AgentConfig
     public SecondOpinionSettings SecondOpinionSettings { get; set; } = new();
     public RevisionSettings RevisionSettings { get; set; } = new();
 
+    /// <summary>Modello multimodale per "analyze_image" (vedi <see cref="VisionSettings"/>); assente = tool non esposto.</summary>
+    [JsonPropertyName("VisionSettings")]
+    public VisionSettings VisionSettings { get; set; } = new();
+
     [JsonPropertyName("AgentSettings")]
     public AgentSettings AgentSettings { get; set; } = new();
 
@@ -518,6 +553,31 @@ public class AgentConfig
 
     [JsonPropertyName("TraceSettings")]
     public TraceSettings TraceSettings { get; set; } = new();
+
+    /// <summary>
+    /// VisionSettings da usare davvero per "analyze_image": se la sezione "VisionSettings" non è
+    /// configurata esplicitamente (BaseUrl/Model vuoti), ricade su LlmSettings — il modello
+    /// principale che già serve /v1/chat/completions con --mmproj può anche rispondere alle
+    /// richieste con "image_url", quindi il tool si attiva senza un endpoint/porta dedicati.
+    /// Chiunque debba passare un VisionSettings al ToolDispatcher usa questo, non VisionSettings
+    /// direttamente.
+    /// </summary>
+    public VisionSettings EffectiveVisionSettings() => VisionSettings.IsConfigured
+        ? VisionSettings
+        : new VisionSettings
+        {
+            BaseUrl = LlmSettings.BaseUrl,
+            Model = LlmSettings.Model,
+            ApiKey = LlmSettings.ApiKey,
+            TimeoutSeconds = VisionSettings.TimeoutSeconds,
+            MaxTokens = VisionSettings.MaxTokens,
+            Temperature = VisionSettings.Temperature,
+            MaxImageBytes = VisionSettings.MaxImageBytes,
+            MaxAnswerChars = VisionSettings.MaxAnswerChars,
+            AllowedDirs = VisionSettings.AllowedDirs,
+            DefaultQuestion = VisionSettings.DefaultQuestion,
+            SystemPrompt = VisionSettings.SystemPrompt,
+        };
 }
 
 /// <summary>

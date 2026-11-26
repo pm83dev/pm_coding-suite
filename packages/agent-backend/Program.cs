@@ -16,6 +16,7 @@ builder.Configuration.GetSection("ExploreLlmSettings").Bind(config.ExploreLlmSet
 builder.Configuration.GetSection("CoderLlmSettings").Bind(config.CoderLlmSettings);
 builder.Configuration.GetSection("SecondOpinionSettings").Bind(config.SecondOpinionSettings);
 builder.Configuration.GetSection("RevisionSettings").Bind(config.RevisionSettings);
+builder.Configuration.GetSection("VisionSettings").Bind(config.VisionSettings);
 builder.Configuration.GetSection("PersistenceSettings").Bind(config.PersistenceSettings);
 builder.Configuration.GetSection("TraceSettings").Bind(config.TraceSettings);
 

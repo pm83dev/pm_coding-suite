@@ -152,7 +152,7 @@ public class AgentLoopSession
 
         var exploreAgent = new ExploreSubAgent(
             exploreLlm,
-            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
+            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey, vision: _config.EffectiveVisionSettings()),
             workspace,
             _config.ExploreLlmSettings);
 
@@ -166,7 +166,7 @@ public class AgentLoopSession
 
         var reviewAgent = new ReviewSubAgent(
             coderLlm,
-            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
+            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey, vision: _config.EffectiveVisionSettings()),
             workspace,
             r =>
             {
@@ -195,7 +195,7 @@ public class AgentLoopSession
 
         var consultAgent = new ConsultSubAgent(
             secondOpinionLlm,
-            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey),
+            new ToolDispatcher(workspace, string.IsNullOrEmpty(_config.WebSearchSettings.BraveApiKey) ? null : _config.WebSearchSettings.BraveApiKey, vision: _config.EffectiveVisionSettings()),
             workspace,
             _config.SecondOpinionSettings);
 
@@ -269,7 +269,7 @@ public class AgentLoopSession
             "read_file", "read_file_range", "glob_files", "search_in_files", "sym_search",
             "list_directory", "get_workspace_tree", "dir_info",
             "git_status", "git_diff", "git_log", "get_background_output", "list_background_jobs",
-            "manage_todo", "project_notes", "lessons", "ask_question",
+            "manage_todo", "project_notes", "lessons", "ask_question", "analyze_image",
             "explore", "review_changes", "ask_second_opinion", "ask_revision"
         };
         if (readOnlyTools.Contains(toolName)) return null;

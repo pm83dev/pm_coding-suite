@@ -37,7 +37,7 @@ public class AgentSessionService
         llm.FirstByteTimeout = TimeSpan.FromSeconds(Math.Max(0, _config.AgentSettings.LlmFirstByteTimeoutSeconds));
         llm.IdleTimeout = TimeSpan.FromSeconds(Math.Max(0, _config.AgentSettings.LlmIdleTimeoutSeconds));
 
-        var dispatcher = new ToolDispatcher(workspace, _braveApiKey);
+        var dispatcher = new ToolDispatcher(workspace, _braveApiKey, vision: _config.EffectiveVisionSettings());
         AgentStateDir.Ensure(workspaceRoot);
 
         var sessionManager = new SessionManager(
